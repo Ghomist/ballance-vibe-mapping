@@ -1,4 +1,4 @@
-// 对齐：格栅（世界坐标 2.5 的倍数）与吸附（其它元素的边界 / 端点 / 高度）是两个独立开关，可以同时生效。
+// 对齐：格栅（世界坐标 2.5 的倍数）与自动对齐（其它元素的边界 / 端点 / 高度）是两个独立开关，可以同时生效。
 import { DX, DY, HALF, Model, endPos, endZ, nodeHalf } from '../model/types';
 import { platformBBox } from '../model/platform';
 import { railEnd } from '../model/rail';
@@ -19,7 +19,7 @@ const tidy = (v: number) => Math.round(v * 100) / 100;
 export class Snapper {
   /** 格栅：对齐到 2.5 的倍数 */
   grid = true;
-  /** 吸附：靠近其它元素的边界、端点、高度时对齐过去（与格栅相互独立，可同时开） */
+  /** 自动对齐：靠近其它元素的边界、端点、高度时对齐过去（与格栅相互独立，可同时开） */
   snap = true;
   /** 自由模式吸附距离（世界单位） */
   tol = 1;

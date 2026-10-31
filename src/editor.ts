@@ -19,7 +19,7 @@ import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, su
 import { lerpModel } from './view/tween';
 import {
   CELL, DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
-  axisOf, cloneModel, emptyModel, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
+  axisOf, cloneModel, emptyModel, endOutDir, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './model/types';
 import {
   Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
@@ -31,7 +31,7 @@ import {
   setPlatformStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
 } from './model/ops';
 import {
-  addSegAtPlatform, blockToPlatform, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
+  addSegAtPlatform, blockToPlatform, boundaryEdges, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
 } from './model/platform';
 
 export type Tool = 'edit' | 'cut' | 'rail' | 'object';
@@ -111,7 +111,7 @@ export class Editor {
   tool: Tool = 'edit';
   /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附 */
   gridMode = true;
-  /** 吸附：靠近其它元素的边界 / 端点 / 高度时对齐过去（与格栅相互独立） */
+  /** 自动对齐：靠近其它元素的边界 / 端点 / 高度时对齐过去（与格栅相互独立；自动连接不受它影响） */
   snapMode = true;
   /** 机关工具当前要放的物件类型 */
   objType = 'P_Extra_Point';
@@ -1314,6 +1314,44 @@ export class Editor {
     return (b * e - c * dd) / den;
   }
 
+  /**
+   * 自动连接（常驻，不受格栅 / 自动对齐开关影响）：拖动的端点靠近能接上的地方
+   *（对面的端点、路块 / 盘点路口、平台边、直道侧面）时吸过去，显示绿色提示，松手即接上。
+   */
+  private pullToConnection(m: Model, g: { seg: number; key: EndKey }) {
+    const s = m.segs[g.seg];
+    if (!s || !isFree(s[g.key])) return;
+    const out = endOutDir(s, g.key);
+    const ax = axisOf(out);
+    const [ex, ey] = endPos(s, g.key);
+    const cur = ax === 0 ? ex : ey, lat = ax === 0 ? ey : ex;
+    const tol = Math.max(this.snap().tol, 1);
+    const cands: number[] = [];
+    for (const o of Object.values(m.segs)) {
+      if (o.id === s.id) continue;
+      for (const k of ['a', 'b'] as EndKey[]) { const [x, y] = endPos(o, k); cands.push(ax === 0 ? x : y); }
+      // 侧面开 T 字口：端点停在那条路边沿外
+      if (axisOf(o.dir) !== ax) cands.push((ax === 0 ? o.x : o.y) - (DX[out] + DY[out]) * HALF);
+    }
+    for (const n of Object.values(m.nodes)) {
+      if (n.kind === 'platform') {
+        for (const e of boundaryEdges(cellSet(n))) if (e.out === opp(out)) cands.push(ax === 0 ? e.x : e.y);
+      } else if (n.kind === 'block' || n.kind === 'checkpoint') {
+        const h = nodeHalf(n);
+        cands.push((ax === 0 ? n.x : n.y) - (DX[out] + DY[out]) * h);
+      }
+    }
+    const near = [...new Set(cands.map((c) => Math.round(c * 1e4) / 1e4))]
+      .filter((c) => Math.abs(c - cur) < tol).sort((a, b) => Math.abs(a - cur) - Math.abs(b - cur));
+    const save = { x: s.x, y: s.y, len: s.len };
+    for (const c of near) {
+      extendTo(m, s.id, g.key, c);
+      const [nx, ny] = endPos(s, g.key);
+      if (Math.abs((ax === 0 ? nx : ny) - c) < 1e-6 && Math.abs((ax === 0 ? ny : nx) - lat) < 1e-6 && findConnection(m, s.id, g.key, true)) return;
+      Object.assign(s, save);
+    }
+  }
+
   /** 拖拽中可连接的位置：方框画在连接截面外侧那一格 */
   private dragConnection(): { x: number; y: number; z: number } | null {
     const d = this.drag;
@@ -1501,7 +1539,10 @@ export class Editor {
       if (!hit) return;
       const m = cloneModel(d.snapshot);
       if (d.action.apply2) d.action.apply2(m, hit.x, hit.y);
-      else this.growEnd = d.action.apply(m, axisOf(d.action.dir) === 0 ? hit.x : hit.y);
+      else {
+        this.growEnd = d.action.apply(m, axisOf(d.action.dir) === 0 ? hit.x : hit.y);
+        if (this.growEnd) this.pullToConnection(m, this.growEnd);
+      }
       this.setModel(m);
     } else if (d.type === 'railHeight') {
       const hit = new THREE.Vector3();
@@ -2029,7 +2070,7 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '吸附'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '自动对齐'),
       ];
     } else if (this.tool === 'cut') hs = [H(['LMB'], '点截面分隔'), H(['LMB'], '空白处框选'), H(['RMB'], '菜单'), H(['MMB'], '环视')];
     else if (this.tool === 'object') hs = [
