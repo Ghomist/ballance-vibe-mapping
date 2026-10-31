@@ -7,8 +7,9 @@
 import { buildFloorMeshes } from '../geom/floor';
 import { buildRail } from '../geom/rail';
 import { checkpoints, findStart, prefabParts } from '../model/checkpoint';
-import { guardParts } from '../model/deco';
+import { buildGuards } from '../geom/railing';
 import { objSector, objType } from '../model/objects';
+import { stopperMesh } from '../model/stoppers';
 import { component } from '../model/ops';
 import { Model } from '../model/types';
 
@@ -16,7 +17,7 @@ export interface SceneMeshPart { mat: string; pos: number[]; uv?: number[] }
 export interface SceneMesh {
   name: string;
   /** floor：Phys_Floors 等；rail：Phys_FloorRails 等 */
-  kind: 'floor' | 'rail';
+  kind: 'floor' | 'rail' | 'stopper';
   parts: SceneMeshPart[];
   /** 平滑着色（钢轨） */
   smooth?: boolean;
@@ -52,7 +53,7 @@ const ASSET_KIND: Record<string, SceneAsset['kind']> = {
   BarrierRail_1Edge: 'rail', BarrierRail_3Edge: 'rail', BarrierRail_3Edge_N: 'rail', BarrierRail_3Edge_S: 'rail', RailTip: 'rail',
 };
 const assetKind = (name: string): SceneAsset['kind'] =>
-  ASSET_KIND[name] ?? (name.startsWith('CheckPoint_') || name.startsWith('StartPoint_') ? 'floor' : 'deco');
+  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider)/.test(name) ? 'floor' : 'deco');
 
 export function exportScene(m: Model): SceneDesc {
   const warnings: string[] = [];
@@ -94,6 +95,21 @@ export function exportScene(m: Model): SceneDesc {
     meshes.push({ name: `A_Rail_BVM_${String(++ri).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: rm.pos.map(r5) }] });
   }
 
+  // ---- 护栏：每段一个钢轨物体 ----
+  let gi = 0;
+  for (const t of buildGuards(m)) {
+    if (!t.pos.length) continue;
+    meshes.push({ name: `A_Rail_BVM_Guard_${String(++gi).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: t.pos.map(r5) }] });
+  }
+
+  // ---- 挡块：合成一个物体 ----
+  const sp: number[] = [], su: number[] = [];
+  for (const o of Object.values(m.objs)) {
+    const st = stopperMesh(o);
+    if (st) { sp.push(...st.pos.map(r5)); su.push(...st.uv.map(r5)); }
+  }
+  if (sp.length) meshes.push({ name: 'A_Stopper_BVM_01', kind: 'stopper', parts: [{ mat: 'Stopper', pos: sp, uv: su }] });
+
   // ---- 资产与机关 ----
   const assets: SceneAsset[] = [];
   const elements: SceneElement[] = [];
@@ -103,6 +119,7 @@ export function exportScene(m: Model): SceneDesc {
     else elements.push({ type: p.name, sector, pos, rotZ: p.rotZ });
   };
   for (const n of Object.values(m.nodes)) {
+    if (n.kind === 'base') { for (const p of prefabParts(m, n)) pushPart(p); continue; }
     if (n.kind !== 'checkpoint') continue;
     for (const p of prefabParts(m, n)) {
       // 起点四火不分小节；小节盘点的两火属于“上一个”小节（PC_TwoFlames_{n-1}），重生点属于本小节
@@ -111,9 +128,6 @@ export function exportScene(m: Model): SceneDesc {
           : n.prefab === 'start' ? 1 : n.sector;
       pushPart(p, sector);
     }
-  }
-  for (const id of [...Object.keys(m.segs), ...Object.keys(m.nodes)].map(Number)) {
-    for (const p of guardParts(m, id)) pushPart(p);
   }
   for (const o of Object.values(m.objs)) {
     const t = objType(o.type);

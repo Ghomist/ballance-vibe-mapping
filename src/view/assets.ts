@@ -95,6 +95,13 @@ export function getAsset(kind: 'asset' | 'element', name: string): AssetPiece[] 
   return null;
 }
 
+let stopperMat: THREE.Material | null = null;
+/** 挡块：原版的木头贴图（E_Holzbeschlag） */
+export function getStopperMaterial(): THREE.Material {
+  stopperMat ??= new THREE.MeshLambertMaterial({ map: texture('E_Holzbeschlag.bmp'), side: THREE.DoubleSide });
+  return stopperMat;
+}
+
 /** 缺少模型时的占位盒子 */
 const boxMat = new THREE.MeshLambertMaterial({ color: 0xd8c8aa, transparent: true, opacity: 0.6 });
 export function fallbackBox(sx: number, sy: number, sz: number): AssetPiece {

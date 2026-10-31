@@ -6,6 +6,7 @@ import {
   DX, DY, Dir, EndKey, MNode, Model, PREFAB_PORT, Prefab, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp,
 } from './types';
 import { isSloped } from './ops';
+import { baseParts } from './bases';
 
 const EPS = 1e-6;
 
@@ -30,37 +31,41 @@ export function addCheckpoint(m: Model, prefab: Prefab, x: number, y: number, z:
   return newNode(m, { kind: 'checkpoint', prefab, x, y, z, style: 'normal', rot, sector: prefab === 'check' ? nextSector(m) : undefined }).id;
 }
 
-/** 把直道上以 c 为中心的一段替换成小节盘点（直道两侧接到盘点的两个路口）。 */
-export function placeCheckpointOnSeg(m: Model, segId: number, c: number): number | null {
+/**
+ * 把直道上以 c 为中心、半长 half 的一段换成一个节点（盘点、机关底座等），直道两侧接到节点的两个路口。
+ * 坡道上不行；端点接着别的东西时节点不能越过它。剩下太短（放不下封闭端头）的自由段去掉。
+ */
+export function insertNodeOnSeg(m: Model, segId: number, c: number, half: number, props: Omit<MNode, 'id' | 'x' | 'y' | 'z'>): MNode | null {
   const s = m.segs[segId];
   if (!s || isSloped(m, s)) return null;
-  const P = PREFAB_PORT.check;
   const z = endZ(m, s, 'a');
-  // 端点接着别的东西时，盘点不能越过它
-  const lo = isFree(s.a) ? -Infinity : P, hi = isFree(s.b) ? Infinity : s.len - P;
+  const lo = isFree(s.a) ? -Infinity : half, hi = isFree(s.b) ? Infinity : s.len - half;
   if (lo > hi + EPS) return null;
   c = Math.min(Math.max(c, lo), hi);
-  const cp = newNode(m, {
-    kind: 'checkpoint', prefab: 'check', x: s.x + DX[s.dir] * c, y: s.y + DY[s.dir] * c, z, style: 'normal',
-    rot: s.dir, sector: nextSector(m),
-  });
-  const right = s.len - (c + P), left = c - P;
-  // 被盘点盖住的部分去掉；剩下太短（放不下封闭端头）的自由段也去掉
+  const nd = newNode(m, { ...props, x: s.x + DX[s.dir] * c, y: s.y + DY[s.dir] * c, z });
+  const right = s.len - (c + half), left = c - half;
   if (right > 2.5 - EPS || (!isFree(s.b) && right > -EPS)) {
     const id = m.nextId++;
     m.segs[id] = {
-      id, x: s.x + DX[s.dir] * (c + P), y: s.y + DY[s.dir] * (c + P), dir: s.dir, len: Math.max(right, 0), style: s.style,
-      a: { node: cp.id }, b: s.b, guard: s.guard ? { ...s.guard } : undefined,
+      id, x: s.x + DX[s.dir] * (c + half), y: s.y + DY[s.dir] * (c + half), dir: s.dir, len: Math.max(right, 0), style: s.style,
+      a: { node: nd.id }, b: s.b, guard: s.guard ? { ...s.guard } : undefined,
     };
   }
   if (left > 2.5 - EPS || (!isFree(s.a) && left > -EPS)) {
     s.len = Math.max(left, 0);
-    s.b = { node: cp.id };
+    s.b = { node: nd.id };
   } else {
     delete m.segs[s.id];
-    if (m.root === s.id) m.root = cp.id;
+    if (m.root === s.id) m.root = nd.id;
   }
-  return cp.id;
+  return nd;
+}
+
+/** 把直道上以 c 为中心的一段替换成小节盘点（直道两侧接到盘点的两个路口）。 */
+export function placeCheckpointOnSeg(m: Model, segId: number, c: number): number | null {
+  const s = m.segs[segId];
+  if (!s) return null;
+  return insertNodeOnSeg(m, segId, c, PREFAB_PORT.check, { kind: 'checkpoint', prefab: 'check', style: 'normal', rot: s.dir, sector: nextSector(m) })?.id ?? null;
 }
 
 /** 在直道的自由端外侧接上起点 */
@@ -120,6 +125,7 @@ export interface PrefabPart {
 
 /** 盘点路面由哪些模型组成：路面（按接了哪几侧选延伸段版本）+ 火焰占位符 + 重生点占位符 */
 export function prefabParts(m: Model, n: MNode): PrefabPart[] {
+  if (n.kind === 'base') return baseParts(m, n);
   const ports = nodePorts(m, n.id);
   const rot = n.rot!;
   const deg = (d: Dir) => d * 90;

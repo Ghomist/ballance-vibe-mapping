@@ -21,6 +21,10 @@ export interface Obj {
   rot: number;
   /** 机关：手动指定的小节；不填则自动判断 */
   sector?: number;
+  /** 机关：专属路面（底座）节点 */
+  base?: number;
+  /** 机关：不要挡块 */
+  noStopper?: boolean;
 }
 
 export interface ObjType {
@@ -38,15 +42,15 @@ export interface ObjType {
 }
 
 export const OBJ_TYPES: ObjType[] = [
-  { type: 'P_Extra_Point', cat: 'module', label: '加分球', anchor: [0, 0, -2.5] },
-  { type: 'P_Extra_Life', cat: 'module', label: '加命球', anchor: [0, 0, -2.56] },
+  { type: 'P_Extra_Point', cat: 'module', label: '加分球', anchor: [0, 0, -2.6] },
+  { type: 'P_Extra_Life', cat: 'module', label: '加命球', anchor: [0, 0, -2.66] },
   { type: 'P_Trafo_Paper', cat: 'module', label: '纸球变球器', anchor: [0, 0, -0.1] },
   { type: 'P_Trafo_Stone', cat: 'module', label: '石球变球器', anchor: [0, 0, -0.1] },
   { type: 'P_Trafo_Wood', cat: 'module', label: '木球变球器', anchor: [0, 0, -0.1] },
-  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', anchor: [0, 0, -2] },
-  { type: 'P_Ball_Stone', cat: 'module', label: '石球', anchor: [0, 0, -2] },
-  { type: 'P_Ball_Wood', cat: 'module', label: '木球', anchor: [0, 0, -2] },
-  { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.5] },
+  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', anchor: [0, 0, -2.1] },
+  { type: 'P_Ball_Stone', cat: 'module', label: '石球', anchor: [0, 0, -2.1] },
+  { type: 'P_Ball_Wood', cat: 'module', label: '木球', anchor: [0, 0, -2.1] },
+  { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.6] },
   { type: 'P_Dome', cat: 'module', label: 'Dome', anchor: [0, 0, 0] },
   { type: 'P_Modul_01', cat: 'module', label: 'Modul 01 栅栏', anchor: [2.5, 0.65, 0] },
   { type: 'P_Modul_03', cat: 'module', label: 'Modul 03', anchor: [13.37, 0.04, -10.76] },

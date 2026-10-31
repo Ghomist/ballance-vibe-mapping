@@ -77,7 +77,7 @@ mkdirSync(texOut, { recursive: true });
 const tex = new Set([
   'Floor_Top_Border.bmp', 'Floor_Top_Borderless.bmp', 'Floor_Top_Flat.bmp',
   'Floor_Top_Profil.bmp', 'Floor_Top_ProfilFlat.bmp', 'Floor_Side.bmp',
-  'Floor_Top_Checkpoint.bmp', 'Rail_Environment.bmp',
+  'Floor_Top_Checkpoint.bmp', 'Rail_Environment.bmp', 'E_Holzbeschlag.bmp',
 ]);
 if (existsSync(assetsOut)) {
   for (const f of readdirSync(assetsOut)) {

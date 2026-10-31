@@ -192,7 +192,7 @@ export function platformRepairScenarios(emptyModel: () => Model, check: Check, s
   });
 }
 
-import { movePiece, pieceOf } from '../src/model/ops';
+import { makeCorner, movePiece, pieceOf, shiftFreeEnd } from '../src/model/ops';
 
 export function rippleScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
   scenario('Ctrl 移动：接在平台边上的路沿边移动时只滑动路口，平台不动', () => {
@@ -212,5 +212,92 @@ export function rippleScenarios(emptyModel: () => Model, check: Check, scenario:
     const info2 = { moved: new Set<number>(), stretched: new Set<number>() };
     movePiece(cloneModel(m), pieceOf(m, s), 15, 0, 0, info2);
     check(info2.moved.has(p), '路口放不下时平台跟着移动');
+  });
+}
+
+import { baseParts, placeBase } from '../src/model/bases';
+
+export function baseScenarios(emptyModel: () => Model, check: Check, scenario: Scenario, validate: (m: Model, l: string) => void) {
+  const segCount = (m: Model) => Object.keys(m.segs).length;
+  scenario('变球器：脚下那一格换成底座，删掉变球器后变回普通路', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0); // x ∈ [-2.5, 2.5]
+    extendTo(m, s, 'b', 47.5);
+    const o = addObj(m, 'P_Trafo_Stone', 20, 0, 0.1)!;
+    const b = placeBase(m, o);
+    normalize(m);
+    validate(m, 'trafo');
+    check(b !== null && m.nodes[b].kind === 'base' && nodeLinks(m, b).length === 2, '应插入接着两段路的底座');
+    check(baseParts(m, m.nodes[b!])[0].name === 'TrafoBase_Stone', '石球变球器用石头底座');
+    delete m.objs[o];
+    normalize(m);
+    validate(m, 'trafo-revert');
+    check(!Object.values(m.nodes).some((n) => n.kind === 'base') && segCount(m) === 1, `底座应变回普通路并合成一段，实际 ${segCount(m)} 段`);
+  });
+
+  scenario('风扇：按接路情况选边框花纹', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 47.5);
+    const mid = addObj(m, 'P_Modul_18', 20, 0, 0)!;
+    const end = addObj(m, 'P_Modul_18', 45, 0, 0)!;
+    placeBase(m, mid); placeBase(m, end);
+    normalize(m);
+    validate(m, 'fan');
+    const pm = baseParts(m, m.nodes[m.objs[mid].base!])[0], pe = baseParts(m, m.nodes[m.objs[end].base!])[0];
+    check(pm.name === 'Ventilator_2Face_Opposite' && (pm.rotZ === 90 || pm.rotZ === 270), `路中间的风扇：两侧有边框，实际 ${pm.name} ${pm.rotZ}`);
+    check(pe.name === 'Ventilator_3Edge', `路尽头的风扇：三边有边框，实际 ${pe.name}`);
+  });
+
+  scenario('栅栏：顺路两格换成栅栏路面，删掉后接回一整段', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 47.5);
+    // 对准点 (2.5, 0.65)：对准的那一格中心在 x=20
+    const o = addObj(m, 'P_Modul_01', 17.5, -0.65, 0)!;
+    const b = placeBase(m, o);
+    normalize(m);
+    validate(m, 'fence');
+    check(b !== null && Math.abs(m.nodes[b].x - 22.5) < 1e-9 && nodeLinks(m, b).length === 2, `栅栏路面中心应在 x=22.5，实际 ${b !== null ? m.nodes[b].x : '无'}`);
+    delete m.objs[o];
+    normalize(m);
+    validate(m, 'fence-revert');
+    check(segCount(m) === 1 && Math.abs(Object.values(m.segs)[0].len - 50) < 1e-9, '应接回一整段 50 长的路');
+  });
+}
+
+import { buildGuards, guardChains } from '../src/geom/railing';
+
+export function guardScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
+  scenario('护栏：直路 + 拐角连成一整段，拐角圆弧、只有两头立柱，坡道上也是一整段', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0); // x ∈ [-2.5, 2.5]，y=0
+    extendTo(m, s, 'b', 30);
+    const br = makeCorner(m, s, 'b', 1)!; // 末端往 +Y 拐
+    extendTo(m, br, 'b', 20);
+    normalize(m);
+    // 外侧：直路右侧（y<0）+ 拐角路块的 -Y、+X 两边 + 拐出去那段的右侧（x>）
+    const corner = Object.values(m.nodes).find((n) => n.kind === 'block')!;
+    m.segs[s].guard = { R: true };
+    corner.guardSides = (1 << 3) | (1 << 0);
+    const s2 = Object.values(m.segs).find((x) => x.id !== s)!;
+    s2.guard = { R: true };
+    let ch = guardChains(m);
+    check(ch.length === 1 && !ch[0].closed, `外侧护栏应连成一整段，实际 ${ch.length} 段`);
+    check(ch[0].pts.length === 3, `拐角处只有一个拐点（共 3 点），实际 ${ch[0].pts.length}`);
+    // 管子朝外：每个三角形的法线与顶点法线同向
+    const t = buildGuards(m)[0];
+    let bad = 0;
+    for (let i = 0; i < t.pos.length; i += 9) {
+      const p = t.pos, a = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], b = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
+      const n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      const vn = [t.nrm[i] + t.nrm[i + 3] + t.nrm[i + 6], t.nrm[i + 1] + t.nrm[i + 4] + t.nrm[i + 7], t.nrm[i + 2] + t.nrm[i + 5] + t.nrm[i + 8]];
+      if (n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2] < 0) bad++;
+    }
+    check(bad === 0, `管子三角形朝向应向外，有 ${bad} 个朝里`);
+    // 坡道：抬高拐出去那段的末端，仍是一整段
+    shiftFreeEnd(m, s2.id, 'b', 5);
+    ch = guardChains(m);
+    check(ch.length === 1, '坡道上护栏仍连成一整段');
   });
 }

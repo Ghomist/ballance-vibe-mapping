@@ -9,11 +9,13 @@ import { Snapper, type SnapResult } from './view/snap';
 import { Fx, rectSegs } from './view/fx';
 import { createGrid } from './view/grid';
 import { FaceFx, type FaceSpec, faceSegs } from './view/face';
-import { assetVersion, fallbackBox, getAsset, setAssetLoadedCallback } from './view/assets';
+import { assetVersion, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from './view/assets';
+import { hasStopper, stopperMesh } from './model/stoppers';
 import {
   addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
 } from './model/checkpoint';
-import { guardParts } from './model/deco';
+import { buildGuards, GUARD_HEIGHT, GUARD_INSET } from './geom/railing';
+import { baseOf, placeBase, revertBase } from './model/bases';
 import { exportScene } from './export/scene';
 import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
@@ -34,7 +36,13 @@ import {
   addSegAtPlatform, blockToPlatform, boundaryEdges, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
 } from './model/platform';
 
-export type Tool = 'edit' | 'cut' | 'rail' | 'object';
+export type Tool = 'edit' | 'cut' | 'rail' | 'object' | 'guard';
+
+/** 护栏工具悬停的边：一条直边（跨过截面接头的整段直路的一侧），或路块没接路的一边 */
+type GuardTarget =
+  | { type: 'seg'; items: { seg: number; side: 'L' | 'R' }[]; on: boolean }
+  | { type: 'block'; id: number; d: Dir; on: boolean }
+  | { type: 'invalid'; reason: string };
 
 /** 状态栏的一条操作提示：按键（LMB / MMB / RMB / Wheel / Shift / Ctrl / Alt / 字母…）+ 简短说明 */
 export interface Hint { keys: string[]; label: string }
@@ -340,11 +348,11 @@ export class Editor {
         if (oc && oc.key === okey) continue;
         if (oc) for (const mesh of oc.meshes) { if (!mesh.userData.shared) mesh.geometry.dispose(); this.floor.remove(mesh); }
         const meshes = this.objMeshes(obj);
-        for (const mesh of meshes) { mesh.userData = { id, kind: 'obj', shared: true }; this.floor.add(mesh); }
+        for (const mesh of meshes) { mesh.userData = { id, kind: 'obj', shared: !mesh.userData.ownGeo }; this.floor.add(mesh); }
         this.meshCache.set(id, { key: okey, meshes });
         continue;
       }
-      const prefab = m.nodes[id]?.kind === 'checkpoint' ? m.nodes[id] : null;
+      const prefab = m.nodes[id]?.kind === 'checkpoint' || m.nodes[id]?.kind === 'base' ? m.nodes[id] : null;
       // 平台平移过渡：按目标形状绘制，再整体偏移（见 lerpModel）
       const off = m.nodes[id]?.kind === 'platform' && this.model.nodes[id]?.kind === 'platform' ? m.nodes[id].dispOff ?? [0, 0, 0] : null;
       const km = off ? this.model : m;
@@ -395,22 +403,11 @@ export class Editor {
         meshes.push(mesh);
       }
       if (off) for (const mesh of meshes) mesh.position.set(...off);
-      // 护栏
-      for (const part of guardParts(m, id)) {
-        for (const pc of getAsset('asset', part.name) ?? []) {
-          const mesh = new THREE.Mesh(pc.geometry, pc.material);
-          mesh.position.set(...part.pos);
-          mesh.rotation.set(0, ((part.pitch ?? 0) * Math.PI) / 180, (part.rotZ * Math.PI) / 180, 'ZYX');
-          mesh.userData = { id, kind: em?.kind ?? 'node', shared: true, element: true };
-          mesh.updateMatrixWorld();
-          this.floor.add(mesh);
-          meshes.push(mesh);
-        }
-      }
       this.meshCache.set(id, { key, meshes });
     }
     this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes);
     this.syncCheckpointLabels(m);
+    this.syncGuards(m);
   }
 
   /** 盘点路面：资产库模型 + 火焰 / 重生点占位符（模型未加载时先用盒子占位） */
@@ -439,11 +436,45 @@ export class Editor {
   private objMeshes(o: { type: string; x: number; y: number; z: number; rot: number }, ghost = false): THREE.Mesh[] {
     const t = objType(o.type);
     const pieces = getAsset(t?.cat === 'deco' ? 'asset' : 'element', o.type) ?? [];
-    return pieces.map((pc) => {
+    const out = pieces.map((pc) => {
       const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
       mesh.position.set(o.x, o.y, o.z);
       mesh.rotation.z = (o.rot * Math.PI) / 180;
       mesh.updateMatrixWorld();
+      return mesh;
+    });
+    // 挡块
+    const st = stopperMesh({ id: 0, cat: 'module', ...o, x: ghost ? 0 : o.x, y: ghost ? 0 : o.y, z: ghost ? 0 : o.z });
+    if (st) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(st.pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(st.uv, 2));
+      g.computeVertexNormals();
+      const mesh = new THREE.Mesh(g, ghost ? GHOST_MAT : getStopperMaterial());
+      if (ghost) mesh.rotation.z = (o.rot * Math.PI) / 180;
+      mesh.userData.ownGeo = true;
+      out.push(mesh);
+    }
+    return out;
+  }
+
+  private guardMeshes: THREE.Mesh[] = [];
+  private guardKey = '';
+
+  /** 护栏：整段连续的圆管（不参与拾取） */
+  private syncGuards(m: Model) {
+    const tubes = buildGuards(m);
+    const key = JSON.stringify(tubes.map((t) => t.pos.length)) + tubes.map((t) => t.pos.slice(0, 6).map((v) => v.toFixed(2)).join()).join('|')
+      + JSON.stringify(Object.values(m.segs).map((s) => [s.guard, s.x, s.y, s.len, endZ(m, s, 'a'), endZ(m, s, 'b')]));
+    if (key === this.guardKey) return;
+    this.guardKey = key;
+    for (const mesh of this.guardMeshes) { mesh.geometry.dispose(); this.floor.remove(mesh); }
+    this.guardMeshes = tubes.map((t) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(t.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(t.nrm, 3));
+      const mesh = new THREE.Mesh(g, getRailMaterial());
+      this.floor.add(mesh);
       return mesh;
     });
   }
@@ -517,6 +548,15 @@ export class Editor {
     }
     this.faceFx.set(a?.face ?? null, a?.valid ? a.color : C_INVALID);
 
+    // 护栏工具：悬停的那条边
+    if (this.tool === 'guard' && h && !this.drag) {
+      const g = this.guardTarget(h);
+      if (g && g.type !== 'invalid') {
+        const lines = this.guardPreview(g);
+        show('guard-preview', lines, g.on ? C_CUT : C_CREATE, { width: 2, opacity: 0.9, dashed: g.on });
+      }
+    }
+
     // Alt：截面预览；分隔工具：整个截面 + 斜线
     const sec = this.hoverSection();
     if (sec) {
@@ -584,6 +624,72 @@ export class Editor {
     this.hintKeys = shown;
   }
 
+  /** 护栏工具：鼠标下是哪条边 */
+  private guardTarget(p: Pick): GuardTarget | null {
+    const m = this.model;
+    const s = m.segs[p.id];
+    if (s) {
+      const side: 'L' | 'R' = this.segLocal(s, p.point).lat >= 0 ? 'L' : 'R';
+      // 跨过截面接头的整条直路
+      const items: { seg: number; side: 'L' | 'R' }[] = [{ seg: s.id, side }];
+      const seen = new Set([s.id]);
+      const q = [s.id];
+      while (q.length) {
+        const cur = m.segs[q.shift()!];
+        for (const k of ['a', 'b'] as EndKey[]) {
+          const e = cur[k];
+          if (isFree(e) || m.nodes[e.node]?.kind !== 'joint') continue;
+          for (const l of nodeLinks(m, e.node)) {
+            const o = m.segs[l.seg];
+            if (seen.has(o.id) || axisOf(o.dir) !== axisOf(s.dir)) continue;
+            seen.add(o.id);
+            q.push(o.id);
+            items.push({ seg: o.id, side: o.dir === s.dir ? side : side === 'L' ? 'R' : 'L' });
+          }
+        }
+      }
+      return { type: 'seg', items, on: !!s.guard?.[side] };
+    }
+    const n = m.nodes[p.id];
+    if (!n) return null;
+    if (n.kind === 'block') {
+      const dx = p.point.x - n.x, dy = p.point.y - n.y;
+      const d: Dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 0 : 2) : (dy >= 0 ? 1 : 3);
+      if (nodePorts(m, n.id)[d]) return { type: 'invalid', reason: '这一边接着路，不能加护栏' };
+      return { type: 'block', id: n.id, d, on: !!((n.guardSides ?? 0) & (1 << d)) };
+    }
+    if (n.kind === 'platform') return { type: 'invalid', reason: '平台边的护栏还不支持' };
+    return { type: 'invalid', reason: '这里不能加护栏' };
+  }
+
+  /** 护栏预览：沿边的底线、顶线和两头的竖线 */
+  private guardPreview(g: GuardTarget): number[] {
+    const m = this.model;
+    const out: number[] = [];
+    const e = HALF - GUARD_INSET;
+    const edge = (a: [number, number, number], b: [number, number, number]) => {
+      out.push(...a, ...b);
+      out.push(a[0], a[1], a[2] + GUARD_HEIGHT, b[0], b[1], b[2] + GUARD_HEIGHT);
+      out.push(...a, a[0], a[1], a[2] + GUARD_HEIGHT, ...b, b[0], b[1], b[2] + GUARD_HEIGHT);
+    };
+    if (g.type === 'seg') {
+      for (const it of g.items) {
+        const s = m.segs[it.seg];
+        const L = ((s.dir + 1) % 4) as Dir;
+        const sg = it.side === 'L' ? 1 : -1;
+        const [ax, ay] = endPos(s, 'a'), [bx, by] = endPos(s, 'b');
+        const ox = DX[L] * e * sg, oy = DY[L] * e * sg;
+        edge([ax + ox, ay + oy, endZ(m, s, 'a') + 0.05], [bx + ox, by + oy, endZ(m, s, 'b') + 0.05]);
+      }
+    } else if (g.type === 'block') {
+      const n = m.nodes[g.id];
+      const T = ((g.d + 1) % 4) as Dir;
+      const cx = n.x + DX[g.d] * e, cy = n.y + DY[g.d] * e;
+      edge([cx - DX[T] * HALF, cy - DY[T] * HALF, n.z + 0.05], [cx + DX[T] * HALF, cy + DY[T] * HALF, n.z + 0.05]);
+    }
+    return out;
+  }
+
   private slopeCache: { key: string; v: { moved: number[]; ramp: number[] } | null } = { key: '', v: null };
 
   /** Alt 调高度的预览：试着把目标抬高一点，看哪些元素整体升降、哪些直道变成坡道 */
@@ -634,6 +740,7 @@ export class Editor {
     if (d) c = d.type === 'marquee' ? 'crosshair' : d.type === 'height' || d.type === 'railHeight' || d.type === 'objHeight' ? 'ns-resize' : 'grabbing';
     else if (this.gizmoHover && this.gizmo.active) c = 'grab';
     else if (this.tool === 'object') c = h?.kind === 'obj' ? 'grab' : 'copy';
+    else if (this.tool === 'guard') { const g = h ? this.guardTarget(h) : null; c = !g ? 'default' : g.type === 'invalid' ? 'not-allowed' : g.on ? 'pointer' : 'copy'; }
     else if (!h) c = 'default';
     else if (h.kind === 'obj') c = this.mods.alt ? 'ns-resize' : 'grab';
     else if (this.tool === 'cut') c = h.kind === 'seg' || h.kind === 'rail' ? 'crosshair' : 'not-allowed';
@@ -764,7 +871,7 @@ export class Editor {
   private actionFor(p: Pick): Action | null {
     const m = this.model;
     const shift = this.mods.shift;
-    if (p.kind === 'obj' || this.tool === 'object') return null;
+    if (p.kind === 'obj' || this.tool === 'object' || this.tool === 'guard') return null;
     if (p.kind === 'rail') return this.railEndAction(p);
     if (this.tool === 'rail') {
       if (p.kind !== 'seg') return null;
@@ -807,7 +914,7 @@ export class Editor {
       return this.blockGrowAction(n.id, dir);
     }
     if (n.kind === 'platform') return shift ? this.extrudePlatformAction(n.id, p) : this.platformBranchAction(n.id, p);
-    if (n.kind === 'checkpoint' && !shift) {
+    if ((n.kind === 'checkpoint' || n.kind === 'base') && !shift) {
       // 盘点只能从延伸段末端的路口长出路：取鼠标所在一侧
       const dx = p.point.x - n.x, dy = p.point.y - n.y;
       const dot = (d: Dir) => DX[d] * dx + DY[d] * dy;
@@ -1409,6 +1516,18 @@ export class Editor {
       this.drag = { type: 'obj', snapshot, id, ox: 0, oy: 0, moved: true, sx: e.clientX, sy: e.clientY };
       return;
     }
+    if (this.tool === 'guard' && p && p.kind !== 'obj' && p.kind !== 'rail') {
+      e.preventDefault();
+      this.hover = p;
+      const g = this.guardTarget(p);
+      if (!g) return;
+      if (g.type === 'invalid') { this.flashStatus(g.reason); return; }
+      this.mutate((m) => {
+        if (g.type === 'seg') for (const it of g.items) { const s = m.segs[it.seg]; if (!s) continue; const gg = (s.guard ??= {}); gg[it.side] = !g.on; if (!gg.L && !gg.R) delete s.guard; }
+        else { const n = m.nodes[g.id]; n.guardSides = ((n.guardSides ?? 0) ^ (1 << g.d)) || undefined; }
+      });
+      return;
+    }
     if (!p) {
       // 空白处按下不松：拖出选框多选（Shift 追加）；只是点一下则清空选择
       if (this.tool === 'edit' || this.tool === 'cut') {
@@ -1591,6 +1710,7 @@ export class Editor {
     const m = this.model;
     if (d.type === 'obj' || d.type === 'objHeight') {
       this.guides = [];
+      if (d.type === 'obj') { rebaseObj(m, d.id); normalize(m); }
       if (JSON.stringify(before) === JSON.stringify(m)) return;
       this.pushUndo(before);
       this.commitView(before);
@@ -1644,11 +1764,12 @@ export class Editor {
     if (k === '2') this.setTool('cut');
     if (k === '3') this.setTool('rail');
     if (k === '4') this.setTool('object');
+    if (k === '5') this.setTool('guard');
     if (k === 'r') {
       const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
       // 机关工具里没指着已放的物件：转的是待放置的朝向
       if (this.tool === 'object' && this.hover?.kind !== 'obj') { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
-      if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; });
+      if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; rebaseObj(m, id); });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
     if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
@@ -1783,23 +1904,12 @@ export class Editor {
       const other: Style = s.style === 'sink' ? 'normal' : 'sink';
       items.push({ label: `整条直路改为${other === 'sink' ? '凹槽' : '普通'}`, hint: '跨过截面接头', action: () => this.mutate((mm) => setChainStyle(mm, s.id, other)) });
       items.push(null);
-      {
-        const { lat } = this.segLocal(s, p.point);
-        const side: 'L' | 'R' = lat >= 0 ? 'L' : 'R';
-        const has = !!s.guard?.[side];
-        const both = !!s.guard?.L && !!s.guard?.R;
-        items.push({ label: has ? '去掉这一侧护栏' : '这一侧加护栏', hint: 'BarrierRail_1Edge', action: () => this.mutate((mm) => { const g = (mm.segs[s.id].guard ??= {}); g[side] = !has; }) });
-        items.push({ label: both ? '去掉两侧护栏' : '两侧都加护栏', action: () => this.mutate((mm) => { mm.segs[s.id].guard = both ? undefined : { L: true, R: true }; }) });
-        items.push(null);
-      }
       items.push(setRoot(s.id));
       items.push({ label: '删除这段路', hint: 'X / Del', action: () => this.mutate((mm) => deleteElem(mm, s.id)) });
     } else {
       const n = m.nodes[p.id];
       if (n.kind === 'block') {
         items.push(...styleItems(n.style, (mm, st) => setBlockStyle(mm, n.id, st)));
-        items.push(null);
-        items.push({ label: n.guard ? '去掉护栏' : '没接路的各边加护栏', action: () => this.mutate((mm) => { mm.nodes[n.id].guard = !n.guard || undefined; }) });
         items.push(null);
       }
       if (n.kind === 'platform') {
@@ -1835,9 +1945,16 @@ export class Editor {
     const o = m.objs[id];
     const t = objType(o.type);
     const items: (MenuItem | null)[] = [
-      { label: '旋转 90°', hint: 'R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 90) % 360; }) },
-      { label: '旋转 -90°', hint: 'Shift+R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 270) % 360; }) },
+      { label: '旋转 90°', hint: 'R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 90) % 360; rebaseObj(mm, id); }) },
+      { label: '旋转 -90°', hint: 'Shift+R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 270) % 360; rebaseObj(mm, id); }) },
     ];
+    if (hasStopper(o.type)) {
+      items.push(null);
+      items.push({
+        label: o.noStopper ? '加上挡块' : '去掉挡块', hint: 'Phys_FloorStopper',
+        action: () => this.mutate((mm) => { if (o.noStopper) delete mm.objs[id].noStopper; else mm.objs[id].noStopper = true; }),
+      });
+    }
     if (o.cat === 'module' && o.type !== 'PE_Balloon') {
       items.push(null);
       const auto = autoSector(m, o);
@@ -2107,6 +2224,7 @@ export class Editor {
     else if (this.tool === 'object') hs = [
       H(['LMB'], `放置「${objType(this.objType)?.label ?? this.objType}」`), H(['LMB'], '拖动物件'), H(['Alt', 'LMB'], '调高度'), H(['R'], '旋转'), H(['RMB'], '小节 / 删除'),
     ];
+    else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：加上 / 去掉护栏（整条直边）'), H(['LMB'], '路块空边'), H(['MMB'], '环视'), H(['Wheel'], '缩放')];
     else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
     if (this.selection.size && !d) hs.push(H(['X'], '删除选中'), H(['Esc'], '取消选择'));
     const key = JSON.stringify(hs);
@@ -2127,6 +2245,14 @@ function arrowSegs(dir: Dir, start: number, len: number): number[] {
     tx, ty, 0, tx - ox * 1.1 + px * 0.9, ty - oy * 1.1 + py * 0.9, 0,
     tx, ty, 0, tx - ox * 1.1 - px * 0.9, ty - oy * 1.1 - py * 0.9, 0,
   ];
+}
+
+/** 需要专属路面的机关：拆掉原来的底座，在当前位置重新铺（位置不在路上时就不铺） */
+function rebaseObj(m: Model, id: number) {
+  const o = m.objs[id];
+  if (!o || !baseOf(o.type)) return;
+  if (o.base !== undefined) revertBase(m, o.base);
+  placeBase(m, id);
 }
 
 /** 直道顶面的外框（随坡度） */

@@ -92,6 +92,23 @@ def main():
                             @ mathutils.Matrix.Rotation(math.radians(rot_z), 4, 'Z')
                             @ mathutils.Matrix.Rotation(math.radians(pitch or 0.0), 4, 'Y'))
 
+    # 挡块材质：原版的木头贴图
+    _stopper = []
+    def stopper_material():
+        if _stopper: return _stopper[0]
+        PROP_virtools_material = sub('PROP_virtools_material')
+        PROP_virtools_texture = sub('PROP_virtools_texture')
+        UTIL_ballance_texture = sub('UTIL_ballance_texture')
+        mtl = bpy.data.materials.new('Floor_Stopper_Wood')
+        raw = PROP_virtools_material.RawVirtoolsMaterial()
+        tex = UTIL_ballance_texture.load_ballance_texture('E_Holzbeschlag.bmp')
+        PROP_virtools_texture.set_raw_virtools_texture(tex, PROP_virtools_texture.get_ballance_texture_preset('E_Holzbeschlag.bmp'))
+        raw.mTexture = tex
+        PROP_virtools_material.set_raw_virtools_material(mtl, raw)
+        PROP_virtools_material.apply_to_blender_material(mtl)
+        _stopper.append(mtl)
+        return mtl
+
     # ---------- 路面与钢轨 ----------
     rail_meshes = []
     with PROP_bme_material.BMEMaterialsHelper(scene) as mtls:
@@ -100,7 +117,7 @@ def main():
             bm = bmesh.new()
             uv_layer = bm.loops.layers.uv.new()
             for mi, part in enumerate(m['parts']):
-                mesh.materials.append(mtls.get_material(part['mat']))
+                mesh.materials.append(stopper_material() if part['mat'] == 'Stopper' else mtls.get_material(part['mat']))
                 pos, uv = part['pos'], part.get('uv')
                 for t in range(0, len(pos), 9):
                     vs = [bm.verts.new(pos[t + k * 3:t + k * 3 + 3]) for k in range(3)]
@@ -119,7 +136,7 @@ def main():
             bm.free()
             obj = bpy.data.objects.new(m['name'], mesh)
             coll.objects.link(obj)
-            set_info(obj, Info.create_from_others(ObjType.FLOOR if m['kind'] == 'floor' else ObjType.RAIL))
+            set_info(obj, Info.create_from_others({'floor': ObjType.FLOOR, 'rail': ObjType.RAIL, 'stopper': ObjType.STOPPER}[m['kind']]))
             obj.name = m['name']
             if m['kind'] == 'rail':
                 rail_meshes.append(mesh)

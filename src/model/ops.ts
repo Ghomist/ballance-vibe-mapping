@@ -6,6 +6,7 @@ import {
 import { cellSet, insetKind, linkOpening, makeInset, mergePlatforms, openingFits, repairPlatforms, revertInset } from './platform';
 import { railEnd } from './rail';
 import { renumberSectors } from './checkpoint';
+import { repairBases } from './bases';
 
 const EPS = 1e-6;
 
@@ -95,7 +96,7 @@ export function insertBlockAt(m: Model, segId: number, c: number): number | null
 export function addSegAtPort(m: Model, nodeId: number, d: Dir, len = 1.25): number | null {
   const n = m.nodes[nodeId];
   if (nodePorts(m, nodeId)[d]) return null;
-  if (n.kind !== 'block' && n.kind !== 'checkpoint') return null;
+  if (n.kind !== 'block' && n.kind !== 'checkpoint' && n.kind !== 'base') return null;
   if (!nodePortDirs(n).includes(d)) return null;
   const h = nodeHalf(n);
   const s = addSeg(m, {
@@ -407,7 +408,7 @@ export function findConnection(m: Model, segId: number, k: EndKey, adjust: boole
     }
   }
   for (const n of Object.values(m.nodes)) {
-    if ((n.kind !== 'block' && n.kind !== 'checkpoint') || !zok(n.z)) continue;
+    if ((n.kind !== 'block' && n.kind !== 'checkpoint' && n.kind !== 'base') || !zok(n.z)) continue;
     const d = opp(out);
     if (!nodePortDirs(n).includes(d)) continue;
     const h = nodeHalf(n);
@@ -564,7 +565,7 @@ export function fixStyles(m: Model): boolean {
       insertTransition(m, m.segs[carve.seg], carve.key, { seg: m.segs[keep.seg], key: keep.key });
       return true;
     }
-    if (n.kind === 'block' || n.kind === 'checkpoint') {
+    if (n.kind === 'block' || n.kind === 'checkpoint' || n.kind === 'base') {
       for (let d = 0 as Dir; d < 4; d = (d + 1) as Dir) {
         const p = ports[d];
         if (!p) continue;
@@ -669,6 +670,7 @@ function normalizeOnce(m: Model): boolean {
       return true;
     }
   }
+  if (repairBases(m)) return true;
   if (repairPlatforms(m)) return true;
   if (mergePlatforms(m)) return true;
   if (joinOpenEnds(m)) return true;

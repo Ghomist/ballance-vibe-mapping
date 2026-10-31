@@ -16,7 +16,9 @@ export const axisOf = (d: Dir): 0 | 1 => (d % 2) as 0 | 1;
 
 export type Style = 'normal' | 'sink';
 export type EndStyle = 'open' | 'closed';
-export type NodeKind = 'block' | 'joint' | 'transition' | 'platform' | 'checkpoint';
+export type NodeKind = 'block' | 'joint' | 'transition' | 'platform' | 'checkpoint' | 'base';
+/** 机关专属路面：变球器底座、风扇底座、栅栏路面 */
+export type BaseKind = 'trafo' | 'fan' | 'fence';
 /** 盘点路面：起点（四火）或小节盘点（两火） */
 export type Prefab = 'start' | 'check';
 
@@ -55,8 +57,14 @@ export interface MNode {
    * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
-  /** block：没接路的各边加护栏 */
-  guard?: boolean;
+  /** block：哪几边加护栏（按方向的位掩码，只对没接路的边有效） */
+  guardSides?: number;
+  /** base：专属路面的种类 */
+  baseKind?: BaseKind;
+  /** base（变球器）：材质 */
+  baseMat?: 'Paper' | 'Stone' | 'Wood';
+  /** base：属于哪个机关 */
+  obj?: number;
   /** 仅用于显示过渡：平台整体平移时，按目标形状绘制再偏移这么多（不会存进模型） */
   dispOff?: [number, number, number];
   /** checkpoint：起点 / 小节盘点 */
@@ -102,11 +110,13 @@ export interface PortRef { seg: number; key: EndKey }
 
 export const isFree = (e: End): e is FreeEnd => e.node === null;
 export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : n.kind === 'checkpoint' ? PREFAB_PORT[n.prefab!]
+  : n.kind === 'base' && n.baseKind === 'fence' ? BLOCK
   : n.kind === 'transition' && n.narrow ? HALF / 2 : HALF);
 
 /** 节点可以接路的方向（路块四个方向都行；盘点路面只有延伸段那一侧 / 两侧） */
 export function nodePortDirs(n: MNode): Dir[] {
   if (n.kind === 'checkpoint') return n.prefab === 'start' ? [n.rot!] : [n.rot!, opp(n.rot!)];
+  if (n.kind === 'base' && n.baseKind === 'fence') return [n.rot!, opp(n.rot!)];
   return [0, 1, 2, 3];
 }
 
@@ -124,6 +134,10 @@ export const cloneModel = (m: Model): Model => JSON.parse(JSON.stringify(m));
 /** 兼容旧版本存档 */
 export function migrateModel(m: Model): Model {
   m.rails ??= {};
+  for (const n of Object.values(m.nodes ?? {})) {
+    const g = (n as { guard?: boolean }).guard;
+    if (g) { n.guardSides = 15; delete (n as { guard?: boolean }).guard; }
+  }
   m.objs ??= {};
   return m;
 }

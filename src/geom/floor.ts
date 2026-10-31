@@ -432,7 +432,7 @@ export function buildElem(m: Model, id: number, chains: Chains): ElemMesh | null
     return { id, kind: 'seg', parts: mb.parts };
   }
   const n = m.nodes[id];
-  if (!n || n.kind === 'joint' || n.kind === 'checkpoint') return null;
+  if (!n || n.kind === 'joint' || n.kind === 'checkpoint' || n.kind === 'base') return null;
   if (n.kind === 'block') buildBlock(mb, m, n);
   else if (n.kind === 'platform') buildPlatform(mb, m, n);
   else buildTransition(mb, m, n);
