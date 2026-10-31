@@ -184,7 +184,7 @@ export function extrudePlatform(m: Model, pid: number, run: EdgeRun, w: number) 
   const strip = isX ? rectCells(a0, run.from, a1, run.to) : rectCells(run.from, a0, run.to, a1);
   if (w > 0) for (const k of strip) cells.add(k);
   else for (const k of strip) cells.delete(k);
-  if (cells.size === 0) return;
+  // 推空、推断都允许：规范化时会删掉空平台、把断开的部分拆成独立平台
   n.cells = [...cells];
   updatePlatformCenter(n);
   for (const l of nodeLinks(m, pid)) {
@@ -324,3 +324,90 @@ export function platformHas(n: MNode, x: number, y: number) {
   return cellSet(n).has(cellKey(Math.floor(x / CELL + EPS), Math.floor(y / CELL + EPS)));
 }
 
+
+// ---------------- 平台整理：拆分 / 删除 / 校验开口 ----------------
+
+/** 4 邻接的连通块，按大小从大到小 */
+function cellComponents(cells: Set<string>): string[][] {
+  const seen = new Set<string>();
+  const comps: string[][] = [];
+  for (const k of cells) {
+    if (seen.has(k)) continue;
+    const comp: string[] = [];
+    const q = [k];
+    seen.add(k);
+    while (q.length) {
+      const c = q.pop()!;
+      comp.push(c);
+      const [i, j] = parseCell(c);
+      for (const nb of [cellKey(i + 1, j), cellKey(i - 1, j), cellKey(i, j + 1), cellKey(i, j - 1)]) {
+        if (cells.has(nb) && !seen.has(nb)) { seen.add(nb); q.push(nb); }
+      }
+    }
+    comps.push(comp);
+  }
+  return comps.sort((a, b) => b.length - a.length);
+}
+
+const cellAt = (x: number, y: number) => cellKey(Math.floor(x / CELL + EPS), Math.floor(y / CELL + EPS));
+
+/** 平台上的连接：嵌入的衔接块（零长度直道接着 inPlatform 指向本平台的转换块），或普通路口 */
+function linkInfo(m: Model, pid: number, l: { seg: number; key: EndKey }) {
+  const s = m.segs[l.seg];
+  const other = s[l.key === 'a' ? 'b' : 'a'];
+  const tr = !isFree(other) && s.len <= EPS ? m.nodes[other.node] : undefined;
+  if (tr && tr.inPlatform === pid) return { inset: tr, cell: cellAt(tr.x, tr.y) };
+  const o = linkOpening(s, l.key);
+  return { inset: undefined, cell: cellAt(o.x - DX[o.out] * CELL / 2, o.y - DY[o.out] * CELL / 2), o };
+}
+
+/**
+ * 任何改动之后都保证平台是“干净”的（规范化时调用）：
+ *   - 一个格都不剩的平台删掉，接在上面的路变成封闭端点；
+ *   - 断成几块的平台拆成几个独立平台，路口和嵌入的衔接块归到各自所在的那块；
+ *   - 开口已经放不下（边被推走、格被删掉）的路断开成封闭端点，嵌入的衔接块撤掉。
+ */
+export function repairPlatforms(m: Model): boolean {
+  for (const n of Object.values(m.nodes)) {
+    if (n.kind !== 'platform') continue;
+    const cells = cellSet(n);
+    if (cells.size === 0) {
+      for (const t of Object.values(m.nodes)) if (t.inPlatform === n.id) revertInset(m, t.id);
+      for (const l of nodeLinks(m, n.id)) m.segs[l.seg][l.key] = { node: null, z: n.z, style: 'closed' };
+      delete m.nodes[n.id];
+      if (m.root === n.id) m.root = null;
+      return true;
+    }
+    const comps = cellComponents(cells);
+    if (comps.length > 1) {
+      n.cells = comps[0];
+      updatePlatformCenter(n);
+      for (const comp of comps.slice(1)) {
+        const p = newPlatform(m, n.z, n.style, comp);
+        if (n.ribbon) p.ribbon = true;
+        const own = new Set(comp);
+        for (const l of nodeLinks(m, n.id)) {
+          const info = linkInfo(m, n.id, l);
+          if (!own.has(info.cell)) continue;
+          m.segs[l.seg][l.key] = { node: p.id };
+          if (info.inset) info.inset.inPlatform = p.id;
+        }
+      }
+      return true;
+    }
+    for (const l of nodeLinks(m, n.id)) {
+      const info = linkInfo(m, n.id, l);
+      if (info.inset) {
+        const i = platformInsets(m, n.id).find((x) => x.tr.id === info.inset!.id);
+        if (i && !insetCells(i).every((c) => cells.has(c))) { revertInset(m, info.inset.id); return true; }
+        continue;
+      }
+      const o = info.o!;
+      if (!openingFits(cells, o.x, o.y, o.out)) {
+        m.segs[l.seg][l.key] = { node: null, z: n.z, style: 'closed' };
+        return true;
+      }
+    }
+  }
+  return false;
+}

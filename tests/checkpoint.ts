@@ -131,3 +131,63 @@ export function objectScenarios(emptyModel: () => Model, check: Check, scenario:
     check(Math.abs(m.objs[id].z - 7.5) < 1e-9, `路面抬高 5 后箱子应在 7.5，实际 ${m.objs[id].z}`);
   });
 }
+
+import { addSegAtPlatform, blockToPlatform, extrudePlatform, edgeRunAt } from '../src/model/platform';
+
+export function platformRepairScenarios(emptyModel: () => Model, check: Check, scenario: Scenario, validate: (m: Model, l: string) => void) {
+  const platforms = (m: Model) => Object.values(m.nodes).filter((n) => n.kind === 'platform');
+
+  scenario('平台推断：拆成两个独立平台，路口归到各自那块', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 20)!; // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 2.5]
+    const right = addSegAtPlatform(m, p, 17.5, -2.5, 3)!;
+    extendTo(m, right, 'b', -15);
+    const left = addSegAtPlatform(m, p, 0, -2.5, 3)!;
+    extendTo(m, left, 'b', -15);
+    normalize(m);
+    // 中间挖掉一列（x ∈ [5, 10]）
+    extrudePlatform(m, p, { out: 3, line: -2.5, from: 5, to: 10 }, -5);
+    normalize(m);
+    validate(m, 'split');
+    const ps = platforms(m);
+    check(ps.length === 2, `应拆成 2 个平台，实际 ${ps.length}`);
+    const nl = m.segs[left].a.node, nr = m.segs[right].a.node;
+    check(nl !== null && nr !== null && nl !== nr, '两条路应分别接在两个平台上');
+    check(ps.every((n) => m.nodes[n.id] && (n.cells?.length ?? 0) > 0), '拆出的平台都不为空');
+  });
+
+  scenario('平台推空：删除平台，接着的路变成封闭端点', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 10)!;
+    const s = addSegAtPlatform(m, p, 2.5, 2.5, 1)!;
+    extendTo(m, s, 'b', 20);
+    normalize(m);
+    const run = edgeRunAt(m.nodes[p], 2.5, 2.5)!; // 上边
+    extrudePlatform(m, p, run, -5);
+    normalize(m);
+    validate(m, 'empty');
+    check(platforms(m).length === 0, '平台应被删除');
+    const e = m.segs[s]?.a;
+    check(!!e && e.node === null && (e as { style: string }).style === 'closed', '路的这一端应变成封闭端点');
+  });
+
+  scenario('两个平台连成一个后再推回去：重新分开', () => {
+    const m = emptyModel();
+    const a = blockToPlatform(m, 1, 0, 10)!; // x ∈ [-2.5, 12.5]，y ∈ [-2.5, 2.5]
+    const bid = m.nextId++;
+    m.nodes[bid] = { id: bid, kind: 'platform', x: 0, y: 0, z: 0, style: 'normal', cells: [] };
+    extrudePlatform(m, bid, { out: 1, line: 10, from: -2.5, to: 12.5 }, 0); // 占位
+    m.nodes[bid].cells = [];
+    for (let i = -2; i < 10; i++) for (let j = 8; j < 12; j++) m.nodes[bid].cells!.push(`${i},${j}`); // y ∈ [10, 15]
+    const top = edgeRunAt(m.nodes[a], 5, 2.5)!;
+    extrudePlatform(m, a, top, 7.5); // 顶边拉到 y=10，与 B 相接
+    normalize(m);
+    check(platforms(m).length === 1, '相接后应合并成一个');
+    const merged = platforms(m)[0];
+    // 把连接部分（y ∈ [2.5, 10]）从下往上推掉一部分：从左侧边挖空
+    extrudePlatform(m, merged.id, { out: 2, line: -2.5, from: 2.5, to: 10 }, -15);
+    normalize(m);
+    validate(m, 'remerge-split');
+    check(platforms(m).length === 2, `挖掉连接部分后应重新分成 2 个，实际 ${platforms(m).length}`);
+  });
+}

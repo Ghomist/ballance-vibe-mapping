@@ -1,7 +1,7 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
 import { buildFloorMeshes } from '../src/geom/floor';
-import { checkpointScenarios, objectScenarios } from './checkpoint';
+import { checkpointScenarios, objectScenarios, platformRepairScenarios } from './checkpoint';
 import {
   addSegAtPort, component, moveIds, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
   setChainStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
@@ -32,7 +32,7 @@ function validate(m: Model, label: string) {
       if (isFree(e)) continue;
       const n = m.nodes[e.node];
       check(!!n, `${label}: seg ${s.id}.${k} 指向不存在的节点 ${e.node}`);
-      if (!n) continue;
+      if (!n || n.kind === 'platform') continue; // 平台的路口可以在边上任意位置
       const d = k === 'a' ? s.dir : opp(s.dir);
       const h = nodeHalf(n);
       const [x, y] = endPos(s, k);
@@ -263,6 +263,7 @@ pieceScenarios(emptyModel, check, scenario);
 flushOpeningScenario(emptyModel, check, scenario);
 checkpointScenarios(emptyModel, check, scenario, validate);
 objectScenarios(emptyModel, check, scenario);
+platformRepairScenarios(emptyModel, check, scenario, validate);
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
 console.log('\n全部通过');

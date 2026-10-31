@@ -3,7 +3,7 @@ import {
   BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
   axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './types';
-import { cellSet, insetKind, makeInset, mergePlatforms, openingFits, revertInset } from './platform';
+import { cellSet, insetKind, makeInset, mergePlatforms, openingFits, repairPlatforms, revertInset } from './platform';
 import { railEnd } from './rail';
 import { renumberSectors } from './checkpoint';
 
@@ -669,6 +669,7 @@ function normalizeOnce(m: Model): boolean {
       return true;
     }
   }
+  if (repairPlatforms(m)) return true;
   if (mergePlatforms(m)) return true;
   if (joinOpenEnds(m)) return true;
   for (const n of Object.values(m.nodes)) {

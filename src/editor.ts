@@ -818,10 +818,10 @@ export class Editor {
       apply: (mm, coord) => {
         const w = (this.snapEdge(coord, axisOf(run.out), [ex, ey, n.z]) - run.line) * sign;
         if (Math.abs(w) < 1e-6) return null;
-        // 往里推不能把平台推没
+        // 往里推最多推过整个平台（推空即删除，推断则拆成几块）
         const b = platformBBox(mm.nodes[pid]);
         const span = isX ? b.x1 - b.x0 : b.y1 - b.y0;
-        extrudePlatform(mm, pid, run, Math.max(w, -span + 1.25));
+        extrudePlatform(mm, pid, run, Math.max(w, -span));
         return null;
       },
     };
