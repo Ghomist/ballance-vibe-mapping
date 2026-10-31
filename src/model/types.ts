@@ -44,6 +44,8 @@ export interface MNode {
   narrow?: boolean;
   /** transition：嵌在哪个平台的边框带里（平台与样式不同的路面衔接处） */
   inPlatform?: number;
+  /** transition：凹槽一侧的两个角也下沉 0.7（整条边贴住凹槽平台下沉的内部） */
+  deep?: boolean;
 }
 
 export interface AttachedEnd { node: number }

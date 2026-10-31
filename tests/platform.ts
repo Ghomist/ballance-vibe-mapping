@@ -211,3 +211,22 @@ export function visualJoinScenarios(emptyModel: () => Model, check: (c: boolean,
     check(!m2.nodes[1] && Math.abs(m2.segs[id].len - 15) < 1e-9, '开放端点正对路块空端口应接上（1×1 并入成为封闭端头）');
   });
 }
+
+export function deepTransitionScenario(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
+  scenario('凹槽平台接普通路：转换块凹槽一侧整条边下沉 0.7', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 15)!;
+    m.nodes[p].style = 'sink';
+    const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
+    extendTo(m, s, 'b', -20);
+    m.segs[s].style = 'normal';
+    normalize(m);
+    const tr = Object.values(m.nodes).find((n) => n.kind === 'transition')!;
+    check(!!tr && !!tr.deep && tr.inPlatform === p, '应插入下沉角的窄转换');
+    // 转换块顶面在平台内侧那条边（y=0）上的顶点都应在 -0.7
+    const part = buildFloorMeshes(m).find((e) => e.id === tr.id)!.parts.FloorTopProfilFlat!;
+    const inner: number[] = [];
+    for (let i = 0; i < part.pos.length; i += 3) if (Math.abs(part.pos[i + 1] - 0) < 1e-6) inner.push(part.pos[i + 2]);
+    check(inner.length > 0 && inner.every((z) => Math.abs(z + 0.7) < 1e-6), `内侧边应全部在 -0.7，实际 ${inner}`);
+  });
+}

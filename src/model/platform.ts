@@ -254,6 +254,8 @@ export function makeInset(m: Model, pid: number, segId: number, key: EndKey): bo
     id, kind: 'transition', narrow: true, inPlatform: pid, style: 'sink', z: p.z, axis: axisOf(o.out),
     x: o.x + DX[inward] * HALF / 2, y: o.y + DY[inward] * HALF / 2,
     sinkDir: s.style === 'sink' ? o.out : inward,
+    // 凹槽平台接普通路：转换块凹槽一侧朝平台内部，两个角也下沉，与平台内部齐平
+    deep: s.style !== 'sink',
   };
   s[key] = { node: id };
   const lid = m.nextId++;

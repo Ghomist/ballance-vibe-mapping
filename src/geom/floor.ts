@@ -208,13 +208,15 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
   const sx = n.narrow ? 0.5 : 1;
   const L = (lx: number, ly: number, lz: number): V3 =>
     [n.x + a[0] * (lx - HALF) * sx + p[0] * (ly - HALF), n.y + a[1] * (lx - HALF) * sx + p[1] * (ly - HALF), n.z + lz];
-  const v0 = L(0, 0, 0), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, 0);
+  // deep：凹槽一侧的两个角也下沉 0.7
+  const cz = n.deep ? -SINK_DEPTH : 0;
+  const v0 = L(0, 0, cz), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, cz);
   mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
   mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
   mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
   // 两条侧边
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
-    const A = L(0, ly, 0), B = L(5, ly, 0);
+    const A = L(0, ly, cz), B = L(5, ly, 0);
     const out: V3 = [p[0] * sg, p[1] * sg, 0];
     const Ab: V3 = [A[0], A[1], A[2] - THICK], Bb: V3 = [B[0], B[1], B[2] - THICK];
     mb.quad('FloorSide', [A, B, Bb, Ab], [[0, 0], [0, sx], [1, sx], [1, 0]], out);
