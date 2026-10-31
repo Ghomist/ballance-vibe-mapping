@@ -1,8 +1,8 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
 import { buildFloorMeshes } from '../src/geom/floor';
 import {
-  addSegAtPort, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
-  setChainStyle, shiftDownstream, toggleEnd, tryConnect,
+  addSegAtPort, component, moveIds, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
+  setChainStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
 } from '../src/model/ops';
 import {
   DX, DY, HALF, Model, emptyModel, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount,
@@ -193,6 +193,49 @@ scenario('从路块侧面长出新路', () => {
   validate(m, 'x-crossing');
   check(portCount(nodePorts(m, blk.id)) === 4, '应变成十字路口');
   void HALF;
+});
+
+scenario('斜坡上不能开分叉 / 拐弯', () => {
+  const m = emptyModel();
+  const s = blockToSeg(m, 1, 0);
+  extendTo(m, s, 'b', 22.5);
+  shiftFreeEnd(m, s, 'b', 2.5);
+  check(makeBranch(m, s, 10, 1) === null, '斜坡上开分叉应被拒绝');
+  check(makeCorner(m, s, 'b', 1) === null, '斜坡末端拐弯应被拒绝');
+  check(Object.keys(m.nodes).length === 0, '不应生成路块');
+});
+
+scenario('零长度连接是刚性的：抬升时不出断崖', () => {
+  const m = emptyModel();
+  const s = blockToSeg(m, 1, 0);
+  extendTo(m, s, 'b', 47.5);
+  insertJoint(m, s, 25);
+  const b = Object.values(m.segs).find((x) => x.id !== s)!;
+  b.style = 'sink';
+  normalize(m);
+  const tr = Object.values(m.nodes).find((n) => n.kind === 'transition')!;
+  shiftDownstream(m, tr.id, 2.5);
+  normalize(m);
+  validate(m, 'rigid');
+  check(tr.z === 2.5, '转换块应升高');
+});
+
+scenario('拖动端点到另一端点：高度不同时本段变坡道并连接', () => {
+  const m = emptyModel();
+  const s = blockToSeg(m, 1, 0);
+  extendTo(m, s, 'b', 47.5);
+  cutSeg(m, s, 25);
+  const other = Object.values(m.segs).find((x) => x.id !== s)!;
+  // 把后半段整体平移开、抬高，再拉回来连接
+  const ids = component(m, other.id);
+  moveIds(m, ids, 10, 0);
+  shiftFreeEnd(m, other.id, 'a', 2.5);
+  shiftFreeEnd(m, other.id, 'b', 2.5);
+  extendTo(m, s, 'b', 32.5);
+  check(tryConnect(m, s, 'b', true), '应能连接');
+  normalize(m);
+  validate(m, 'connect-adjust');
+  check(endZ(m, m.segs[s], 'b') === 2.5, '本段末端应被拉到目标高度');
 });
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }

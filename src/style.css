@@ -11,3 +11,12 @@ button.active { background: #4a6fb0; border-color: #6a8fd0; }
 #viewport { position: relative; overflow: hidden; min-height: 0; }
 #viewport canvas { display: block; }
 #status { padding: 4px 10px; background: #252c3b; border-top: 1px solid #333c50; color: #aab4c6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ctx-menu { position: absolute; z-index: 10; min-width: 200px; padding: 4px; background: rgba(37, 44, 59, 0.97); border: 1px solid #3f4a62; border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity 0.12s ease, transform 0.12s ease; }
+.ctx-menu.open { opacity: 1; transform: none; pointer-events: auto; }
+.ctx-menu button { display: flex; width: 100%; justify-content: space-between; gap: 16px; background: none; border: none; border-radius: 4px; padding: 5px 10px; text-align: left; transition: background 0.1s; }
+.ctx-menu button:hover:not(:disabled) { background: #3a4560; }
+.ctx-menu button:disabled { color: #6b7488; cursor: default; }
+.ctx-menu small { color: #8892a6; }
+.ctx-menu .sep { height: 1px; margin: 4px 6px; background: #3a4458; }
+button, select { transition: background 0.12s, border-color 0.12s; }

@@ -227,20 +227,33 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
 
 // ---------------- 汇总 ----------------
 
+export type Chains = Map<number, ChainInfo>;
+
+/** 元素几何的缓存键：只要键不变，网格就不需要重建 */
+export function elemKey(m: Model, id: number, chains: Chains): string {
+  const s = m.segs[id];
+  if (s) return JSON.stringify([s, endZ(m, s, 'a'), endZ(m, s, 'b'), chains.get(id)]);
+  const n = m.nodes[id];
+  if (!n) return '';
+  return JSON.stringify([n, nodePorts(m, id).map((p) => !!p)]);
+}
+
+export function buildElem(m: Model, id: number, chains: Chains): ElemMesh | null {
+  const mb = new MeshBuilder();
+  const s = m.segs[id];
+  if (s) {
+    buildSeg(mb, m, s, chains.get(id) ?? { off: 0, rev: false });
+    return { id, kind: 'seg', parts: mb.parts };
+  }
+  const n = m.nodes[id];
+  if (!n || n.kind === 'joint') return null;
+  if (n.kind === 'block') buildBlock(mb, m, n);
+  else buildTransition(mb, m, n);
+  return { id, kind: 'node', parts: mb.parts };
+}
+
 export function buildFloorMeshes(m: Model): ElemMesh[] {
   const chains = computeChains(m);
-  const out: ElemMesh[] = [];
-  for (const s of Object.values(m.segs)) {
-    const mb = new MeshBuilder();
-    buildSeg(mb, m, s, chains.get(s.id) ?? { off: 0, rev: false });
-    out.push({ id: s.id, kind: 'seg', parts: mb.parts });
-  }
-  for (const n of Object.values(m.nodes)) {
-    if (n.kind === 'joint') continue;
-    const mb = new MeshBuilder();
-    if (n.kind === 'block') buildBlock(mb, m, n);
-    else buildTransition(mb, m, n);
-    out.push({ id: n.id, kind: 'node', parts: mb.parts });
-  }
-  return out;
+  const ids = [...Object.keys(m.segs), ...Object.keys(m.nodes)].map(Number);
+  return ids.map((id) => buildElem(m, id, chains)).filter((e): e is ElemMesh => !!e);
 }

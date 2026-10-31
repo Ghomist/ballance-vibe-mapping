@@ -132,7 +132,7 @@ export function extendTo(m: Model, segId: number, k: EndKey, coord: number) {
 /** 拐角：把自由端最后 5 个单位变成路块，并从侧面 d 长出新直道。 */
 export function makeCorner(m: Model, segId: number, k: EndKey, d: Dir): number | null {
   const s = m.segs[segId];
-  if (!isFree(s[k]) || s.len < BLOCK - EPS) return null;
+  if (!isFree(s[k]) || s.len < BLOCK - EPS || isSloped(m, s)) return null;
   const blk = insertBlockAt(m, segId, k === 'b' ? s.len - HALF : HALF);
   if (blk === null) return null;
   return addSegAtPort(m, blk, d);
@@ -140,6 +140,7 @@ export function makeCorner(m: Model, segId: number, k: EndKey, d: Dir): number |
 
 /** 路口：在直道 c 处挖出路块，并从侧面 d 长出新直道。 */
 export function makeBranch(m: Model, segId: number, c: number, d: Dir): number | null {
+  if (isSloped(m, m.segs[segId])) return null;
   const blk = insertBlockAt(m, segId, c);
   if (blk === null) return null;
   return addSegAtPort(m, blk, d);
@@ -155,7 +156,7 @@ function neighbors(m: Model, id: number): number[] {
   return nodePorts(m, id).filter((p) => p).map((p) => p!.seg);
 }
 
-function component(m: Model, start: number): Set<number> {
+export function component(m: Model, start: number): Set<number> {
   const seen = new Set([start]);
   const q = [start];
   while (q.length) {
@@ -179,14 +180,27 @@ export function shiftDownstream(m: Model, target: number, dz: number) {
       const cur = q.shift()!;
       for (const nb of neighbors(m, cur)) if (!seen.has(nb)) { seen.add(nb); parent.set(nb, cur); q.push(nb); }
     }
-    const blocked = parent.get(target);
-    sub = new Set([target]);
-    const q2 = [target];
+    // 零长度直道是刚性连接（例如路块紧挨着转换块），不能在那里形成断崖：沿刚性连接往上找真正的分界
+    let tgt = target;
+    for (;;) {
+      const p = parent.get(tgt);
+      if (p === undefined || !m.segs[p] || m.segs[p].len > EPS) break;
+      const pp = parent.get(p);
+      if (pp === undefined) break;
+      tgt = pp;
+    }
+    if (tgt === root) {
+      sub = comp;
+    } else {
+    const blocked = parent.get(tgt);
+    sub = new Set([tgt]);
+    const q2 = [tgt];
     while (q2.length) {
       for (const nb of neighbors(m, q2.shift()!)) {
         if (nb === blocked || sub.has(nb)) continue;
         sub.add(nb); q2.push(nb);
       }
+    }
     }
   }
   for (const id of sub) {
@@ -273,49 +287,90 @@ function mergeAtJoint(m: Model, jid: number) {
 
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
 
-/** 拖拽结束后：自由端如果正好落在别的开口上（高度一致），就把两边连起来。 */
-export function tryConnect(m: Model, segId: number, k: EndKey) {
+export type Connection =
+  | { type: 'end'; seg: number; key: EndKey; z: number }
+  | { type: 'port'; node: number; z: number }
+  | { type: 'side'; seg: number; t: number; z: number };
+
+/**
+ * 查找自由端可以连接的目标：对面的自由端、路块空端口，或另一条直道的侧面（开 T 字口）。
+ * adjust=true 时忽略高度差（连接时会把本端拉到目标高度，本段变成坡道）。
+ */
+export function findConnection(m: Model, segId: number, k: EndKey, adjust: boolean): Connection | null {
   const s = m.segs[segId];
-  if (!s || !isFree(s[k])) return;
+  if (!s || !isFree(s[k])) return null;
   const [px, py] = endPos(s, k);
   const pz = endZ(m, s, k);
   const out = endOutDir(s, k);
+  const zok = (z: number) => adjust || near(z, pz);
 
-  // 1. 对面的自由端
   for (const o of Object.values(m.segs)) {
     if (o.id === s.id) continue;
     for (const ok of ['a', 'b'] as EndKey[]) {
       if (!isFree(o[ok]) || endOutDir(o, ok) !== opp(out)) continue;
       const [ox, oy] = endPos(o, ok);
-      if (!near(ox, px) || !near(oy, py) || !near(endZ(m, o, ok), pz)) continue;
-      const j = addNode(m, { kind: 'joint', x: px, y: py, z: pz, style: s.style, axis: axisOf(s.dir) });
-      s[k] = { node: j.id };
-      o[ok] = { node: j.id };
-      return;
+      const oz = endZ(m, o, ok);
+      if (near(ox, px) && near(oy, py) && zok(oz)) return { type: 'end', seg: o.id, key: ok, z: oz };
     }
   }
-  // 2. 路块的空端口
   for (const n of Object.values(m.nodes)) {
-    if (n.kind !== 'block' || !near(n.z, pz)) continue;
+    if (n.kind !== 'block' || !zok(n.z)) continue;
     const d = opp(out);
     if (!near(n.x + DX[d] * HALF, px) || !near(n.y + DY[d] * HALF, py)) continue;
     if (nodePorts(m, n.id)[d]) continue;
-    s[k] = { node: n.id };
-    return;
+    return { type: 'port', node: n.id, z: n.z };
   }
-  // 3. 撞到另一条直道的侧面：在那里开 T 字路口
   const cx = px + DX[out] * HALF;
   const cy = py + DY[out] * HALF;
   for (const o of Object.values(m.segs)) {
-    if (o.id === s.id || axisOf(o.dir) === axisOf(out)) continue;
+    if (o.id === s.id || axisOf(o.dir) === axisOf(out) || isSloped(m, o)) continue;
     const t = (cx - o.x) * DX[o.dir] + (cy - o.y) * DY[o.dir];
     const lat = (cx - o.x) * -DY[o.dir] + (cy - o.y) * DX[o.dir];
     if (!near(lat, 0) || t < HALF - 1e-3 || t > o.len - HALF + 1e-3) continue;
-    if (!near(zAt(m, o, t), pz)) continue;
-    const blk = insertBlockAt(m, o.id, t);
-    if (blk === null) continue;
-    m.segs[segId][k] = { node: blk };
-    return;
+    const oz = zAt(m, o, t);
+    if (!zok(oz)) continue;
+    return { type: 'side', seg: o.id, t, z: oz };
+  }
+  return null;
+}
+
+export function applyConnection(m: Model, segId: number, k: EndKey, c: Connection) {
+  const s = m.segs[segId];
+  const e = s[k];
+  if (!isFree(e)) return;
+  e.z = c.z;
+  const [px, py] = endPos(s, k);
+  if (c.type === 'end') {
+    const j = addNode(m, { kind: 'joint', x: px, y: py, z: c.z, style: s.style, axis: axisOf(s.dir) });
+    s[k] = { node: j.id };
+    m.segs[c.seg][c.key] = { node: j.id };
+  } else if (c.type === 'port') {
+    s[k] = { node: c.node };
+  } else {
+    const blk = insertBlockAt(m, c.seg, c.t);
+    if (blk !== null) m.segs[segId][k] = { node: blk };
+  }
+}
+
+/** 拖拽结束后：自由端如果正好落在别的开口上，就连起来 */
+export function tryConnect(m: Model, segId: number, k: EndKey, adjust = false): boolean {
+  const c = findConnection(m, segId, k, adjust);
+  if (!c) return false;
+  applyConnection(m, segId, k, c);
+  return true;
+}
+
+export function isSloped(m: Model, s: Seg) {
+  return Math.abs(endZ(m, s, 'a') - endZ(m, s, 'b')) > 1e-6;
+}
+
+/** 平移整个连通块 */
+export function moveIds(m: Model, ids: Iterable<number>, dx: number, dy: number) {
+  for (const id of ids) {
+    const n = m.nodes[id];
+    if (n) { n.x += dx; n.y += dy; }
+    const s = m.segs[id];
+    if (s) { s.x += dx; s.y += dy; }
   }
 }
 
