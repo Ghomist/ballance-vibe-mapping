@@ -17,7 +17,7 @@ import { exportScene } from './export/scene';
 import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
-  DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
+  CELL, DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
   axisOf, cloneModel, emptyModel, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './model/types';
 import {
@@ -550,8 +550,13 @@ export class Editor {
     return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), p);
   }
 
+  /** 拖动中按住 Alt：临时切换格栅 / 自由对齐（以 Alt 开始的调高度拖动除外） */
+  get gridFlipped() {
+    const d = this.drag;
+    return !!d && this.mods.alt && !['orbit', 'height', 'railHeight', 'objHeight'].includes(d.type);
+  }
   private snap(): Snapper {
-    this.snapper.grid = this.gridMode;
+    this.snapper.grid = this.gridMode !== this.gridFlipped;
     const dist = this.camera.position.distanceTo(this.controls.target);
     this.snapper.tol = THREE.MathUtils.clamp(dist * 0.015, 0.3, 2.5);
     return this.snapper;
@@ -693,7 +698,9 @@ export class Editor {
 
   private branchAction(s: Seg, p: Pick, side: Dir): Action {
     const m = this.model;
-    const c = this.snapCenter(axisOf(s.dir) === 0 ? p.point.x : p.point.y, axisOf(s.dir));
+    const t0 = Math.min(Math.max(this.segLocal(s, p.point).t, HALF), s.len - HALF);
+    const at0: [number, number, number] = [s.x + DX[s.dir] * t0, s.y + DY[s.dir] * t0, zAt(m, s, t0)];
+    const c = this.snapCenter(axisOf(s.dir) === 0 ? p.point.x : p.point.y, axisOf(s.dir), at0);
     const tc = Math.min(Math.max(this.tOfCoord(s, c), HALF), s.len - HALF);
     const cx = s.x + DX[s.dir] * tc, cy = s.y + DY[s.dir] * tc, z = zAt(m, s, tc);
     const base = { segs: [...rectSegs(HALF, HALF, 0), ...arrowSegs(side, HALF, 3.5)], pos: [cx, cy, z + 0.08] as [number, number, number], color: C_CREATE, dir: side, z };
@@ -733,7 +740,14 @@ export class Editor {
     const run = edgeRunAt(n, p.point.x, p.point.y);
     if (!run) return null;
     const isX = axisOf(run.out) === 0;
-    const along = this.snapCenter(isX ? p.point.y : p.point.x, isX ? 1 : 0);
+    const raw = isX ? p.point.y : p.point.x;
+    // 开口必须整个落在这段边上：中心限制在两端各让出 2.5 的范围里
+    const lo = run.from + HALF, hi = run.to - HALF;
+    const clampA = (v: number) => (hi >= lo ? Math.min(Math.max(v, lo), hi) : (run.from + run.to) / 2);
+    const a0 = clampA(raw);
+    let along = this.snapCenter(raw, isX ? 1 : 0, isX ? [run.line, a0, n.z] : [a0, run.line, n.z]);
+    // 平台按 1.25 的小格记录，开口也对齐小格
+    along = clampA(Math.round(along / CELL) * CELL);
     const cx = isX ? run.line : along, cy = isX ? along : run.line;
     const P = [-DY[run.out], DX[run.out]];
     const segs = [-P[0] * HALF, -P[1] * HALF, 0, P[0] * HALF, P[1] * HALF, 0, ...arrowSegs(run.out, 0, 3.5)];
@@ -1026,7 +1040,7 @@ export class Editor {
 
   private updateGizmo() {
     const h = this.hover;
-    const active = this.mods.ctrl && !this.mods.alt && this.tool === 'edit' && (!this.drag || this.drag.type === 'gizmo');
+    const active = this.drag?.type === 'gizmo' || (this.mods.ctrl && !this.mods.alt && this.tool === 'edit' && !this.drag);
     if (!active) { this.gizmo.hide(); this.gizmoTarget = null; this.gizmoKey = ''; return; }
     if (this.drag?.type === 'gizmo') {
       const pos = this.gizmoPos(this.model, this.drag.target === this.gizmoTarget ? this.dragTargetNow() : this.drag.target);
@@ -1169,7 +1183,10 @@ export class Editor {
     this.overlayDirty = true;
   }
 
+  private lastMove: { clientX: number; clientY: number } | null = null;
+
   private onMove(e: PointerEvent) {
+    this.lastMove = { clientX: e.clientX, clientY: e.clientY };
     this.syncMods(e);
     this.setMouse(e);
     const d = this.drag;
@@ -1262,7 +1279,9 @@ export class Editor {
   private onUp(e: PointerEvent) {
     this.syncMods(e);
     const d = this.drag;
+    const wasFlipped = this.gridFlipped;
     this.drag = null;
+    if (wasFlipped) this.onChange();
     this.overlayDirty = true;
     if (!d || d.type === 'orbit') return;
     const before = d.snapshot;
@@ -1288,8 +1307,15 @@ export class Editor {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
+    const flipped = this.gridFlipped;
     this.syncMods(e);
     if (e.key === 'Alt') e.preventDefault();
+    // 拖动中切换了临时对齐模式：按新模式重新计算一次
+    if (this.gridFlipped !== flipped && this.drag && this.lastMove) {
+      const lm = this.lastMove;
+      this.onMove({ clientX: lm.clientX, clientY: lm.clientY, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey } as PointerEvent);
+      this.onChange();
+    }
     if (!down) return;
     if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
@@ -1319,6 +1345,7 @@ export class Editor {
     const d = this.drag;
     if (d && 'snapshot' in d) this.setModel(d.snapshot);
     this.drag = null;
+    this.onChange();
     this.growEnd = null;
     this.overlayDirty = true;
   }

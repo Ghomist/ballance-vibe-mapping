@@ -9,7 +9,11 @@ const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools but
 const syncTools = () => toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === editor.tool));
 toolButtons.forEach((b) => b.addEventListener('click', () => { editor.setTool(b.dataset.tool as Tool); syncTools(); }));
 const grid = document.getElementById('grid') as HTMLButtonElement;
-const syncGrid = () => grid.classList.toggle('active', editor.gridMode);
+// 拖动中按住 Alt 临时切换对齐模式：按钮显示临时状态（虚线框），松开后恢复
+const syncGrid = () => {
+  grid.classList.toggle('active', editor.gridMode !== editor.gridFlipped);
+  grid.classList.toggle('temp', editor.gridFlipped);
+};
 grid.addEventListener('click', () => { editor.setGridMode(!editor.gridMode); grid.blur(); });
 
 // 机关工具的物件面板

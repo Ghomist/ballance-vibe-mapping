@@ -64,3 +64,5 @@ button svg { vertical-align: -2px; margin-right: 3px; }
 }
 .dropdown-menu button small { color: #7d889e; font-size: 11px; }
 .dropdown-menu button:hover { background: #2f3850; }
+
+#grid.temp { outline: 1px dashed #ffd76a; outline-offset: 1px; }

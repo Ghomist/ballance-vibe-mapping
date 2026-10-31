@@ -72,11 +72,11 @@ export class Snapper {
 
   /**
    * 宽 2·half 的带子（路口）沿轴放置：格栅模式下中心对齐 2.5；
-   * 自由模式下中心随鼠标连续移动，只有带子的边沿或中心很接近别的特征时才吸附（吸附距离减半，避免手感一格一格的）。
+   * 自由模式下中心随鼠标连续移动，带子的边沿或中心靠近别的特征（端点、边沿、平台角）时吸附过去。
    */
   band(m: Model, axis: 0 | 1, raw: number, half: number, exclude: Set<number> = new Set()): SnapResult {
     if (this.grid) return { v: round(raw, GRID) };
-    let best: SnapResult = { v: tidy(raw) }, bd = this.tol * 0.5;
+    let best: SnapResult = { v: tidy(raw) }, bd = this.tol;
     for (const { p } of this.features(m, exclude)) {
       for (const off of [0, -half, half]) {
         const d = Math.abs(p[axis] - (raw + off));
