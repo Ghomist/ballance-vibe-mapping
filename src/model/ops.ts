@@ -3,7 +3,8 @@ import {
   BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
   axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp, portCount, zAt,
 } from './types';
-import { cellSet, makeInset, mergePlatforms, openingFits, revertInset } from './platform';
+import { cellSet, insetKind, makeInset, mergePlatforms, openingFits, revertInset } from './platform';
+import { railEnd } from './rail';
 
 const EPS = 1e-6;
 
@@ -570,19 +571,22 @@ export function fixStyles(m: Model): boolean {
     if (n.kind === 'platform') {
       for (const l of nodeLinks(m, n.id)) {
         const s = m.segs[l.seg];
-        if (s.style === n.style || s.len <= EPS) continue;
-        // 窄转换放在平台边框带内部；放不下时才从路面上切
-        if (makeInset(m, n.id, s.id, l.key)) return true;
-        if (s.len < HALF - EPS) continue;
+        if (s.len <= EPS) continue;
+        const kind = insetKind(n.style, s.style);
+        if (!kind) continue;
+        // 衔接块放在平台边框带内部；窄转换放不下时才从路面上切
+        if (makeInset(m, n.id, s.id, l.key, kind === 'ramp')) return true;
+        if (kind === 'ramp' || s.len < HALF - EPS) continue;
         insertTransition(m, s, l.key, { node: n.id, dir: l.dir }, true);
         return true;
       }
     }
     if (n.kind === 'transition' && n.inPlatform !== undefined) {
-      // 嵌入平台的窄转换：平台没了、外侧没路了、或两边样式一致了，就撤掉
+      // 嵌入平台的衔接块：平台没了、外侧没路了、或需要的衔接方式变了，就撤掉（之后按需重新放）
       const p = m.nodes[n.inPlatform];
       const road = nodeLinks(m, n.id).find((l) => m.segs[l.seg].len > EPS || isFree(m.segs[l.seg][l.key === 'a' ? 'b' : 'a']) || (m.segs[l.seg][l.key === 'a' ? 'b' : 'a'] as { node: number }).node !== n.inPlatform);
-      if (!p || !road || m.segs[road.seg].style === p.style) { revertInset(m, n.id); return true; }
+      const want = p && road ? insetKind(p.style, m.segs[road.seg].style) : null;
+      if (!want || (want === 'ramp') !== !!n.ramp) { revertInset(m, n.id); return true; }
       continue;
     }
     if (n.kind === 'transition') {
@@ -705,4 +709,126 @@ function normalizeOnce(m: Model): boolean {
     }
   }
   return false;
+}
+
+// ---------------- gizmo：移动“一块” ----------------
+
+/**
+ * 元素所在的“一块”：直道取两个折点之间方向、坡度都一致的那段直路（经由接头相连）；
+ * 路块、平台、转换块就是它自己。
+ */
+export function pieceOf(m: Model, id: number): Set<number> {
+  const s0 = m.segs[id];
+  if (!s0) return new Set([id]);
+  const slope = (s: Seg) => (s.len > EPS ? (endZ(m, s, 'b') - endZ(m, s, 'a')) / s.len : 0);
+  const k0 = slope(s0);
+  const out = new Set([id]);
+  const q = [id];
+  while (q.length) {
+    const s = m.segs[q.shift()!];
+    for (const k of ['a', 'b'] as EndKey[]) {
+      const e = s[k];
+      if (isFree(e) || m.nodes[e.node]?.kind !== 'joint') continue;
+      for (const l of nodeLinks(m, e.node)) {
+        const o = m.segs[l.seg];
+        if (out.has(o.id) || axisOf(o.dir) !== axisOf(s0.dir)) continue;
+        // 坡度按同一前进方向比较
+        const ko = o.dir === s0.dir ? slope(o) : -slope(o);
+        if (Math.abs(ko - k0) > 1e-6) continue;
+        out.add(o.id);
+        q.push(o.id);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 只移动这一块：接在它端点上的折点（拐角、路口、坡度接头等）随之移动；
+ * 折点另一侧的路面自适应——沿移动方向的直道伸缩，竖直移动时变成坡道；
+ * 只有垂直于水平移动方向、无法伸缩的直道才连带平移。返回 false 表示有直道会被压成负长度。
+ */
+export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, dz: number): boolean {
+  const horiz = Math.abs(dx) > EPS || Math.abs(dy) > EPS;
+  const axis = Math.abs(dx) > EPS ? 0 : 1;
+  const d = axis === 0 ? dx : dy;
+  const S = new Set(piece);
+  const q = [...piece];
+  while (q.length) {
+    const id = q.shift()!;
+    if (m.segs[id]) {
+      // 直道两端的节点是刚性连接的，跟着走
+      for (const k of ['a', 'b'] as EndKey[]) {
+        const e = m.segs[id][k];
+        if (!isFree(e) && !S.has(e.node)) { S.add(e.node); q.push(e.node); }
+      }
+      continue;
+    }
+    for (const l of nodeLinks(m, id)) {
+      if (S.has(l.seg)) continue;
+      const s = m.segs[l.seg];
+      // 零长度直道是刚性的；水平移动时与移动方向垂直的直道无法伸缩，只能平移
+      const rigid = s.len <= EPS || (horiz && axisOf(s.dir) !== axis);
+      if (rigid) { S.add(s.id); q.push(s.id); }
+    }
+  }
+  // 检查并执行
+  const stretch: { s: Seg; k: EndKey }[] = [];
+  for (const s of Object.values(m.segs)) {
+    if (S.has(s.id)) continue;
+    const ma = !isFree(s.a) && S.has(s.a.node), mb = !isFree(s.b) && S.has(s.b.node);
+    if (!ma && !mb) continue;
+    if (ma && mb) {
+      // 两端都在动：水平方向必须同轴才能整体平移……这里两端位移相同，直接平移
+      stretch.push({ s, k: 'a' }, { s, k: 'b' });
+      continue;
+    }
+    stretch.push({ s, k: ma ? 'a' : 'b' });
+  }
+  if (horiz) {
+    for (const { s, k } of stretch) {
+      const other = k === 'a' ? s.b : s.a;
+      const bothMove = !isFree(other) && S.has(other.node);
+      if (bothMove) continue;
+      const sg = axis === 0 ? DX[s.dir] : DY[s.dir];
+      const nl = k === 'b' ? s.len + d * sg : s.len - d * sg;
+      if (nl < -EPS) return false;
+    }
+  }
+  // 端点搭在这一块自由端上的钢轨一起移动
+  const freeEnds: [number, number][] = [];
+  for (const id of S) {
+    const s = m.segs[id];
+    if (s) for (const k of ['a', 'b'] as EndKey[]) if (isFree(s[k])) freeEnds.push(endPos(s, k));
+  }
+  for (const r of Object.values(m.rails)) {
+    const E = railEnd(r);
+    if (freeEnds.some(([x, y]) => Math.hypot(x - r.x, y - r.y) < 0.02 || Math.hypot(x - E.x, y - E.y) < 0.02)) { r.x += dx; r.y += dy; r.z += dz; }
+  }
+  const moved = new Set<number>();
+  for (const { s, k } of stretch) {
+    if (moved.has(s.id)) continue;
+    const other = k === 'a' ? s.b : s.a;
+    if (!isFree(other) && S.has(other.node)) { s.x += dx; s.y += dy; moved.add(s.id); continue; }
+    if (!horiz) continue; // 竖直移动：端点节点抬升，直道自然成坡
+    const sg = axis === 0 ? DX[s.dir] : DY[s.dir];
+    if (k === 'a') { s.x += dx; s.y += dy; s.len -= d * sg; } else s.len += d * sg;
+    s.len = Math.max(s.len, 0);
+  }
+  for (const id of S) {
+    const s = m.segs[id];
+    if (s) {
+      s.x += dx; s.y += dy;
+      for (const k of ['a', 'b'] as EndKey[]) { const e = s[k]; if (isFree(e)) e.z += dz; }
+    }
+    const n = m.nodes[id];
+    if (n) {
+      n.x += dx; n.y += dy; n.z += dz;
+      if (n.kind === 'platform' && n.cells) {
+        const di = Math.round(dx / CELL), dj = Math.round(dy / CELL);
+        n.cells = n.cells.map((c) => { const [i, j] = c.split(',').map(Number); return `${i + di},${j + dj}`; });
+      }
+    }
+  }
+  return true;
 }

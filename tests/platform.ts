@@ -1,7 +1,7 @@
 // 平台与新交互相关的场景测试（由 run.ts 引入）
 import { addSegAtPlatform, blockToPlatform, edgeRunAt, extrudePlatform, segToPlatform } from '../src/model/platform';
-import { blockToSeg, extendFlat, extendTo, makeBranch, normalize, shiftFreeEnd, tryConnect } from '../src/model/ops';
-import { Model, endZ, nodeLinks } from '../src/model/types';
+import { blockToSeg, extendFlat, extendTo, makeBranch, makeCorner, normalize, shiftFreeEnd, tryConnect } from '../src/model/ops';
+import { Model, cloneModel, endZ, nodeLinks } from '../src/model/types';
 import { buildFloorMeshes } from '../src/geom/floor';
 
 export function platformScenarios(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
@@ -213,20 +213,94 @@ export function visualJoinScenarios(emptyModel: () => Model, check: (c: boolean,
 }
 
 export function deepTransitionScenario(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
-  scenario('凹槽平台接普通路：转换块凹槽一侧整条边下沉 0.7', () => {
+  const setup = (platformStyle: 'normal' | 'sink', roadStyle: 'normal' | 'sink') => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!;
-    m.nodes[p].style = 'sink';
+    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
+    m.nodes[p].style = platformStyle;
     const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
     extendTo(m, s, 'b', -20);
-    m.segs[s].style = 'normal';
+    m.segs[s].style = roadStyle;
     normalize(m);
-    const tr = Object.values(m.nodes).find((n) => n.kind === 'transition')!;
-    check(!!tr && !!tr.deep && tr.inPlatform === p, '应插入下沉角的窄转换');
-    // 转换块顶面在平台内侧那条边（y=0）上的顶点都应在 -0.7
-    const part = buildFloorMeshes(m).find((e) => e.id === tr.id)!.parts.FloorTopProfilFlat!;
-    const inner: number[] = [];
-    for (let i = 0; i < part.pos.length; i += 3) if (Math.abs(part.pos[i + 1] - 0) < 1e-6) inner.push(part.pos[i + 2]);
-    check(inner.length > 0 && inner.every((z) => Math.abs(z + 0.7) < 1e-6), `内侧边应全部在 -0.7，实际 ${inner}`);
+    const tr = Object.values(m.nodes).find((n) => n.kind === 'transition');
+    return { m, p, s, tr };
+  };
+  const zsAt = (m: Model, id: number, mat: string, y: number) => {
+    const part = buildFloorMeshes(m).find((e) => e.id === id)!.parts[mat as 'FloorTopBorder']!;
+    const out: { x: number; z: number }[] = [];
+    for (let i = 0; i < part.pos.length; i += 3) if (Math.abs(part.pos[i + 1] - y) < 1e-6) out.push({ x: part.pos[i], z: part.pos[i + 2] });
+    return out;
+  };
+  scenario('普通路接凹槽平台：半块平路，平台内侧一端下沉 0.7', () => {
+    const { m, p, s, tr } = setup('sink', 'normal');
+    check(!!tr && !!tr.ramp && tr.inPlatform === p && Math.abs(tr.y - -1.25) < 1e-9, '应在平台内放半块平路');
+    check(Math.abs(m.segs[s].len - 17.5) < 1e-9, '路长度不变');
+    const inner = zsAt(m, tr!.id, 'FloorTopBorder', 0), outer = zsAt(m, tr!.id, 'FloorTopBorder', -2.5);
+    check(inner.length > 0 && inner.every((v) => Math.abs(v.z + 0.7) < 1e-6), '平台内侧整条边应在 -0.7');
+    check(outer.length > 0 && outer.every((v) => Math.abs(v.z) < 1e-6), '靠路一端应全在 0');
+  });
+  scenario('凹槽路接凹槽平台：半块平路，靠路一端中点也下沉', () => {
+    const { m, tr } = setup('sink', 'sink');
+    check(!!tr && !!tr.ramp, '应在平台内放半块平路');
+    const outer = zsAt(m, tr!.id, 'FloorTopBorder', -2.5);
+    const mid = outer.filter((v) => Math.abs(v.x - 7.5) < 1e-6), edge = outer.filter((v) => Math.abs(v.x - 7.5) > 1);
+    check(mid.length > 0 && mid.every((v) => Math.abs(v.z + 0.7) < 1e-6), '靠路一端中点应在 -0.7');
+    check(edge.length > 0 && edge.every((v) => Math.abs(v.z) < 1e-6), '靠路一端两角应在 0');
+  });
+  scenario('凹槽路接普通平台：窄平凹转换；普通接普通：直接相接', () => {
+    const a = setup('normal', 'sink');
+    check(!!a.tr && !!a.tr.narrow && !a.tr.ramp && a.tr.inPlatform === a.p, '应为窄平凹转换');
+    const b = setup('normal', 'normal');
+    check(!b.tr, '普通接普通不需要衔接块');
+    // 切换样式后衔接块随之替换
+    a.m.nodes[a.p].style = 'sink';
+    normalize(a.m);
+    const tr2 = Object.values(a.m.nodes).find((n) => n.kind === 'transition');
+    check(!!tr2 && !!tr2.ramp, '平台改为凹槽后应换成半块平路');
+  });
+}
+
+import { movePiece, pieceOf } from '../src/model/ops';
+
+export function pieceScenarios(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
+  // U 形：左竖 - 下横 - 右竖，两个拐角
+  const build = () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 1);         // 从原点往 +Y
+    extendTo(m, s, 'b', 22.5);
+    const c1 = makeCorner(m, s, 'a', 0)!;  // 下端拐向 +X
+    extendTo(m, c1, 'b', 22.5);
+    normalize(m);
+    const bottom = Object.values(m.segs).find((x) => x.dir === 0)!;
+    const c2 = makeCorner(m, bottom.id, 'b', 1)!; // 右端拐向 +Y
+    extendTo(m, c2, 'b', 22.5);
+    normalize(m);
+    return m;
+  };
+  scenario('gizmo 只移动一块：上下移动，相邻路段变坡道', () => {
+    const m = build();
+    const bottom = Object.values(m.segs).find((x) => x.dir === 0)!;
+    const len0 = bottom.len;
+    const piece = pieceOf(m, bottom.id);
+    check(piece.size === 1, '下横这一块只有一段');
+    check(movePiece(m, piece, 0, 0, 2.5), '应能上移');
+    const corners = Object.values(m.nodes).filter((n) => n.kind === 'block');
+    check(corners.length === 2 && corners.every((n) => n.z === 2.5), '两端拐角随之上移');
+    check(m.segs[bottom.id].len === len0, '下横长度不变');
+    const ups = Object.values(m.segs).filter((x) => x.dir !== 0);
+    check(ups.every((x) => Math.abs(endZ(m, x, 'a') - endZ(m, x, 'b')) === 2.5), '两侧竖路变成坡道（没有被拖着一起移动）');
+  });
+  scenario('gizmo 只移动一块：水平移动，同轴伸缩、垂直平移', () => {
+    const m = build();
+    const bottom = Object.values(m.segs).find((x) => x.dir === 0)!;
+    const ups0 = Object.values(m.segs).filter((x) => x.dir !== 0).map((x) => x.len);
+    check(movePiece(m, pieceOf(m, bottom.id), 0, -5, 0), '下横往 -Y 移动');
+    const ups = Object.values(m.segs).filter((x) => x.dir !== 0);
+    check(ups.every((x, i) => Math.abs(x.len - ups0[i] - 5) < 1e-9), '两侧竖路各伸长 5');
+    // 沿 X 移动：右侧拐角 + 右竖要跟着平移，下横不是这块所以…… 这里移动的是左竖
+    const left = Object.values(m.segs).find((x) => x.dir === 1 && x.x < 5)!;
+    const bLen = m.segs[bottom.id].len;
+    check(movePiece(m, pieceOf(m, left.id), -5, 0, 0), '左竖往 -X 移动');
+    check(Math.abs(m.segs[bottom.id].len - bLen - 5) < 1e-9, '下横伸长 5');
+    check(!movePiece(cloneModel(m), pieceOf(m, left.id), 100, 0, 0), '会把下横压成负长度时拒绝');
   });
 }

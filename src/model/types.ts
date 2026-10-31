@@ -44,8 +44,11 @@ export interface MNode {
   narrow?: boolean;
   /** transition：嵌在哪个平台的边框带里（平台与样式不同的路面衔接处） */
   inPlatform?: number;
-  /** transition：凹槽一侧的两个角也下沉 0.7（整条边贴住凹槽平台下沉的内部） */
-  deep?: boolean;
+  /**
+   * transition（嵌入平台）：不是平凹转换，而是半块（2.5）平路，平台内侧一端下沉 0.7；
+   * 用于路面接凹槽平台。路是凹槽路时，靠路一端的中点也下沉 0.7。sinkDir 指向平台内侧。
+   */
+  ramp?: boolean;
 }
 
 export interface AttachedEnd { node: number }

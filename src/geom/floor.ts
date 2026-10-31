@@ -208,12 +208,22 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
   const sx = n.narrow ? 0.5 : 1;
   const L = (lx: number, ly: number, lz: number): V3 =>
     [n.x + a[0] * (lx - HALF) * sx + p[0] * (ly - HALF), n.y + a[1] * (lx - HALF) * sx + p[1] * (ly - HALF), n.z + lz];
-  // deep：凹槽一侧的两个角也下沉 0.7
-  const cz = n.deep ? -SINK_DEPTH : 0;
-  const v0 = L(0, 0, cz), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, cz);
-  mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
-  mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
-  mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
+  // ramp：半块平路，平台内侧（lx=0）整条边下沉 0.7；路是凹槽路时，靠路一端（lx=5）的中点也下沉 0.7
+  const cz = n.ramp ? -SINK_DEPTH : 0;
+  if (n.ramp) {
+    const road = nodeLinks(m, n.id).map((l) => m.segs[l.seg]).find((s) => s.len > 1e-9);
+    const roadMid = road?.style === 'sink' ? -SINK_DEPTH : 0;
+    for (const e0 of [0, 5]) {
+      // 两条边框带：从路边沿（u=0）到中线（u=0.5），v 沿路方向
+      const E0 = L(0, e0, cz), E1 = L(5, e0, 0), M1 = L(5, 2.5, roadMid), M0 = L(0, 2.5, cz);
+      mb.quad('FloorTopBorder', [E0, E1, M1, M0], [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0]], UP);
+    }
+  } else {
+    const v0 = L(0, 0, 0), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, 0);
+    mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
+    mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
+    mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
+  }
   // 两条侧边
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
     const A = L(0, ly, cz), B = L(5, ly, 0);
@@ -375,7 +385,8 @@ export function elemKey(m: Model, id: number, chains: Chains): string {
   const n = m.nodes[id];
   if (!n) return '';
   if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key)), platformInsets(m, id).map((i) => i.tr.id)]);
-  return JSON.stringify([n, nodePorts(m, id).map((p) => !!p)]);
+  // 相连直道的样式也会影响形状（例如平台里的衔接块要和路的截面对齐）
+  return JSON.stringify([n, nodePorts(m, id).map((p) => (p ? m.segs[p.seg].style : null))]);
 }
 
 export function buildElem(m: Model, id: number, chains: Chains): ElemMesh | null {

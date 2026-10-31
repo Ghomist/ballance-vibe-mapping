@@ -240,8 +240,18 @@ export function insetCells(i: Inset): string[] {
   return rectCells(Math.min(i.ox, ex) - px * HALF, Math.min(i.oy, ey) - py * HALF, Math.max(i.ox, ex) + px * HALF, Math.max(i.oy, ey) + py * HALF);
 }
 
-/** 在平台边框带内（开口处往里 2.5）放一个窄转换，路面长度不变。放不下返回 false */
-export function makeInset(m: Model, pid: number, segId: number, key: EndKey): boolean {
+/**
+ * 平台与路面衔接处需要的衔接块：
+ *   凹槽平台（无论接普通路还是凹槽路）→ 半块平路，平台内侧下沉；
+ *   普通平台接凹槽路 → 窄平凹转换；普通接普通 → 不需要。
+ */
+export function insetKind(platformStyle: string, roadStyle: string): 'ramp' | 'narrow' | null {
+  if (platformStyle === 'sink') return 'ramp';
+  return roadStyle === 'sink' ? 'narrow' : null;
+}
+
+/** 在平台边框带内（开口处往里 2.5）放衔接块，路面长度不变。放不下返回 false */
+export function makeInset(m: Model, pid: number, segId: number, key: EndKey, ramp: boolean): boolean {
   const p = m.nodes[pid];
   const s = m.segs[segId];
   const o = linkOpening(s, key);
@@ -253,9 +263,8 @@ export function makeInset(m: Model, pid: number, segId: number, key: EndKey): bo
   m.nodes[id] = {
     id, kind: 'transition', narrow: true, inPlatform: pid, style: 'sink', z: p.z, axis: axisOf(o.out),
     x: o.x + DX[inward] * HALF / 2, y: o.y + DY[inward] * HALF / 2,
-    sinkDir: s.style === 'sink' ? o.out : inward,
-    // 凹槽平台接普通路：转换块凹槽一侧朝平台内部，两个角也下沉，与平台内部齐平
-    deep: s.style !== 'sink',
+    sinkDir: ramp || s.style !== 'sink' ? inward : o.out,
+    ramp: ramp || undefined,
   };
   s[key] = { node: id };
   const lid = m.nextId++;

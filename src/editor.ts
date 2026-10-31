@@ -18,7 +18,7 @@ import {
   pieceLength, pushPiece, railEnd, railTopOffset, splitRail, stateAt,
 } from './model/rail';
 import {
-  addBlock, addSegAtPort, applyConnection, blockToSeg, component, cutJoint, moveDownstream, cutSeg, deleteElem, extendFlat, extendTo,
+  addBlock, addSegAtPort, applyConnection, blockToSeg, cutJoint, movePiece, pieceOf, cutSeg, deleteElem, extendFlat, extendTo,
   findConnection, insertJoint, isSloped, makeBranch, normalize, setBlockStyle, setChainStyle, setSegStyle,
   setPlatformStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
 } from './model/ops';
@@ -62,7 +62,7 @@ type Drag =
   | { type: 'gizmo'; snapshot: Model; target: GizmoTarget; handle: GizmoHandle; origin: THREE.Vector3; t0: number; ref: number }
   | { type: 'orbit' };
 
-/** gizmo 作用对象：一整段路（悬停元素所在的连通块）或一整条钢轨 */
+/** gizmo 作用对象：悬停元素所在的“一块”（两个折点之间的直路，或单个路块 / 平台）或一整条钢轨 */
 type GizmoTarget =
   | { type: 'comp'; id: number }
   | { type: 'rail'; id: number };
@@ -91,7 +91,7 @@ const RAIL_HANDLE_MAT = new THREE.MeshBasicMaterial({ visible: false });
 export class Editor {
   model: Model;
   tool: Tool = 'edit';
-  /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附。按住 Ctrl 临时切换 */
+  /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附 */
   gridMode = true;
   onStatus: (s: string) => void = () => {};
   onChange: () => void = () => {};
@@ -380,6 +380,12 @@ export class Editor {
     if (this.guides.length) show('guides', this.guides, 0xffe28a, { width: 1.2, opacity: 0.85, dashed: true });
 
     this.updateGizmo();
+    const gt = this.gizmoTarget;
+    if (gt && this.gizmo.active && gt.type === 'comp' && (this.model.segs[gt.id] || this.model.nodes[gt.id])) {
+      const segs: number[] = [];
+      for (const id of pieceOf(this.model, gt.id)) segs.push(...this.outlineSegs(id));
+      show('piece', segs, 0x9fd2ff, { width: 2, opacity: 0.8, gradient: true });
+    }
 
     // 拖拽中：可连接提示
     const conn = this.dragConnection();
@@ -431,9 +437,8 @@ export class Editor {
     return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), p);
   }
 
-  /** 当前生效的吸附器（Ctrl 临时切换格栅 / 自由） */
   private snap(): Snapper {
-    this.snapper.grid = this.gridMode !== this.mods.ctrl;
+    this.snapper.grid = this.gridMode;
     const dist = this.camera.position.distanceTo(this.controls.target);
     this.snapper.tol = THREE.MathUtils.clamp(dist * 0.015, 0.3, 2.5);
     return this.snapper;
@@ -883,39 +888,18 @@ export class Editor {
     return this.gizmoPos(m, g);
   }
 
-  /** 整体平移：连通块内的路面、平台，以及端点搭在这段路上的钢轨 */
+  /** 只移动这一块；折点另一侧的路面自适应伸缩 / 成坡 */
   private applyGizmo(m: Model, g: GizmoTarget, axis: 0 | 1 | 2, d: number): boolean {
     const v = [0, 0, 0];
     v[axis] = d;
     if (g.type === 'rail') { const r = m.rails[g.id]; r.x += v[0]; r.y += v[1]; r.z += v[2]; return true; }
-    const ids = component(m, g.id);
-    const ends: [number, number][] = [];
-    for (const id of ids) {
-      const s = m.segs[id];
-      if (s) {
-        for (const k of ['a', 'b'] as EndKey[]) { if (isFree(s[k])) ends.push(endPos(s, k)); }
-        s.x += v[0]; s.y += v[1];
-        for (const k of ['a', 'b'] as EndKey[]) { const e = s[k]; if (isFree(e)) e.z += v[2]; }
-      }
-      const n = m.nodes[id];
-      if (n) {
-        n.x += v[0]; n.y += v[1]; n.z += v[2];
-        if (n.kind === 'platform' && n.cells) {
-          const di = Math.round(v[0] / 1.25), dj = Math.round(v[1] / 1.25);
-          n.cells = n.cells.map((c) => { const [i, j] = c.split(',').map(Number); return `${i + di},${j + dj}`; });
-        }
-      }
-    }
-    for (const r of Object.values(m.rails)) {
-      const E = railEnd(r);
-      if (ends.some(([x, y]) => Math.hypot(x - r.x, y - r.y) < 0.02 || Math.hypot(x - E.x, y - E.y) < 0.02)) { r.x += v[0]; r.y += v[1]; r.z += v[2]; }
-    }
-    return true;
+    if (m.segs[g.id] || m.nodes[g.id]) return movePiece(m, pieceOf(m, g.id), v[0], v[1], v[2]);
+    return false;
   }
 
   private updateGizmo() {
     const h = this.hover;
-    const active = this.mods.alt && this.tool === 'edit' && (!this.drag || this.drag.type === 'gizmo');
+    const active = this.mods.ctrl && !this.mods.alt && this.tool === 'edit' && (!this.drag || this.drag.type === 'gizmo');
     if (!active) { this.gizmo.hide(); this.gizmoTarget = null; this.gizmoKey = ''; return; }
     if (this.drag?.type === 'gizmo') {
       const pos = this.gizmoPos(this.model, this.drag.target === this.gizmoTarget ? this.dragTargetNow() : this.drag.target);
@@ -931,7 +915,10 @@ export class Editor {
     this.gizmoTarget = g;
     const pos = this.gizmoPos(this.model, g);
     if (!pos) return;
-    this.gizmo.show(pos.add(new THREE.Vector3(0, 0, 0.3)), [true, true, true, true, true, true]);
+    // 逐个方向试算：会把相邻路段压成负长度的方向不可用
+    const valid: boolean[] = [];
+    for (const axis of [0, 1, 2] as const) for (const sg of [1, -1]) valid.push(this.applyGizmo(cloneModel(this.model), g, axis, sg * 2.5));
+    this.gizmo.show(pos.add(new THREE.Vector3(0, 0, 0.3)), valid);
   }
 
   /** 拖动中目标的当前位置（截面在拖动开始时已变成接头） */
@@ -986,8 +973,8 @@ export class Editor {
     if (e.button === 1) { this.drag = { type: 'orbit' }; return; }
     if (e.button !== 0) return;
     this.setMouse(e);
-    // gizmo 手柄优先
-    if (e.altKey && this.gizmoTarget) {
+    // gizmo 手柄优先（按住 Ctrl）
+    if (e.ctrlKey && this.gizmoTarget) {
       const hd = this.pickGizmo();
       if (hd) {
         e.preventDefault();
@@ -1038,7 +1025,7 @@ export class Editor {
     this.guides = [];
     if (!d) {
       // 悬停在 gizmo 手柄上时保持当前目标
-      const hd = this.mods.alt && this.gizmoTarget ? this.pickGizmo() : null;
+      const hd = this.mods.ctrl && this.gizmoTarget ? this.pickGizmo() : null;
       this.gizmo.setHovered(hd);
       if (hd) return;
       const p = this.pick();
@@ -1057,7 +1044,7 @@ export class Editor {
       if (this.applyGizmo(m, d.target, d.handle.axis, v - d.ref)) {
         this.setModel(m);
         this.onStatus(`移动 ${'XYZ'[d.handle.axis]} ${v - d.ref >= 0 ? '+' : ''}${fmt(v - d.ref)}`);
-      }
+      } else this.onStatus('⚠ 再移动会把相邻路段压成负长度');
       this.overlayDirty = true;
       return;
     }
@@ -1401,8 +1388,9 @@ export class Editor {
     }
     const hints: Record<Tool, string> = {
       edit: this.mods.shift ? 'Shift：拖动整个侧面拉成平台（平台边可往里推）'
-        : this.mods.alt ? 'Alt：拖箭头沿 X/Y/Z 整体移动这一段路（不切断、不改坡度）；直接拖路面调高度 / 坡度'
-        : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：改高度 · 中键：环视 · 右键：更多',
+        : this.mods.ctrl ? 'Ctrl：拖箭头沿 X/Y/Z 移动高亮的这一块；相邻路面自动伸缩 / 成坡'
+        : this.mods.alt ? 'Alt：拖动截面或路块调整高度，形成坡道（下游跟随）'
+        : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：坡面 · Ctrl：移动 · 中键：环视 · 右键：更多',
       cut: '点击截面：把花纹分开成两个封闭端点',
       rail: '从路面端点拖出钢轨 · 钢轨端头：沿方向拉长（拉回 0 删除）· 末端侧面：拐弯 · Alt 拖末端改坡度 · 右键：单轨/双轨/单双转换、螺旋',
     };
