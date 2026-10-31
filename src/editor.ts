@@ -127,6 +127,8 @@ export class Editor {
   /** 机关工具：跟随鼠标的半透明预览 */
   private ghost = new THREE.Group();
   private ghostType = '';
+  /** 机关工具：放置时在顺路方向的基础上再转的角度（R） */
+  private placeRot = 0;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private renderer: THREE.WebGLRenderer;
@@ -1501,10 +1503,10 @@ export class Editor {
       d.moved = true;
       const o = this.model.objs[d.id];
       if (!o) return;
-      const at = this.objPlacement(o.type, d.ox, d.oy, o.z);
+      const at = this.objPlacement(o.type, { ox: d.ox, oy: d.oy, rot: o.rot }, o.z);
       if (!at) return;
       const m = cloneModel(this.model);
-      Object.assign(m.objs[d.id], { x: at.x, y: at.y, z: at.z });
+      Object.assign(m.objs[d.id], { x: at.x, y: at.y, z: at.z, rot: at.rot });
       this.setModel(m);
       this.overlayDirty = true;
       return;
@@ -1644,6 +1646,8 @@ export class Editor {
     if (k === '4') this.setTool('object');
     if (k === 'r') {
       const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
+      // 机关工具里没指着已放的物件：转的是待放置的朝向
+      if (this.tool === 'object' && this.hover?.kind !== 'obj') { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
       if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
@@ -1853,25 +1857,51 @@ export class Editor {
     return items;
   }
 
-  /** 物件放置位置：鼠标下的路面（顶面 + 抬升），没有路面时放在当前高度平面上 */
-  private objPlacement(type: string, ox = 0, oy = 0, zKeep?: number): { x: number; y: number; z: number; rot: number } | null {
-    const lift = objType(type)?.lift ?? 0;
+  /**
+   * 物件放置位置。机关按“对准点”对齐路面：对准方块落在鼠标下那一格路面的中心，顶面与路面齐平，
+   * 朝向默认顺着路的方向（R 再转 90°）；没有对准点的装饰底部贴住路面。
+   * 拖动已放的物件时传入 grab（抓取点相对原点的偏移）和 rot（保持原朝向）。
+   */
+  private objPlacement(type: string, grab?: { ox: number; oy: number; rot: number }, zKeep?: number): { x: number; y: number; z: number; rot: number } | null {
+    const t = objType(type);
+    const ox = grab?.ox ?? 0, oy = grab?.oy ?? 0;
     const floorHit = this.raycaster.intersectObjects(this.pickables.filter((p) => p.userData.kind !== 'obj'), false)[0];
-    let x: number, y: number, z: number;
-    if (floorHit && floorHit.face && floorHit.face.normal.z > 0.5) {
-      x = floorHit.point.x + ox; y = floorHit.point.y + oy;
-      const top = this.surfaceTop(x, y, floorHit.point.z);
-      z = top + lift;
-    } else {
-      const zz = zKeep ?? lift;
+    const onFloor = !!floorHit && !!floorHit.face && floorHit.face.normal.z > 0.5;
+    if (!onFloor) {
+      const zz = zKeep ?? 0;
       const p = this.rayOnPlaneZ(zz);
       if (!p) return null;
-      x = p.x + ox; y = p.y + oy; z = zz;
+      const at: [number, number, number] = [p.x + ox, p.y + oy, zz];
+      return { x: this.snapEdge(at[0], 0, at, 1.25), y: this.snapEdge(at[1], 1, at, 1.25), z: zz, rot: grab?.rot ?? this.placeRot };
     }
-    const at: [number, number, number] = [x, y, z];
-    // 物件按 1.25 的格栅放（路块中心、边沿、四分之一处都能放到）
-    x = this.snapEdge(x, 0, at, 1.25); y = this.snapEdge(y, 1, at, 1.25);
-    return { x, y, z, rot: 0 };
+    const hx = floorHit!.point.x, hy = floorHit!.point.y;
+    const top = this.surfaceTop(hx, hy, floorHit!.point.z);
+    const surf = surfacesAt(this.model, hx, hy).reduce<{ id: number; z: number } | null>((b, c) => (!b || Math.abs(c.z - top) < Math.abs(b.z - top) ? c : b), null);
+    const seg = surf ? this.model.segs[surf.id] : undefined;
+    const node = surf ? this.model.nodes[surf.id] : undefined;
+    // 朝向：顺着脚下直道的方向，加上 R 转过的角度；拖动已放的物件时保持原朝向
+    const rot = grab ? grab.rot : ((seg ? axisOf(seg.dir) * 90 : 0) + this.placeRot) % 360;
+    if (!t?.anchor) {
+      const at: [number, number, number] = [hx + ox, hy + oy, top];
+      return { x: this.snapEdge(at[0], 0, at, 1.25), y: this.snapEdge(at[1], 1, at, 1.25), z: top, rot };
+    }
+    const [ax, ay, az] = t.anchor;
+    const r = (rot * Math.PI) / 180, c = Math.cos(r), sn = Math.sin(r);
+    const wax = ax * c - ay * sn, way = ax * sn + ay * c; // 对准点相对原点的世界偏移
+    // 对准点的期望位置：拖动时由抓取点推算，放置时就是鼠标点
+    let px = hx + ox + (grab ? wax : 0), py = hy + oy + (grab ? way : 0);
+    if (seg) {
+      // 直道：横向落在路中线上，纵向按格栅 / 自动对齐
+      const lat = axisOf(seg.dir) === 0 ? seg.y : seg.x;
+      if (axisOf(seg.dir) === 0) { py = lat; px = this.snapEdge(px, 0, [px, py, top]); } else { px = lat; py = this.snapEdge(py, 1, [px, py, top]); }
+    } else if (node && node.kind !== 'platform') {
+      px = node.x; py = node.y;
+    } else {
+      // 平台：落在 5×5 的格子中心（格栅），或自动对齐
+      if (this.gridMode) { px = Math.floor(px / 5) * 5 + 2.5; py = Math.floor(py / 5) * 5 + 2.5; }
+      else { px = this.snapEdge(px, 0, [px, py, top]); py = this.snapEdge(py, 1, [px, py, top]); }
+    }
+    return { x: px - wax, y: py - way, z: top - az, rot };
   }
 
   /** 路面顶面高度（凹槽里点到的是槽底，取路面标称高度） */
@@ -1891,6 +1921,7 @@ export class Editor {
       this.ghostType = this.ghost.children.length ? this.objType : '';
     }
     this.ghost.position.set(at.x, at.y, at.z);
+    this.ghost.rotation.z = (at.rot * Math.PI) / 180;
     this.ghost.visible = true;
   }
 

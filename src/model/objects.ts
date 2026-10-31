@@ -27,39 +27,43 @@ export interface ObjType {
   type: string;
   cat: ObjCat;
   label: string;
-  /** 放到路面上时原点高出路面多少（让占位符底部贴住路面） */
-  lift: number;
+  /**
+   * 对准点（本地坐标 [x, y, 路面顶面 z]）：占位符里的对准方块（代表它所在的那一格路面）中心与顶面。
+   * 放到路面上时，对准点落在那一格路面的中心、顶面与路面齐平。数据来自 BBP 占位符和原版关卡。
+   * 装饰没有对准点，底部贴住路面。
+   */
+  anchor?: [number, number, number];
   /** 全图只能有一个 */
   unique?: boolean;
 }
 
 export const OBJ_TYPES: ObjType[] = [
-  { type: 'P_Extra_Point', cat: 'module', label: '加分球', lift: 2.5 },
-  { type: 'P_Extra_Life', cat: 'module', label: '加命球', lift: 2.56 },
-  { type: 'P_Trafo_Paper', cat: 'module', label: '纸球变球器', lift: 0.1 },
-  { type: 'P_Trafo_Stone', cat: 'module', label: '石球变球器', lift: 0.1 },
-  { type: 'P_Trafo_Wood', cat: 'module', label: '木球变球器', lift: 0.1 },
-  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', lift: 2 },
-  { type: 'P_Ball_Stone', cat: 'module', label: '石球', lift: 2 },
-  { type: 'P_Ball_Wood', cat: 'module', label: '木球', lift: 2 },
-  { type: 'P_Box', cat: 'module', label: '箱子', lift: 2.5 },
-  { type: 'P_Dome', cat: 'module', label: 'Dome', lift: 0 },
-  { type: 'P_Modul_01', cat: 'module', label: 'Modul 01', lift: 0 },
-  { type: 'P_Modul_03', cat: 'module', label: 'Modul 03', lift: 0 },
-  { type: 'P_Modul_08', cat: 'module', label: 'Modul 08', lift: 0 },
-  { type: 'P_Modul_17', cat: 'module', label: 'Modul 17', lift: 0 },
-  { type: 'P_Modul_18', cat: 'module', label: 'Modul 18 风扇', lift: 0 },
-  { type: 'P_Modul_19', cat: 'module', label: 'Modul 19', lift: 0 },
-  { type: 'P_Modul_25', cat: 'module', label: 'Modul 25', lift: 0 },
-  { type: 'P_Modul_26', cat: 'module', label: 'Modul 26', lift: 0 },
-  { type: 'P_Modul_29', cat: 'module', label: 'Modul 29', lift: 0 },
-  { type: 'P_Modul_30', cat: 'module', label: 'Modul 30 跷跷板', lift: 0 },
-  { type: 'P_Modul_34', cat: 'module', label: 'Modul 34', lift: 0 },
-  { type: 'P_Modul_37', cat: 'module', label: 'Modul 37', lift: 0 },
-  { type: 'P_Modul_41', cat: 'module', label: 'Modul 41', lift: 0 },
-  { type: 'PE_Balloon', cat: 'module', label: '终点气球', lift: 0, unique: true },
-  { type: 'Latern', cat: 'deco', label: '灯柱（灯笼）', lift: 0 },
-  { type: 'LaternColumn_Full', cat: 'deco', label: '灯柱（带长柱）', lift: 0 },
+  { type: 'P_Extra_Point', cat: 'module', label: '加分球', anchor: [0, 0, -2.5] },
+  { type: 'P_Extra_Life', cat: 'module', label: '加命球', anchor: [0, 0, -2.56] },
+  { type: 'P_Trafo_Paper', cat: 'module', label: '纸球变球器', anchor: [0, 0, -0.1] },
+  { type: 'P_Trafo_Stone', cat: 'module', label: '石球变球器', anchor: [0, 0, -0.1] },
+  { type: 'P_Trafo_Wood', cat: 'module', label: '木球变球器', anchor: [0, 0, -0.1] },
+  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', anchor: [0, 0, -2] },
+  { type: 'P_Ball_Stone', cat: 'module', label: '石球', anchor: [0, 0, -2] },
+  { type: 'P_Ball_Wood', cat: 'module', label: '木球', anchor: [0, 0, -2] },
+  { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.5] },
+  { type: 'P_Dome', cat: 'module', label: 'Dome', anchor: [0, 0, 0] },
+  { type: 'P_Modul_01', cat: 'module', label: 'Modul 01 栅栏', anchor: [2.5, 0.65, 0] },
+  { type: 'P_Modul_03', cat: 'module', label: 'Modul 03', anchor: [13.37, 0.04, -10.76] },
+  { type: 'P_Modul_08', cat: 'module', label: 'Modul 08', anchor: [-10, 0, 1.5] },
+  { type: 'P_Modul_17', cat: 'module', label: 'Modul 17', anchor: [0, 0, -5] },
+  { type: 'P_Modul_18', cat: 'module', label: 'Modul 18 风扇', anchor: [0, 0, 0] },
+  { type: 'P_Modul_19', cat: 'module', label: 'Modul 19', anchor: [0, 5, 0] },
+  { type: 'P_Modul_25', cat: 'module', label: 'Modul 25', anchor: [2.5, 0, 0] },
+  { type: 'P_Modul_26', cat: 'module', label: 'Modul 26', anchor: [0.23, -0.22, -2.68] },
+  { type: 'P_Modul_29', cat: 'module', label: 'Modul 29', anchor: [10.97, 0, 0.17] },
+  { type: 'P_Modul_30', cat: 'module', label: 'Modul 30 跷跷板', anchor: [9.9, 0.05, 0.5] },
+  { type: 'P_Modul_34', cat: 'module', label: 'Modul 34', anchor: [-2.5, 0, 0] },
+  { type: 'P_Modul_37', cat: 'module', label: 'Modul 37', anchor: [1.23, 0.1, 0] },
+  { type: 'P_Modul_41', cat: 'module', label: 'Modul 41', anchor: [0, 0, 0] },
+  { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
+  { type: 'Latern', cat: 'deco', label: '灯柱（灯笼）' },
+  { type: 'LaternColumn_Full', cat: 'deco', label: '灯柱（带长柱）' },
 ];
 
 export const objType = (type: string) => OBJ_TYPES.find((t) => t.type === type);

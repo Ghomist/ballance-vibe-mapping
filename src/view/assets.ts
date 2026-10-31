@@ -31,12 +31,16 @@ function texture(file: string) {
   return t;
 }
 
-/** 机关占位符的颜色：火焰橙色、重生点青色、其它机关紫色 */
+/** 机关占位符的颜色：火焰橙色、重生点青色；道具球 / 变球器按材质（纸白、石灰、木棕）；其它机关紫色 */
 function elementColor(name: string) {
   if (name.startsWith('PS_') || name.startsWith('PC_')) return 0xff9a3c;
   if (name.startsWith('PR_')) return 0x3cd2ff;
   if (name.startsWith('PE_')) return 0xff5d8f;
-  if (name.startsWith('P_Extra') || name.startsWith('P_Trafo')) return 0x7dff9a;
+  if (name.endsWith('_Paper')) return 0xf2ead8;
+  if (name.endsWith('_Stone')) return 0x8f98a3;
+  if (name.endsWith('_Wood')) return 0xb9773f;
+  if (name.startsWith('P_Extra')) return 0x7dff9a;
+  if (name === 'P_Box') return 0xd9a35c;
   return 0xb48cff;
 }
 
