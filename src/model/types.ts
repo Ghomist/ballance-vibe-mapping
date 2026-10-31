@@ -42,6 +42,8 @@ export interface MNode {
   ribbon?: boolean;
   /** transition：窄转换（长 2.5，用于平台与路面衔接） */
   narrow?: boolean;
+  /** transition：嵌在哪个平台的边框带里（平台与样式不同的路面衔接处） */
+  inPlatform?: number;
 }
 
 export interface AttachedEnd { node: number }

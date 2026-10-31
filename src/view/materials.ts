@@ -26,7 +26,8 @@ const loader = new THREE.TextureLoader();
 export function getMaterial(name: MatName): THREE.Material {
   let mat = cache.get(name);
   if (mat) return mat;
-  const m = new THREE.MeshLambertMaterial({ color: FALLBACK_COLORS[name] });
+  // 构造路面一律平直着色（不做折痕平滑）
+  const m = new THREE.MeshLambertMaterial({ color: FALLBACK_COLORS[name], flatShading: true });
   loader.load(
     `${import.meta.env.BASE_URL}textures/${TEXTURE_FILES[name]}`,
     (tex) => {

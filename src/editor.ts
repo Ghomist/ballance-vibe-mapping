@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { buildElem, computeChains, elemKey, type MatName } from './geom/floor';
+import { buildElem, computeChains, computeVisualJoins, elemKey, type MatName } from './geom/floor';
 import { buildRail } from './geom/rail';
 import { getMaterial, getRailMaterial } from './view/materials';
 import { Gizmo, type GizmoHandle } from './view/gizmo';
@@ -62,11 +62,9 @@ type Drag =
   | { type: 'gizmo'; snapshot: Model; target: GizmoTarget; handle: GizmoHandle; origin: THREE.Vector3; t0: number; ref: number }
   | { type: 'orbit' };
 
-/** gizmo 作用对象：路块 / 平台、直道上的截面、自由端点、整条钢轨 */
+/** gizmo 作用对象：一整段路（悬停元素所在的连通块）或一整条钢轨 */
 type GizmoTarget =
-  | { type: 'node'; id: number }
-  | { type: 'section'; seg: number; t: number }
-  | { type: 'end'; seg: number; key: EndKey }
+  | { type: 'comp'; id: number }
   | { type: 'rail'; id: number };
 
 type HeightTarget = (m: Model) => number | { seg: number; key: EndKey } | null;
@@ -267,7 +265,8 @@ export class Editor {
   /** 按缓存键增量重建网格 */
   private syncMeshes() {
     const m = this.display;
-    const chains = computeChains(m);
+    const vj = computeVisualJoins(m);
+    const chains = computeChains(m, vj);
     const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails)].map(Number));
     for (const [id, c] of this.meshCache) {
       if (ids.has(id)) continue;
@@ -276,7 +275,7 @@ export class Editor {
     }
     for (const id of ids) {
       const rail = m.rails[id];
-      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains);
+      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains, vj);
       const cached = this.meshCache.get(id);
       if (cached && cached.key === key) continue;
       if (cached) for (const mesh of cached.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
@@ -302,7 +301,7 @@ export class Editor {
         this.meshCache.set(id, { key, meshes });
         continue;
       }
-      const em = buildElem(m, id, chains);
+      const em = buildElem(m, id, chains, vj);
       for (const [mat, part] of Object.entries(em?.parts ?? {})) {
         if (!part || part.pos.length === 0) continue;
         const g = new THREE.BufferGeometry();
@@ -867,44 +866,52 @@ export class Editor {
   // ---------------- gizmo ----------------
 
   private gizmoTargetFor(p: Pick): GizmoTarget | null {
-    const m = this.model;
-    if (p.kind === 'rail') return { type: 'rail', id: p.id };
-    if (p.kind === 'node') return { type: 'node', id: p.id };
-    const s = m.segs[p.id];
-    const { t } = this.segLocal(s, p.point);
-    if (t < 1 && !isFree(s.a)) return { type: 'node', id: s.a.node };
-    if (t > s.len - 1 && !isFree(s.b)) return { type: 'node', id: s.b.node };
-    const ts = this.tOfCoord(s, this.snapEdge(axisOf(s.dir) === 0 ? p.point.x : p.point.y, axisOf(s.dir)));
-    if (ts <= 1e-6) return isFree(s.a) ? { type: 'end', seg: s.id, key: 'a' } : { type: 'node', id: s.a.node };
-    if (ts >= s.len - 1e-6) return isFree(s.b) ? { type: 'end', seg: s.id, key: 'b' } : { type: 'node', id: s.b.node };
-    return { type: 'section', seg: s.id, t: ts };
+    return p.kind === 'rail' ? { type: 'rail', id: p.id } : { type: 'comp', id: p.id };
   }
 
+  /** 手柄显示位置：悬停元素的中心 */
   private gizmoPos(m: Model, g: GizmoTarget): THREE.Vector3 | null {
-    if (g.type === 'node') { const n = m.nodes[g.id]; return n ? new THREE.Vector3(n.x, n.y, n.z) : null; }
     if (g.type === 'rail') { const r = m.rails[g.id]; return r ? new THREE.Vector3(r.x, r.y, r.z) : null; }
-    const s = m.segs[g.seg];
-    if (!s) return null;
-    const t = g.type === 'section' ? g.t : g.key === 'a' ? 0 : s.len;
-    return new THREE.Vector3(s.x + DX[s.dir] * t, s.y + DY[s.dir] * t, zAt(m, s, t));
+    const s = m.segs[g.id];
+    if (s) { const t = s.len / 2; return new THREE.Vector3(s.x + DX[s.dir] * t, s.y + DY[s.dir] * t, zAt(m, s, t)); }
+    const n = m.nodes[g.id];
+    return n ? new THREE.Vector3(n.x, n.y, n.z) : null;
   }
 
-  /** 在模型上执行一次 gizmo 移动；返回 false 表示该方向受连接限制 */
+  /** 吸附参照点：网格对齐的特征（直道取 a 端、节点取中心），保证移动后边沿仍落在格栅上 */
+  private gizmoAnchor(m: Model, g: GizmoTarget): THREE.Vector3 | null {
+    if (g.type === 'comp' && m.segs[g.id]) { const s = m.segs[g.id]; return new THREE.Vector3(s.x, s.y, endZ(m, s, 'a')); }
+    return this.gizmoPos(m, g);
+  }
+
+  /** 整体平移：连通块内的路面、平台，以及端点搭在这段路上的钢轨 */
   private applyGizmo(m: Model, g: GizmoTarget, axis: 0 | 1 | 2, d: number): boolean {
     const v = [0, 0, 0];
     v[axis] = d;
     if (g.type === 'rail') { const r = m.rails[g.id]; r.x += v[0]; r.y += v[1]; r.z += v[2]; return true; }
-    if (g.type === 'end') {
-      const s = m.segs[g.seg];
-      if (axis === 2) { shiftFreeEnd(m, s.id, g.key, d); return true; }
-      if (axis !== axisOf(s.dir)) return false;
-      const [x, y] = endPos(s, g.key);
-      extendTo(m, s.id, g.key, (axis === 0 ? x : y) + d);
-      return true;
+    const ids = component(m, g.id);
+    const ends: [number, number][] = [];
+    for (const id of ids) {
+      const s = m.segs[id];
+      if (s) {
+        for (const k of ['a', 'b'] as EndKey[]) { if (isFree(s[k])) ends.push(endPos(s, k)); }
+        s.x += v[0]; s.y += v[1];
+        for (const k of ['a', 'b'] as EndKey[]) { const e = s[k]; if (isFree(e)) e.z += v[2]; }
+      }
+      const n = m.nodes[id];
+      if (n) {
+        n.x += v[0]; n.y += v[1]; n.z += v[2];
+        if (n.kind === 'platform' && n.cells) {
+          const di = Math.round(v[0] / 1.25), dj = Math.round(v[1] / 1.25);
+          n.cells = n.cells.map((c) => { const [i, j] = c.split(',').map(Number); return `${i + di},${j + dj}`; });
+        }
+      }
     }
-    const id = g.type === 'node' ? g.id : insertJoint(m, g.seg, g.t);
-    if (id === null) return false;
-    return moveDownstream(m, id, v[0], v[1], v[2]);
+    for (const r of Object.values(m.rails)) {
+      const E = railEnd(r);
+      if (ends.some(([x, y]) => Math.hypot(x - r.x, y - r.y) < 0.02 || Math.hypot(x - E.x, y - E.y) < 0.02)) { r.x += v[0]; r.y += v[1]; r.z += v[2]; }
+    }
+    return true;
   }
 
   private updateGizmo() {
@@ -925,13 +932,7 @@ export class Editor {
     this.gizmoTarget = g;
     const pos = this.gizmoPos(this.model, g);
     if (!pos) return;
-    // 逐个方向试算，判断是否可用
-    const valid: boolean[] = [];
-    for (const axis of [0, 1, 2] as const) for (const sg of [1, -1]) {
-      const mm = cloneModel(this.model);
-      valid.push(this.applyGizmo(mm, g, axis, sg * 2.5));
-    }
-    this.gizmo.show(pos.add(new THREE.Vector3(0, 0, 0.3)), valid);
+    this.gizmo.show(pos.add(new THREE.Vector3(0, 0, 0.3)), [true, true, true, true, true, true]);
   }
 
   /** 拖动中目标的当前位置（截面在拖动开始时已变成接头） */
@@ -993,8 +994,8 @@ export class Editor {
         e.preventDefault();
         const snapshot = cloneModel(this.model);
         const origin = this.gizmo.group.position.clone();
-        const pos = this.gizmoPos(this.model, this.gizmoTarget)!;
-        this.drag = { type: 'gizmo', snapshot, target: this.gizmoTarget, handle: hd, origin, t0: this.axisParam(origin, hd.axis), ref: pos.getComponent(hd.axis) };
+        const anchor = this.gizmoAnchor(this.model, this.gizmoTarget)!;
+        this.drag = { type: 'gizmo', snapshot, target: this.gizmoTarget, handle: hd, origin, t0: this.axisParam(origin, hd.axis), ref: anchor.getComponent(hd.axis) };
         return;
       }
     }
@@ -1057,7 +1058,7 @@ export class Editor {
       if (this.applyGizmo(m, d.target, d.handle.axis, v - d.ref)) {
         this.setModel(m);
         this.onStatus(`移动 ${'XYZ'[d.handle.axis]} ${v - d.ref >= 0 ? '+' : ''}${fmt(v - d.ref)}`);
-      } else this.onStatus('⚠ 这个方向受连接限制：与之相连的路段不能沿此方向伸缩');
+      }
       this.overlayDirty = true;
       return;
     }
@@ -1401,7 +1402,7 @@ export class Editor {
     }
     const hints: Record<Tool, string> = {
       edit: this.mods.shift ? 'Shift：拖动整个侧面拉成平台（平台边可往里推）'
-        : this.mods.alt ? 'Alt：拖箭头沿 X/Y/Z 移动（下游跟随，相连路段自动伸缩）；直接拖路面调高度'
+        : this.mods.alt ? 'Alt：拖箭头沿 X/Y/Z 整体移动这一段路（不切断、不改坡度）；直接拖路面调高度 / 坡度'
         : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：改高度 · 中键：环视 · 右键：更多',
       cut: '点击截面：把花纹分开成两个封闭端点',
       rail: '从路面端点拖出钢轨 · 钢轨端头：沿方向拉长（拉回 0 删除）· 末端侧面：拐弯 · Alt 拖末端改坡度 · 右键：单轨/双轨/单双转换、螺旋',

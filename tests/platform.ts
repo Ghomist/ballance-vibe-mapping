@@ -120,7 +120,7 @@ import { addBlock, moveDownstream } from '../src/model/ops';
 import { extendStart, splitRail } from '../src/model/rail';
 
 export function moreScenarios(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
-  scenario('平台接凹槽路：插入窄平凹转换（长 2.5）', () => {
+  scenario('平台接凹槽路：窄平凹转换嵌在平台内部', () => {
     const m = emptyModel();
     const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
     const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
@@ -128,9 +128,22 @@ export function moreScenarios(emptyModel: () => Model, check: (c: boolean, msg: 
     m.segs[s].style = 'sink';
     normalize(m);
     const tr = Object.values(m.nodes).find((n) => n.kind === 'transition');
-    check(!!tr && !!tr.narrow, '应插入窄转换');
-    check(!!tr && Math.abs(tr.y - -3.75) < 1e-9, `窄转换中心应在 y=-3.75，实际 ${tr?.y}`);
-    check(Math.abs(m.segs[s].len - 15) < 1e-9, `凹槽路应缩短 2.5，实际 ${m.segs[s].len}`);
+    check(!!tr && !!tr.narrow && tr.inPlatform === p, '应在平台内插入窄转换');
+    check(!!tr && Math.abs(tr.y - -1.25) < 1e-9, `窄转换中心应在平台内 y=-1.25，实际 ${tr?.y}`);
+    check(Math.abs(m.segs[s].len - 17.5) < 1e-9, `凹槽路长度应保持不变，实际 ${m.segs[s].len}`);
+    // 平台顶面面积 = 平台 - 转换块所占
+    let a = 0;
+    for (const em of buildFloorMeshes(m)) if (em.id === p) for (const [mat, part] of Object.entries(em.parts)) {
+      if (!part || !mat.startsWith('FloorTop')) continue;
+      const q = part.pos;
+      for (let i = 0; i < q.length; i += 9) a += Math.abs((q[i + 3] - q[i]) * (q[i + 7] - q[i + 1]) - (q[i + 4] - q[i + 1]) * (q[i + 6] - q[i])) / 2;
+    }
+    check(Math.abs(a - (100 - 12.5)) < 1e-6, `平台顶面应扣掉 12.5，实际 ${a}`);
+    // 改回普通路：转换块撤掉，路直接接回平台
+    m.segs[s].style = 'normal';
+    normalize(m);
+    check(!Object.values(m.nodes).some((n) => n.kind === 'transition'), '样式一致后转换块应撤掉');
+    check(nodeLinks(m, p).length === 1 && m.segs[s].a.node === p, '路应直接接回平台');
   });
 
   scenario('六向移动：同轴伸缩、垂直方向受限', () => {
@@ -157,5 +170,35 @@ export function moreScenarios(emptyModel: () => Model, check: (c: boolean, msg: 
     check(r.x === -5 && r.pieces[0].len === 25, '起点应往回延伸 5');
     const tail = splitRail(r, 10, 2)!;
     check(!!tail && r.pieces[0].len === 10 && tail.pieces[0].len === 15 && tail.x === 5, '应在弧长 10 处切开');
+  });
+}
+
+import { cutSeg } from '../src/model/ops';
+
+export function visualJoinScenarios(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
+  const sideArea = (m: Model) => {
+    let a = 0;
+    for (const em of buildFloorMeshes(m)) {
+      const p = em.parts.FloorSide?.pos ?? [];
+      for (let i = 0; i < p.length; i += 9) {
+        const u = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], v = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
+        a += Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+      }
+    }
+    return a;
+  };
+  scenario('分隔后仍对齐的两段：看上去是一整块', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 22.5);
+    const whole = sideArea(m);
+    cutSeg(m, s, 10);
+    normalize(m);
+    check(Object.keys(m.segs).length === 2, '逻辑上应是两段');
+    check(Math.abs(sideArea(m) - whole) < 1e-6, `对齐时不应多出端面：${sideArea(m)} vs ${whole}`);
+    // 移开后端面出现
+    const other = Object.values(m.segs).find((x) => x.id !== s)!;
+    other.x += 5;
+    check(sideArea(m) > whole + 1, '移开后应出现封闭端面');
   });
 }

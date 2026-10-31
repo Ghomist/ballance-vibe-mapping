@@ -171,6 +171,12 @@ export function edgeRunAt(n: MNode, px: number, py: number): EdgeRun | null {
 export function extrudePlatform(m: Model, pid: number, run: EdgeRun, w: number) {
   const n = m.nodes[pid];
   if (!n || n.kind !== 'platform' || Math.abs(w) < EPS) return;
+  // 这条边上嵌着的窄转换先撤掉，推完边后由规范化重新放回
+  for (const i of platformInsets(m, pid)) {
+    if (i.out !== run.out) continue;
+    const lc = axisOf(run.out) === 0 ? i.ox : i.oy;
+    if (Math.abs(lc - run.line) < EPS) revertInset(m, i.tr.id);
+  }
   const cells = cellSet(n);
   const sg = run.out === 0 || run.out === 1 ? 1 : -1;
   const a0 = run.line, a1 = run.line + sg * w;
@@ -207,6 +213,72 @@ export function addSegAtPlatform(m: Model, pid: number, cx: number, cy: number, 
   return id;
 }
 
+// ---------------- 嵌入平台的窄平凹转换 ----------------
+
+export interface Inset { tr: MNode; link: number; out: Dir; ox: number; oy: number }
+
+/** 平台里嵌着的窄转换：它们通过零长度直道接在平台上，外侧端口位于平台外沿 */
+export function platformInsets(m: Model, pid: number): Inset[] {
+  const out: Inset[] = [];
+  for (const l of nodeLinks(m, pid)) {
+    const s = m.segs[l.seg];
+    const other = s[l.key === 'a' ? 'b' : 'a'];
+    if (s.len > EPS || isFree(other)) continue;
+    const tr = m.nodes[other.node];
+    if (!tr || tr.inPlatform !== pid) continue;
+    const o = l.dir; // 平台 -> 转换块的方向即朝外
+    out.push({ tr, link: s.id, out: o, ox: tr.x + DX[o] * HALF / 2, oy: tr.y + DY[o] * HALF / 2 });
+  }
+  return out;
+}
+
+/** 窄转换占用的平台小格（宽 5、深 2.5） */
+export function insetCells(i: Inset): string[] {
+  const inward = opp(i.out);
+  const px = Math.abs(DY[i.out]), py = Math.abs(DX[i.out]);
+  const ex = i.ox + DX[inward] * HALF, ey = i.oy + DY[inward] * HALF;
+  return rectCells(Math.min(i.ox, ex) - px * HALF, Math.min(i.oy, ey) - py * HALF, Math.max(i.ox, ex) + px * HALF, Math.max(i.oy, ey) + py * HALF);
+}
+
+/** 在平台边框带内（开口处往里 2.5）放一个窄转换，路面长度不变。放不下返回 false */
+export function makeInset(m: Model, pid: number, segId: number, key: EndKey): boolean {
+  const p = m.nodes[pid];
+  const s = m.segs[segId];
+  const o = linkOpening(s, key);
+  const inward = opp(o.out);
+  const fake: Inset = { tr: p, link: -1, out: o.out, ox: o.x, oy: o.y };
+  const cells = cellSet(p);
+  if (!insetCells(fake).every((c) => cells.has(c))) return false;
+  const id = m.nextId++;
+  m.nodes[id] = {
+    id, kind: 'transition', narrow: true, inPlatform: pid, style: 'sink', z: p.z, axis: axisOf(o.out),
+    x: o.x + DX[inward] * HALF / 2, y: o.y + DY[inward] * HALF / 2,
+    sinkDir: s.style === 'sink' ? o.out : inward,
+  };
+  s[key] = { node: id };
+  const lid = m.nextId++;
+  m.segs[lid] = {
+    id: lid, x: o.x + DX[inward] * HALF, y: o.y + DY[inward] * HALF, dir: o.out, len: 0, style: p.style,
+    a: { node: pid }, b: { node: id },
+  };
+  return true;
+}
+
+/** 撤掉嵌入的窄转换：路面直接接回平台 */
+export function revertInset(m: Model, trId: number) {
+  const tr = m.nodes[trId];
+  const pid = tr?.inPlatform;
+  if (!tr || pid === undefined) return;
+  for (const l of nodeLinks(m, trId)) {
+    const s = m.segs[l.seg];
+    const other = s[l.key === 'a' ? 'b' : 'a'];
+    if (s.len <= EPS && !isFree(other) && other.node === pid) delete m.segs[s.id];
+    else if (m.nodes[pid]) s[l.key] = { node: pid };
+    else s[l.key] = { node: null, z: tr.z, style: 'closed' };
+  }
+  delete m.nodes[trId];
+}
+
 /** 高度相同、相互接触的平台合并成一个整体 */
 export function mergePlatforms(m: Model): boolean {
   const ps = Object.values(m.nodes).filter((n) => n.kind === 'platform');
@@ -226,6 +298,7 @@ export function mergePlatforms(m: Model): boolean {
       A.ribbon = A.ribbon || B.ribbon;
       updatePlatformCenter(A);
       for (const l of nodeLinks(m, B.id)) m.segs[l.seg][l.key] = { node: A.id };
+      for (const n of Object.values(m.nodes)) if (n.inPlatform === B.id) n.inPlatform = A.id;
       delete m.nodes[B.id];
       if (m.root === B.id) m.root = A.id;
       return true;

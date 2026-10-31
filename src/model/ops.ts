@@ -3,7 +3,7 @@ import {
   BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
   axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp, portCount, zAt,
 } from './types';
-import { cellSet, mergePlatforms, openingFits } from './platform';
+import { cellSet, makeInset, mergePlatforms, openingFits, revertInset } from './platform';
 
 const EPS = 1e-6;
 
@@ -570,10 +570,20 @@ export function fixStyles(m: Model): boolean {
     if (n.kind === 'platform') {
       for (const l of nodeLinks(m, n.id)) {
         const s = m.segs[l.seg];
-        if (s.style === n.style || s.len < HALF - EPS) continue;
+        if (s.style === n.style || s.len <= EPS) continue;
+        // 窄转换放在平台边框带内部；放不下时才从路面上切
+        if (makeInset(m, n.id, s.id, l.key)) return true;
+        if (s.len < HALF - EPS) continue;
         insertTransition(m, s, l.key, { node: n.id, dir: l.dir }, true);
         return true;
       }
+    }
+    if (n.kind === 'transition' && n.inPlatform !== undefined) {
+      // 嵌入平台的窄转换：平台没了、外侧没路了、或两边样式一致了，就撤掉
+      const p = m.nodes[n.inPlatform];
+      const road = nodeLinks(m, n.id).find((l) => m.segs[l.seg].len > EPS || isFree(m.segs[l.seg][l.key === 'a' ? 'b' : 'a']) || (m.segs[l.seg][l.key === 'a' ? 'b' : 'a'] as { node: number }).node !== n.inPlatform);
+      if (!p || !road || m.segs[road.seg].style === p.style) { revertInset(m, n.id); return true; }
+      continue;
     }
     if (n.kind === 'transition') {
       const sp = ports[n.sinkDir!];
