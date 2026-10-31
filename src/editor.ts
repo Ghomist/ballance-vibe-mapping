@@ -1112,7 +1112,7 @@ export class Editor {
       null,
       { label: '在此分隔', action: () => this.cutRailAt(r.id, sAt) },
       { label: '删除末段', action: editRail((rr) => { rr.pieces.pop(); }) },
-      { label: '删除这条钢轨', hint: 'Del', action: () => this.mutate((mm) => { delete mm.rails[r.id]; }) },
+      { label: '删除这条钢轨', hint: 'X / Del', action: () => this.mutate((mm) => { delete mm.rails[r.id]; }) },
     ];
   }
 
@@ -1565,7 +1565,7 @@ export class Editor {
     const k = e.key.toLowerCase();
     if (e.ctrlKey && k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
     if (e.ctrlKey && k === 'y') { e.preventDefault(); this.redo(); return; }
-    if (k === 'delete' || k === 'backspace') {
+    if (k === 'delete' || k === 'backspace' || (k === 'x' && !e.ctrlKey && !e.altKey && !this.drag)) {
       if (this.selection.size) {
         const ids = [...this.selection];
         this.mutate((m) => { for (const id of ids) { if (m.rails[id]) delete m.rails[id]; else if (m.objs[id]) delete m.objs[id]; else if (m.segs[id] || m.nodes[id]) deleteElem(m, id); } });
@@ -1573,8 +1573,9 @@ export class Editor {
         this.select(null);
         return;
       }
-      if (this.selected === null) return;
-      const id = this.selected;
+      // 没有选中时删除鼠标下的元素
+      const id = this.selected ?? this.hover?.id ?? null;
+      if (id === null) return;
       this.mutate((m) => { if (m.rails[id]) delete m.rails[id]; else if (m.objs[id]) delete m.objs[id]; else deleteElem(m, id); });
       this.select(null);
       return;
@@ -1730,7 +1731,7 @@ export class Editor {
         items.push(null);
       }
       items.push(setRoot(s.id));
-      items.push({ label: '删除这段路', hint: 'Del', action: () => this.mutate((mm) => deleteElem(mm, s.id)) });
+      items.push({ label: '删除这段路', hint: 'X / Del', action: () => this.mutate((mm) => deleteElem(mm, s.id)) });
     } else {
       const n = m.nodes[p.id];
       if (n.kind === 'block') {
@@ -1762,7 +1763,7 @@ export class Editor {
       }
       items.push(setRoot(n.id));
       const name = n.kind === 'checkpoint' ? (n.prefab === 'start' ? '删除起点' : '删除小节盘点') : n.kind === 'transition' ? '删除转换块' : n.kind === 'platform' ? `删除平台（连着 ${nodeLinks(m, n.id).length} 条路）` : '删除路块';
-      items.push({ label: name, hint: 'Del', action: () => this.mutate((mm) => deleteElem(mm, n.id)) });
+      items.push({ label: name, hint: 'X / Del', action: () => this.mutate((mm) => deleteElem(mm, n.id)) });
     }
     return items;
   }
@@ -1790,7 +1791,7 @@ export class Editor {
       }
     }
     items.push(null);
-    items.push({ label: `删除${t?.label ?? o.type}`, hint: 'Del', action: () => this.mutate((mm) => { delete mm.objs[id]; }) });
+    items.push({ label: `删除${t?.label ?? o.type}`, hint: 'X / Del', action: () => this.mutate((mm) => { delete mm.objs[id]; }) });
     return items;
   }
 
@@ -2018,7 +2019,7 @@ export class Editor {
       H(['LMB'], `放置「${objType(this.objType)?.label ?? this.objType}」`), H(['LMB'], '拖动物件'), H(['Alt', 'LMB'], '调高度'), H(['R'], '旋转'), H(['RMB'], '小节 / 删除'),
     ];
     else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
-    if (this.selection.size && !d) hs.push(H(['Del'], '删除选中'), H(['Esc'], '取消选择'));
+    if (this.selection.size && !d) hs.push(H(['X'], '删除选中'), H(['Esc'], '取消选择'));
     const key = JSON.stringify(hs);
     if (key === this.hintsKey) return;
     this.hintsKey = key;
