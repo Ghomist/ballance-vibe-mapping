@@ -23,3 +23,4 @@ button, select { transition: background 0.12s, border-color 0.12s; }
 
 .label-layer { position: absolute; inset: 0; pointer-events: none; }
 .axis-label { font: 10px/1 ui-monospace, Consolas, monospace; opacity: 0.75; padding: 1px 3px; text-shadow: 0 0 3px #1d2330; }
+button svg { vertical-align: -2px; margin-right: 3px; }

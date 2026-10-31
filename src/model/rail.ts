@@ -1,8 +1,8 @@
 // 钢轨：从一个起点出发、由若干段（直线 / 圆弧 / 螺旋）首尾相接的路径。
-// 路径高度 z 采用“等效路面顶面高度”：球在路面上时球心高 z+2，钢轨按这个高度放置截面，
-// 这样路面 -> 钢轨、单轨 <-> 双轨之间球心高度连续。
+// 路径高度 z 为双轨的最顶端：双轨接路面时，钢轨最顶端与路面顶面对齐。
+// 单轨相对双轨的位置固定为 BBP 单双轨转换的下沉量；单双转换是一种同时带双轨与单轨的特殊轨道。
 
-export type RailKind = 'double' | 'mono';
+export type RailKind = 'double' | 'mono' | 'transition';
 
 export interface RailPiece {
   kind: RailKind;
@@ -29,12 +29,18 @@ export interface Rail {
 export const RAIL_RADIUS = 0.35;
 export const RAIL_SPAN = 3.75;
 const BALL_R = 2;
-/** 双轨截面中心相对等效路面的高度：球心同样在 +2 */
-export const DOUBLE_OFFSET = BALL_R - Math.sqrt((BALL_R + RAIL_RADIUS) ** 2 - (RAIL_SPAN / 2) ** 2);
-/** 单轨截面中心相对等效路面的高度：轨顶与路面齐平 */
-export const MONO_OFFSET = BALL_R - (BALL_R + RAIL_RADIUS);
-/** 单双轨切换处的重叠长度 */
-export const RAIL_OVERLAP = 5;
+/** BBP 单双轨转换的单轨下沉量：球同时压在双轨与单轨上时，两种截面中心的高差 */
+export const MONO_DROP = BALL_R + RAIL_RADIUS - Math.sqrt((BALL_R + RAIL_RADIUS) ** 2 - (RAIL_SPAN / 2) ** 2);
+/** 双轨截面中心相对路径高度（尖顶朝上，最顶端 = 路径高度） */
+export const DOUBLE_OFFSET = -RAIL_RADIUS;
+/** 单轨截面中心相对路径高度 */
+export const MONO_OFFSET = DOUBLE_OFFSET - MONO_DROP;
+/** 某种轨道最顶端相对路径高度（单轨为平顶） */
+export function railTopOffset(kind: RailKind) {
+  return kind === 'mono' ? MONO_OFFSET + RAIL_RADIUS * Math.cos(Math.PI / 8) : 0;
+}
+/** 单双转换轨道的默认长度（BBP 默认） */
+export const TRANSITION_LEN = 5;
 /** 螺旋默认参数（来自 BBP：第九关、第十三关测量） */
 export const SPIRAL_RADIUS = 5;
 export const SPIRAL_SCREW = 5;
@@ -102,20 +108,87 @@ export function stateAt(r: Rail, s: number): RailState {
   return st;
 }
 
-/** 各轨型覆盖的弧长区间；轨型变化处，前一段的轨型向后多延伸 RAIL_OVERLAP 形成重叠 */
-export function kindSpans(r: Rail): { kind: RailKind; s0: number; s1: number }[] {
-  const spans: { kind: RailKind; s0: number; s1: number }[] = [];
-  let s = 0;
-  const total = r.pieces.reduce((a, p) => a + pieceLength(p), 0);
+/** 双轨 / 单轨各自覆盖的弧长区间（单双转换段两者都有） */
+export function kindSpans(r: Rail): { kind: 'double' | 'mono'; s0: number; s1: number }[] {
+  const spans: { kind: 'double' | 'mono'; s0: number; s1: number }[] = [];
+  for (const kind of ['double', 'mono'] as const) {
+    let s = 0;
+    let cur: { kind: 'double' | 'mono'; s0: number; s1: number } | null = null;
+    for (const p of r.pieces) {
+      const L = pieceLength(p);
+      const has = p.kind === kind || p.kind === 'transition';
+      if (has) {
+        if (cur) cur.s1 = s + L;
+        else spans.push((cur = { kind, s0: s, s1: s + L }));
+      } else cur = null;
+      s += L;
+    }
+  }
+  return spans;
+}
+
+/** 在起点往回延伸 len（直线）：首段是同轨型的平直线就直接加长，否则在前面插一段 */
+export function extendStart(r: Rail, len: number) {
+  const h = (r.heading * Math.PI) / 180;
+  const first = r.pieces[0];
+  if (len < 0) {
+    // 往里缩：只缩首段直线
+    if (!first || first.angle !== 0) return;
+    const cut = Math.min(-len, first.len);
+    const dz = first.len > 0 ? first.dz * (cut / first.len) : 0;
+    r.x += Math.cos(h) * cut; r.y += Math.sin(h) * cut; r.z += dz;
+    first.len -= cut; first.dz -= dz;
+    if (first.len <= 1e-6) r.pieces.shift();
+    return;
+  }
+  r.x -= Math.cos(h) * len; r.y -= Math.sin(h) * len;
+  if (first && first.angle === 0 && first.dz === 0) first.len += len;
+  else r.pieces.unshift({ kind: first?.kind ?? 'double', len, radius: 0, angle: 0, dz: 0 });
+}
+
+/** 在弧长 s 处把钢轨切成两条（只在直线段上切），返回后半条 */
+export function splitRail(r: Rail, s: number, newId: number): Rail | null {
+  let acc = 0;
+  let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
+  for (let i = 0; i < r.pieces.length; i++) {
+    const p = r.pieces[i];
+    const L = pieceLength(p);
+    if (s > acc + 1e-6 && s < acc + L - 1e-6) {
+      if (p.angle !== 0) return null;
+      const f = (s - acc) / L;
+      const mid = advance(st, p, f);
+      const tail: RailPiece = { ...p, len: p.len * (1 - f), dz: p.dz * (1 - f) };
+      p.len *= f; p.dz *= f;
+      const rest = r.pieces.splice(i + 1);
+      return { id: newId, ...mid, pieces: [tail, ...rest] };
+    }
+    if (Math.abs(s - (acc + L)) <= 1e-6 && i < r.pieces.length - 1) {
+      const end = advance(st, p);
+      const rest = r.pieces.splice(i + 1);
+      return { id: newId, ...end, pieces: rest };
+    }
+    st = advance(st, p);
+    acc += L;
+  }
+  return null;
+}
+
+/** 离 (x,y) 最近的路径弧长 */
+export function nearestS(r: Rail, x: number, y: number): number {
+  let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
+  let best = 0, bd = Infinity, acc = 0;
   for (const p of r.pieces) {
     const L = pieceLength(p);
-    const last = spans[spans.length - 1];
-    if (last && last.kind === p.kind) last.s1 = s + L;
-    else spans.push({ kind: p.kind, s0: s, s1: s + L });
-    s += L;
+    const n = Math.max(8, Math.ceil(L * 4));
+    for (let k = 0; k <= n; k++) {
+      const q = advance(st, p, k / n);
+      const d = Math.hypot(q.x - x, q.y - y);
+      if (d < bd) { bd = d; best = acc + (L * k) / n; }
+    }
+    st = advance(st, p);
+    acc += L;
   }
-  for (let i = 0; i < spans.length - 1; i++) spans[i].s1 = Math.min(spans[i].s1 + RAIL_OVERLAP, total);
-  return spans;
+  return best;
 }
 
 /** 在末端追加一段；与前一段同为平直线且轨型相同时直接合并 */

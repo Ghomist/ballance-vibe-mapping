@@ -7,11 +7,13 @@ editor.onStatus = (s) => { status.textContent = s; };
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools button')];
 const syncTools = () => toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === editor.tool));
 toolButtons.forEach((b) => b.addEventListener('click', () => { editor.setTool(b.dataset.tool as Tool); syncTools(); }));
-editor.onChange = syncTools;
-syncTools();
+const grid = document.getElementById('grid') as HTMLButtonElement;
+const syncGrid = () => grid.classList.toggle('active', editor.gridMode);
+grid.addEventListener('click', () => { editor.setGridMode(!editor.gridMode); grid.blur(); });
 
-const step = document.getElementById('step') as HTMLSelectElement;
-step.addEventListener('change', () => { editor.step = Number(step.value); step.blur(); });
+editor.onChange = () => { syncTools(); syncGrid(); };
+syncTools();
+syncGrid();
 
 document.getElementById('undo')!.addEventListener('click', () => editor.undo());
 document.getElementById('redo')!.addEventListener('click', () => editor.redo());

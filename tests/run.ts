@@ -1,5 +1,5 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
-import { platformScenarios, railScenarios } from './platform';
+import { moreScenarios, platformScenarios, railScenarios } from './platform';
 import { buildFloorMeshes } from '../src/geom/floor';
 import {
   addSegAtPort, component, moveIds, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
@@ -255,6 +255,7 @@ scenario('拖动端点到另一端点：高度不同时本段变坡道并连接'
 
 platformScenarios(emptyModel, check, scenario);
 railScenarios(check, scenario);
+moreScenarios(emptyModel, check, scenario);
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
 console.log('\n全部通过');

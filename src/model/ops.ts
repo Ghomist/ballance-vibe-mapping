@@ -1,6 +1,6 @@
 // 路网编辑操作。所有操作都直接修改传入的 Model；调用方负责先 clone 再改（用于拖拽预览和撤销）。
 import {
-  BLOCK, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
+  BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
   axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp, portCount, zAt,
 } from './types';
 import { cellSet, mergePlatforms, openingFits } from './platform';
@@ -228,6 +228,77 @@ export function shiftDownstream(m: Model, target: number, dz: number) {
   }
 }
 
+/**
+ * 目标连同下游整体沿 (dx,dy,dz) 移动；与上游相连的直道自动伸缩（水平移动）或变成坡道（竖直移动）。
+ * 水平移动时，需要伸缩的直道必须与移动方向同轴且长度不小于 0，否则返回 false 且不修改模型。
+ */
+export function moveDownstream(m: Model, target: number, dx: number, dy: number, dz: number): boolean {
+  const horiz = Math.abs(dx) > EPS || Math.abs(dy) > EPS;
+  if (!horiz) { shiftDownstream(m, target, dz); return true; }
+  const comp = component(m, target);
+  const root = m.root !== null && comp.has(m.root) ? m.root : Math.min(...comp);
+  let sub: Set<number>;
+  if (root === target) sub = comp;
+  else {
+    const parent = new Map<number, number>();
+    const seen = new Set([root]);
+    const q = [root];
+    while (q.length) {
+      const cur = q.shift()!;
+      for (const nb of neighbors(m, cur)) if (!seen.has(nb)) { seen.add(nb); parent.set(nb, cur); q.push(nb); }
+    }
+    const blocked = parent.get(target);
+    sub = new Set([target]);
+    const q2 = [target];
+    while (q2.length) for (const nb of neighbors(m, q2.shift()!)) if (nb !== blocked && !sub.has(nb)) { sub.add(nb); q2.push(nb); }
+  }
+  const axis = Math.abs(dx) > EPS ? 0 : 1;
+  const d = axis === 0 ? dx : dy;
+  const moved = (e: End, segIn: boolean) => (isFree(e) ? segIn : sub.has(e.node));
+  // 先检查
+  const plan: { s: Seg; k: EndKey | null }[] = [];
+  for (const s of Object.values(m.segs)) {
+    const segIn = sub.has(s.id);
+    const ma = moved(s.a, segIn), mb = moved(s.b, segIn);
+    if (!ma && !mb) continue;
+    if (ma && mb) { plan.push({ s, k: null }); continue; }
+    if (axisOf(s.dir) !== axis) return false;
+    const k: EndKey = ma ? 'a' : 'b';
+    const sg = axis === 0 ? DX[s.dir] : DY[s.dir];
+    const nl = k === 'b' ? s.len + d * sg : s.len - d * sg;
+    if (nl < -EPS) return false;
+    plan.push({ s, k });
+  }
+  // 再执行
+  for (const { s, k } of plan) {
+    if (k === null) {
+      s.x += dx; s.y += dy;
+      for (const kk of ['a', 'b'] as EndKey[]) { const e = s[kk]; if (isFree(e)) e.z += dz; }
+      continue;
+    }
+    const sg = axis === 0 ? DX[s.dir] : DY[s.dir];
+    if (k === 'a') { s.x += dx; s.y += dy; s.len -= d * sg; } else s.len += d * sg;
+    s.len = Math.max(s.len, 0);
+  }
+  for (const id of sub) {
+    const n = m.nodes[id];
+    if (!n) continue;
+    n.x += dx; n.y += dy; n.z += dz;
+    if (n.kind === 'platform' && n.cells) {
+      const di = Math.round(dx / CELL), dj = Math.round(dy / CELL);
+      n.cells = n.cells.map((c) => { const [i, j] = c.split(',').map(Number); return `${i + di},${j + dj}`; });
+    }
+  }
+  return true;
+}
+
+/** 新建一个独立的 1×1 路块（中心坐标） */
+export function addBlock(m: Model, x: number, y: number, z: number): number {
+  const n = addNode(m, { kind: 'block', x, y, z, style: 'normal' });
+  if (m.root === null) m.root = n.id;
+  return n.id;
+}
+
 export function shiftFreeEnd(m: Model, segId: number, k: EndKey, dz: number) {
   const e = m.segs[segId][k];
   if (isFree(e)) e.z += dz;
@@ -441,17 +512,18 @@ export function setPlatformStyle(m: Model, id: number, style: Style, ribbon: boo
 }
 
 /** 从直道 k 端切掉 5 个单位，在那里放一个平凹转换块。 */
-function insertTransition(m: Model, s: Seg, k: EndKey, other: { seg: Seg; key: EndKey } | { node: number; dir: Dir }) {
+function insertTransition(m: Model, s: Seg, k: EndKey, other: { seg: Seg; key: EndKey } | { node: number; dir: Dir }, narrow = false) {
   const e = s[k] as { node: number };
   const z = endZ(m, s, k);
   const [ex, ey] = endPos(s, k);
   const inward = opp(endOutDir(s, k));
-  if (k === 'a') { s.x += DX[s.dir] * BLOCK; s.y += DY[s.dir] * BLOCK; }
-  s.len -= BLOCK;
+  const L = narrow ? HALF : BLOCK;
+  if (k === 'a') { s.x += DX[s.dir] * L; s.y += DY[s.dir] * L; }
+  s.len -= L;
   const sinkIsCarved = s.style === 'sink';
   const tr = addNode(m, {
-    kind: 'transition', x: ex + DX[inward] * HALF, y: ey + DY[inward] * HALF, z,
-    style: 'sink', axis: axisOf(s.dir), sinkDir: sinkIsCarved ? inward : opp(inward),
+    kind: 'transition', x: ex + DX[inward] * L / 2, y: ey + DY[inward] * L / 2, z,
+    style: 'sink', axis: axisOf(s.dir), sinkDir: sinkIsCarved ? inward : opp(inward), narrow,
   });
   s[k] = { node: tr.id };
   if ('seg' in other) {
@@ -498,8 +570,8 @@ export function fixStyles(m: Model): boolean {
     if (n.kind === 'platform') {
       for (const l of nodeLinks(m, n.id)) {
         const s = m.segs[l.seg];
-        if (s.style === n.style || s.len < BLOCK - EPS) continue;
-        insertTransition(m, s, l.key, { node: n.id, dir: l.dir });
+        if (s.style === n.style || s.len < HALF - EPS) continue;
+        insertTransition(m, s, l.key, { node: n.id, dir: l.dir }, true);
         return true;
       }
     }
@@ -510,15 +582,17 @@ export function fixStyles(m: Model): boolean {
       const fStyle = fp ? m.segs[fp.seg].style : 'normal';
       if (sStyle === 'sink' && fStyle === 'normal') continue;
       if (sStyle === 'normal' && fStyle === 'sink') { n.sinkDir = opp(n.sinkDir!); return true; }
-      // 两边样式相同：转换块不再需要，变回接头并把两侧直道各延长 2.5
+      // 两边样式相同：转换块不再需要，变回接头并把两侧直道各延长半个转换块
+      const h = n.narrow ? HALF / 2 : HALF;
       n.kind = 'joint';
       n.style = sStyle;
       delete n.sinkDir;
+      delete n.narrow;
       for (const p of [sp, fp]) {
         if (!p) continue;
         const s = m.segs[p.seg];
-        if (p.key === 'a') { s.x -= DX[s.dir] * HALF; s.y -= DY[s.dir] * HALF; }
-        s.len += HALF;
+        if (p.key === 'a') { s.x -= DX[s.dir] * h; s.y -= DY[s.dir] * h; }
+        s.len += h;
       }
       return true;
     }

@@ -40,6 +40,8 @@ export interface MNode {
   cells?: string[];
   /** platform：细边花纹（仅凹槽平台有效） */
   ribbon?: boolean;
+  /** transition：窄转换（长 2.5，用于平台与路面衔接） */
+  narrow?: boolean;
 }
 
 export interface AttachedEnd { node: number }
@@ -72,7 +74,7 @@ export interface Model {
 export interface PortRef { seg: number; key: EndKey }
 
 export const isFree = (e: End): e is FreeEnd => e.node === null;
-export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : HALF);
+export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : n.kind === 'transition' && n.narrow ? HALF / 2 : HALF);
 
 export function emptyModel(): Model {
   const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {} };

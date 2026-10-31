@@ -1,6 +1,6 @@
 // 钢轨网格：正八边形截面沿路径扫掠。单轨平顶朝上、双轨尖顶朝上（与原版和 BBP 一致），法线取径向，呈平滑效果。
 import {
-  DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, Rail, RailKind, RailState,
+  DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, Rail, RailState,
   kindSpans, sampleRail, stateAt,
 } from '../model/rail';
 
@@ -24,7 +24,7 @@ export function buildRail(r: Rail): RailMesh {
   return out;
 }
 
-function tube(out: RailMesh, pts: RailState[], kind: RailKind, lateral: number) {
+function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number) {
   const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
   const phase = kind === 'mono' ? 22.5 : 0;
   const rings: { c: number[]; v: number[][]; n: number[][] }[] = [];

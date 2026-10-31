@@ -204,8 +204,10 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
   const sd = n.sinkDir!;
   const a: V2 = [DX[opp(sd)], DY[opp(sd)]]; // 凹槽 -> 平路
   const p: V2 = [-a[1], a[0]];
+  // 窄转换（BME floor_narrow_transition）：沿长度方向缩放 0.5，UV 不变
+  const sx = n.narrow ? 0.5 : 1;
   const L = (lx: number, ly: number, lz: number): V3 =>
-    [n.x + a[0] * (lx - HALF) + p[0] * (ly - HALF), n.y + a[1] * (lx - HALF) + p[1] * (ly - HALF), n.z + lz];
+    [n.x + a[0] * (lx - HALF) * sx + p[0] * (ly - HALF), n.y + a[1] * (lx - HALF) * sx + p[1] * (ly - HALF), n.z + lz];
   const v0 = L(0, 0, 0), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, 0);
   mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
   mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
@@ -215,7 +217,7 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
     const A = L(0, ly, 0), B = L(5, ly, 0);
     const out: V3 = [p[0] * sg, p[1] * sg, 0];
     const Ab: V3 = [A[0], A[1], A[2] - THICK], Bb: V3 = [B[0], B[1], B[2] - THICK];
-    mb.quad('FloorSide', [A, B, Bb, Ab], [[0, 0], [0, 1], [1, 1], [1, 0]], out);
+    mb.quad('FloorSide', [A, B, Bb, Ab], [[0, 0], [0, sx], [1, sx], [1, 0]], out);
   }
   // 端口如果没有连接，补端面
   const ports = nodePorts(m, n.id);
@@ -223,7 +225,8 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
     if (ports[d]) continue;
     const ox = DX[d], oy = DY[d];
     const px = -oy, py = ox;
-    const ex = n.x + ox * HALF, ey = n.y + oy * HALF;
+    const h = n.narrow ? HALF / 2 : HALF;
+    const ex = n.x + ox * h, ey = n.y + oy * h;
     endFace(mb, [ex + px * HALF, ey + py * HALF, n.z], [ex, ey, n.z - notch], [ex - px * HALF, ey - py * HALF, n.z], notch, [ox, oy, 0]);
   }
 }
