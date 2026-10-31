@@ -340,19 +340,29 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
     return u;
   };
   const uScale = ribbon ? 2 : 1;
-  // 1/4 内角块：C 为开口角点（u=0），中线一侧与平台内侧都在 u=0.5（凹槽时下沉 0.7）
+  // 开口带的两块 1/4：
+  //   平台外沿在角点 C 之外还继续 → 内角块（边框在 C 处拐进路面）；
+  //   C 之外已没有平台（路的边沿与平台侧边共线）→ 直的边框条，纹路顺着侧边延续。
   for (const o of cornerOpenings) {
     const inward = opp(o.out);
     const px = -DY[o.out], py = DX[o.out];
     const zi = z0 - sink;
+    const uv = (u: number, v: number): V2 => [u * uScale, v];
     for (const sg of [1, -1]) {
       const C: V3 = [o.x + px * HALF * sg, o.y + py * HALF * sg, z0];
       const A1: V3 = [o.x, o.y, zi];
       const O: V3 = [o.x + DX[inward] * HALF, o.y + DY[inward] * HALF, zi];
-      const A2: V3 = [C[0] + DX[inward] * HALF, C[1] + DY[inward] * HALF, zi];
-      const uv = (u: number, v: number): V2 => [u * uScale, v];
-      mb.tri(bandMat, [C, A1, O], [uv(0, 0), uv(0.5, 0), uv(0.5, 0.5)], UP);
-      mb.tri(bandMat, [C, O, A2], [uv(0, 0), uv(0.5, 0.5), uv(0.5, 0)], UP);
+      const qx = C[0] + px * sg * CELL / 2 + DX[inward] * CELL / 2, qy = C[1] + py * sg * CELL / 2 + DY[inward] * CELL / 2;
+      const continues = cells.has(`${Math.floor(qx / CELL)},${Math.floor(qy / CELL)}`);
+      if (continues) {
+        const A2: V3 = [C[0] + DX[inward] * HALF, C[1] + DY[inward] * HALF, zi];
+        mb.tri(bandMat, [C, A1, O], [uv(0, 0), uv(0.5, 0), uv(0.5, 0.5)], UP);
+        mb.tri(bandMat, [C, O, A2], [uv(0, 0), uv(0.5, 0.5), uv(0.5, 0)], UP);
+      } else {
+        // 边框沿 C—C' 这条侧边（u=0），中线 A1—O（u=0.5），v 沿进深方向
+        const C2: V3 = [C[0] + DX[inward] * HALF, C[1] + DY[inward] * HALF, z0];
+        mb.quad(bandMat, [C, C2, O, A1], [uv(0, 0), uv(0, 0.5), uv(0.5, 0.5), uv(0.5, 0)], UP);
+      }
     }
   }
   const interior: [number, number][] = [];

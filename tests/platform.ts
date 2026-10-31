@@ -317,3 +317,22 @@ export function pieceScenarios(emptyModel: () => Model, check: (c: boolean, msg:
     check(!movePiece(cloneModel(m), pieceOf(m, left.id), 100, 0, 0), '会把下横压成负长度时拒绝');
   });
 }
+
+export function flushOpeningScenario(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
+  scenario('开口紧贴平台侧边：那一侧边框顺着侧边延续（不拐内角）', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
+    // 开口贴着平台左侧边：路中心 x=0，左边沿 x=-2.5 与平台左侧边共线
+    const s = addSegAtPlatform(m, p, 0, -2.5, 3)!;
+    extendTo(m, s, 'b', -20);
+    normalize(m);
+    const part = buildFloorMeshes(m).find((e) => e.id === p)!.parts.FloorTopBorder!;
+    // 平台左侧边 x=-2.5 上、开口带深度内（y ∈ [-2.5, 0]）的顶点 u 都应为 0（边框连续）
+    let ok = true, n = 0;
+    for (let i = 0; i < part.pos.length; i += 3) {
+      const x = part.pos[i], y = part.pos[i + 1];
+      if (Math.abs(x + 2.5) < 1e-6 && y > -2.5 - 1e-6 && y < 0 + 1e-6) { n++; if (Math.abs(part.uv[(i / 3) * 2]) > 1e-6) ok = false; }
+    }
+    check(n > 0 && ok, '左侧边上的开口带顶点应全部 u=0');
+  });
+}
