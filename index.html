@@ -22,6 +22,10 @@
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 4.5h12M1 9.5h12M4.5 1v12M9.5 1v12"/></svg>
         格栅
       </button>
+      <button id="settings" title="全图设置">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="7" r="2.2"/><path d="M7 1v1.8M7 11.2V13M1 7h1.8M11.2 7H13M2.8 2.8l1.3 1.3M9.9 9.9l1.3 1.3M2.8 11.2l1.3-1.3M9.9 4.1l1.3-1.3"/></svg>
+        设置
+      </button>
       <button id="snap" title="S：切换">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 1.5v6a4 4 0 0 0 8 0v-6M3 4h2.4M8.6 4H11M5.4 1.5v6a1.6 1.6 0 0 0 3.2 0v-6"/></svg>
         自动对齐
@@ -48,6 +52,7 @@
   </header>
   <main id="viewport">
     <aside id="palette" hidden></aside>
+    <div id="settings-panel" class="settings-panel" hidden></div>
   </main>
   <footer id="statusbar"><div id="hints"></div><div id="status"></div></footer>
   <script type="module" src="/src/main.ts"></script>

@@ -37,33 +37,37 @@ export interface ObjType {
    * 装饰没有对准点，底部贴住路面。
    */
   anchor?: [number, number, number];
+  /** 其余对准方块（有几个方块的机关，例如秋千、跷跷板）：放置时哪个方块离路面格子最近就用哪个吸附 */
+  more?: [number, number, number][];
+  /** 道具（球、箱子、加分 / 加命球）：放的时候再抬高 settings.propLift，防止穿模 */
+  prop?: boolean;
   /** 全图只能有一个 */
   unique?: boolean;
 }
 
 export const OBJ_TYPES: ObjType[] = [
-  { type: 'P_Extra_Point', cat: 'module', label: '加分球', anchor: [0, 0, -2.6] },
-  { type: 'P_Extra_Life', cat: 'module', label: '加命球', anchor: [0, 0, -2.66] },
+  { type: 'P_Extra_Point', cat: 'module', label: '加分球', anchor: [0, 0, -2.5], prop: true },
+  { type: 'P_Extra_Life', cat: 'module', label: '加命球', anchor: [0, 0, -2.56], prop: true },
   { type: 'P_Trafo_Paper', cat: 'module', label: '纸球变球器', anchor: [0, 0, -0.1] },
   { type: 'P_Trafo_Stone', cat: 'module', label: '石球变球器', anchor: [0, 0, -0.1] },
   { type: 'P_Trafo_Wood', cat: 'module', label: '木球变球器', anchor: [0, 0, -0.1] },
-  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', anchor: [0, 0, -2.1] },
-  { type: 'P_Ball_Stone', cat: 'module', label: '石球', anchor: [0, 0, -2.1] },
-  { type: 'P_Ball_Wood', cat: 'module', label: '木球', anchor: [0, 0, -2.1] },
-  { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.6] },
+  { type: 'P_Ball_Paper', cat: 'module', label: '纸球', anchor: [0, 0, -2], prop: true },
+  { type: 'P_Ball_Stone', cat: 'module', label: '石球', anchor: [0, 0, -2], prop: true },
+  { type: 'P_Ball_Wood', cat: 'module', label: '木球', anchor: [0, 0, -2], prop: true },
+  { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.5], prop: true },
   { type: 'P_Dome', cat: 'module', label: 'Dome', anchor: [0, 0, 0] },
   { type: 'P_Modul_01', cat: 'module', label: 'Modul 01 栅栏', anchor: [2.5, 0.65, 0] },
   { type: 'P_Modul_03', cat: 'module', label: 'Modul 03', anchor: [13.37, 0.04, -10.76] },
-  { type: 'P_Modul_08', cat: 'module', label: 'Modul 08', anchor: [-10, 0, 1.5] },
+  { type: 'P_Modul_08', cat: 'module', label: 'Modul 08', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]] },
   { type: 'P_Modul_17', cat: 'module', label: 'Modul 17', anchor: [0, 0, -5] },
-  { type: 'P_Modul_18', cat: 'module', label: 'Modul 18 风扇', anchor: [0, 0, 0] },
-  { type: 'P_Modul_19', cat: 'module', label: 'Modul 19', anchor: [0, 5, 0] },
-  { type: 'P_Modul_25', cat: 'module', label: 'Modul 25', anchor: [2.5, 0, 0] },
+  { type: 'P_Modul_18', cat: 'module', label: 'Modul 18 风扇', anchor: [0, 0, 0.34] },
+  { type: 'P_Modul_19', cat: 'module', label: 'Modul 19', anchor: [0, 5, 0], more: [[-11.63, 5, 0], [-5.84, -10, 0], [5.81, -10, 0]] },
+  { type: 'P_Modul_25', cat: 'module', label: 'Modul 25', anchor: [2.5, 0, 0], more: [[-12.56, 0, 0]] },
   { type: 'P_Modul_26', cat: 'module', label: 'Modul 26', anchor: [0.23, -0.22, -2.68] },
-  { type: 'P_Modul_29', cat: 'module', label: 'Modul 29', anchor: [10.97, 0, 0.17] },
-  { type: 'P_Modul_30', cat: 'module', label: 'Modul 30 跷跷板', anchor: [9.9, 0.05, 0.5] },
-  { type: 'P_Modul_34', cat: 'module', label: 'Modul 34', anchor: [-2.5, 0, 0] },
-  { type: 'P_Modul_37', cat: 'module', label: 'Modul 37', anchor: [1.23, 0.1, 0] },
+  { type: 'P_Modul_29', cat: 'module', label: 'Modul 29', anchor: [10.97, 0, 0.17], more: [[-9.36, 0, 0.17]] },
+  { type: 'P_Modul_30', cat: 'module', label: 'Modul 30 跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]] },
+  { type: 'P_Modul_34', cat: 'module', label: 'Modul 34', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]] },
+  { type: 'P_Modul_37', cat: 'module', label: 'Modul 37', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]] },
   { type: 'P_Modul_41', cat: 'module', label: 'Modul 41', anchor: [0, 0, 0] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   { type: 'Latern', cat: 'deco', label: '灯柱（灯笼）' },

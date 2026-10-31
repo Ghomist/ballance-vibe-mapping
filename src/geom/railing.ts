@@ -1,89 +1,16 @@
-// 护栏：与原版一致，一整段连续的钢管——沿路边走，拐角处圆弧过渡，只在两头有立柱插进路面，坡道上顺着坡走。
+// 护栏：与原版一致，一整段连续的钢管——沿路面外沿走（贴着路边的外侧），拐角处圆弧过渡，
+// 只在两头有立柱沿路面侧面往下插，立柱上各有一个铆钉（RailNail）；坡道上顺着坡走。
 //
-// 护栏记在路边上：直道左右侧（Seg.guard）、路块没接路的边（MNode.guardSides）。
-// 生成时把所有加了护栏的边收集成线段（往路内缩 0.25，与 BarrierRail 一致），首尾相接的连成一条折线，再扫出圆管。
-import { DX, DY, Dir, HALF, Model, endPos, endZ, nodePorts } from '../model/types';
+// 护栏是独立的对象（Model.guards）：记着起点和终点，沿路面外沿（见 outline.ts）从起点走到终点，
+// 可以跨过拐角；路面改动后起止点重新投影到最近的外沿上。尺寸见全图设置（MapSettings）。
+import type { PrefabPart } from '../model/checkpoint';
+import { Loop, outlineLoops, pathAlong, project } from '../model/outline';
+import { Guard, MapSettings, Model } from '../model/types';
 
-export const GUARD_INSET = 0.25;
-export const GUARD_HEIGHT = 5;     // 横杆中心离路面的高度（BarrierRail 顶部 5.25，管半径 0.25）
-export const GUARD_RADIUS = 0.25;
 const BEND = 0.8;                  // 拐弯半径
 const SIDES = 8;
 
 type P3 = [number, number, number];
-interface Piece { a: P3; b: P3 }
-
-/** 所有护栏边（每条边一段，端点在路面顶面高度） */
-export function guardPieces(m: Model): Piece[] {
-  const out: Piece[] = [];
-  const e = HALF - GUARD_INSET;
-  for (const s of Object.values(m.segs)) {
-    const g = s.guard;
-    if (!g || s.len < 1e-6) continue;
-    const [ax, ay] = endPos(s, 'a'), [bx, by] = endPos(s, 'b');
-    const za = endZ(m, s, 'a'), zb = endZ(m, s, 'b');
-    const L = ((s.dir + 1) % 4) as Dir;
-    for (const [on, sg] of [[g.L, 1], [g.R, -1]] as const) {
-      if (!on) continue;
-      const ox = DX[L] * e * sg, oy = DY[L] * e * sg;
-      out.push({ a: [ax + ox, ay + oy, za], b: [bx + ox, by + oy, zb] });
-    }
-  }
-  for (const n of Object.values(m.nodes)) {
-    if (n.kind !== 'block' || !n.guardSides) continue;
-    const ports = nodePorts(m, n.id);
-    const on = (d: Dir) => !ports[d] && !!(n.guardSides! & (1 << d));
-    for (const N of [0, 1, 2, 3] as Dir[]) {
-      if (!on(N)) continue;
-      const T = ((N + 1) % 4) as Dir;
-      // 两头：相邻那条边也有护栏时在拐角处相交（缩进），否则伸到路块边沿（接上直道的护栏）
-      const end = (t: Dir) => (on(t) ? e : HALF);
-      const cx = n.x + DX[N] * e, cy = n.y + DY[N] * e;
-      const ta = end(((T + 2) % 4) as Dir), tb = end(T);
-      out.push({ a: [cx - DX[T] * ta, cy - DY[T] * ta, n.z], b: [cx + DX[T] * tb, cy + DY[T] * tb, n.z] });
-    }
-  }
-  return out;
-}
-
-const key = (p: P3) => `${p[0].toFixed(2)},${p[1].toFixed(2)},${p[2].toFixed(2)}`;
-
-/** 首尾相接的护栏边连成折线；closed 表示围成一圈 */
-export function guardChains(m: Model): { pts: P3[]; closed: boolean }[] {
-  const pieces = guardPieces(m);
-  const at = new Map<string, number[]>();
-  pieces.forEach((p, i) => { for (const q of [p.a, p.b]) { const k = key(q); at.set(k, [...(at.get(k) ?? []), i]); } });
-  const used = new Set<number>();
-  const chains: { pts: P3[]; closed: boolean }[] = [];
-  const walk = (start: number, from: P3): P3[] => {
-    const pts: P3[] = [from];
-    let i = start, cur = from;
-    while (true) {
-      used.add(i);
-      const p = pieces[i];
-      const next = key(p.a) === key(cur) ? p.b : p.a;
-      pts.push(next);
-      cur = next;
-      const nb = (at.get(key(cur)) ?? []).find((j) => !used.has(j));
-      if (nb === undefined) return pts;
-      i = nb;
-    }
-  };
-  // 先从端点（只连一段）开始走，剩下的是闭合圈
-  pieces.forEach((p, i) => {
-    if (used.has(i)) return;
-    for (const q of [p.a, p.b]) {
-      if ((at.get(key(q)) ?? []).length === 1) { chains.push({ pts: walk(i, q), closed: false }); return; }
-    }
-  });
-  pieces.forEach((p, i) => {
-    if (used.has(i)) return;
-    const pts = walk(i, p.a);
-    pts.pop();
-    chains.push({ pts, closed: true });
-  });
-  return chains.map((c) => ({ pts: simplify(c.pts, c.closed), closed: c.closed }));
-}
 
 const sub = (a: P3, b: P3): P3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const add = (a: P3, b: P3): P3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -92,36 +19,6 @@ const len = (a: P3) => Math.hypot(a[0], a[1], a[2]);
 const norm = (a: P3): P3 => mul(a, 1 / (len(a) || 1));
 const dot = (a: P3, b: P3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: P3, b: P3): P3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-
-/** 去掉共线的中间点 */
-function simplify(pts: P3[], closed: boolean): P3[] {
-  const out: P3[] = [];
-  const n = pts.length;
-  for (let i = 0; i < n; i++) {
-    if (!closed && (i === 0 || i === n - 1)) { out.push(pts[i]); continue; }
-    const p = pts[(i - 1 + n) % n], c = pts[i], q = pts[(i + 1) % n];
-    if (len(sub(c, p)) < 1e-6) continue;
-    if (dot(norm(sub(c, p)), norm(sub(q, c))) > 1 - 1e-6) continue;
-    out.push(c);
-  }
-  return out;
-}
-
-/** 护栏中心线：两头立柱 + 横杆，拐角处圆弧 */
-export function guardPath(pts: P3[], closed: boolean): { path: P3[]; closed: boolean } {
-  const top = pts.map((p) => [p[0], p[1], p[2] + GUARD_HEIGHT] as P3);
-  let poly: P3[];
-  if (closed) poly = top;
-  else {
-    // 立柱往路内收 GUARD_INSET，管子不伸出路沿
-    const d0 = norm(sub(top[1], top[0])), d1 = norm(sub(top[top.length - 2], top[top.length - 1]));
-    const s0 = add(pts[0], mul([d0[0], d0[1], 0], GUARD_INSET)), s1 = add(pts[pts.length - 1], mul([d1[0], d1[1], 0], GUARD_INSET));
-    top[0] = [s0[0], s0[1], top[0][2] + d0[2] * GUARD_INSET];
-    top[top.length - 1] = [s1[0], s1[1], top[top.length - 1][2] + d1[2] * GUARD_INSET];
-    poly = [[s0[0], s0[1], pts[0][2] - 0.05], ...top, [s1[0], s1[1], pts[pts.length - 1][2] - 0.05]];
-  }
-  return { path: fillet(poly, closed), closed };
-}
 
 /** 折线的拐角换成圆弧 */
 function fillet(poly: P3[], closed: boolean): P3[] {
@@ -156,7 +53,7 @@ function fillet(poly: P3[], closed: boolean): P3[] {
 }
 
 /** 沿中心线扫出八边形截面的圆管（平滑法线），两头封口 */
-export function sweepTube(path: P3[], closed: boolean, radius = GUARD_RADIUS): { pos: number[]; nrm: number[] } {
+export function sweepTube(path: P3[], closed: boolean, radius: number): { pos: number[]; nrm: number[] } {
   const pos: number[] = [], nrm: number[] = [];
   const n = path.length;
   if (n < 2) return { pos, nrm };
@@ -203,6 +100,52 @@ export function sweepTube(path: P3[], closed: boolean, radius = GUARD_RADIUS): {
   return { pos, nrm };
 }
 
-export function buildGuards(m: Model): { pos: number[]; nrm: number[] }[] {
-  return guardChains(m).map((c) => { const p = guardPath(c.pts, c.closed); return sweepTube(p.path, p.closed); });
+/** 护栏走过的外沿路径（起止点投影到同一个外沿环上）；放不下时返回 null */
+export function guardRoute(loops: Loop[], g: Guard): { pts: P3[]; outs: [number, number][] } | null {
+  const pa = project(loops, g.a);
+  if (!pa || pa.dist > 3) return null;
+  const pb = project([loops[pa.loop]], g.b);
+  if (!pb || pb.dist > 3) return null;
+  const r = pathAlong(loops[pa.loop], pa.s, pb.s);
+  if (r.pts.length < 2 || !r.outs.length) return null;
+  return r;
+}
+
+export interface GuardMesh { pos: number[]; nrm: number[]; nails: PrefabPart[]; route: { pts: P3[]; outs: [number, number][] } }
+
+export function buildGuard(loops: Loop[], g: Guard, st: MapSettings): GuardMesh | null {
+  const route = guardRoute(loops, g);
+  if (!route) return null;
+  const { pts, outs } = route;
+  // 往外偏移：拐角处取两条偏移线的交点
+  const off = pts.map((p, i) => {
+    const n1 = outs[Math.max(i - 1, 0)], n2 = outs[Math.min(i, outs.length - 1)];
+    const d = st.guardOffset;
+    const dot = n1[0] * n2[0] + n1[1] * n2[1];
+    const k = d / (1 + dot || 1);
+    const ox = i === 0 ? n2[0] * d : i === pts.length - 1 ? n1[0] * d : (n1[0] + n2[0]) * k;
+    const oy = i === 0 ? n2[1] * d : i === pts.length - 1 ? n1[1] * d : (n1[1] + n2[1]) * k;
+    return [p[0] + ox, p[1] + oy, p[2]] as P3;
+  });
+  const h = st.guardTop - st.guardRadius;
+  const top = off.map((p) => [p[0], p[1], p[2] + h] as P3);
+  const first = off[0], last = off[off.length - 1];
+  const poly: P3[] = [[first[0], first[1], first[2] - st.guardPostDepth], ...top, [last[0], last[1], last[2] - st.guardPostDepth]];
+  const tube = sweepTube(fillet(poly, false), false, st.guardRadius);
+  const deg = (o: [number, number]) => (Math.atan2(o[1], o[0]) * 180) / Math.PI;
+  const nails: PrefabPart[] = [
+    { name: 'RailNail', type: 'asset', pos: [pts[0][0], pts[0][1], pts[0][2] - st.nailDepth], rotZ: deg(outs[0]) },
+    { name: 'RailNail', type: 'asset', pos: [pts[pts.length - 1][0], pts[pts.length - 1][1], pts[pts.length - 1][2] - st.nailDepth], rotZ: deg(outs[outs.length - 1]) },
+  ];
+  return { ...tube, nails, route };
+}
+
+export function buildGuards(m: Model): Map<number, GuardMesh> {
+  const loops = outlineLoops(m);
+  const out = new Map<number, GuardMesh>();
+  for (const g of Object.values(m.guards ?? {})) {
+    const b = buildGuard(loops, g, m.settings);
+    if (b) out.set(g.id, b);
+  }
+  return out;
 }

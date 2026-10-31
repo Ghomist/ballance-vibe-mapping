@@ -239,8 +239,8 @@ export function baseScenarios(emptyModel: () => Model, check: Check, scenario: S
     const m = emptyModel();
     const s = blockToSeg(m, 1, 0);
     extendTo(m, s, 'b', 47.5);
-    const mid = addObj(m, 'P_Modul_18', 20, 0, 0)!;
-    const end = addObj(m, 'P_Modul_18', 45, 0, 0)!;
+    const mid = addObj(m, 'P_Modul_18', 20, 0, -0.34)!;
+    const end = addObj(m, 'P_Modul_18', 45, 0, -0.34)!;
     placeBase(m, mid); placeBase(m, end);
     normalize(m);
     validate(m, 'fan');
@@ -266,38 +266,47 @@ export function baseScenarios(emptyModel: () => Model, check: Check, scenario: S
   });
 }
 
-import { buildGuards, guardChains } from '../src/geom/railing';
+import { buildGuards } from '../src/geom/railing';
+import { outlineLoops } from '../src/model/outline';
 
 export function guardScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
-  scenario('护栏：直路 + 拐角连成一整段，拐角圆弧、只有两头立柱，坡道上也是一整段', () => {
+  scenario('护栏：沿路面外沿走、跨过拐角，贴着路边外侧，两头立柱 + 铆钉，坡道上也是一整段', () => {
     const m = emptyModel();
     const s = blockToSeg(m, 1, 0); // x ∈ [-2.5, 2.5]，y=0
     extendTo(m, s, 'b', 30);
     const br = makeCorner(m, s, 'b', 1)!; // 末端往 +Y 拐
     extendTo(m, br, 'b', 20);
     normalize(m);
-    // 外侧：直路右侧（y<0）+ 拐角路块的 -Y、+X 两边 + 拐出去那段的右侧（x>）
-    const corner = Object.values(m.nodes).find((n) => n.kind === 'block')!;
-    m.segs[s].guard = { R: true };
-    corner.guardSides = (1 << 3) | (1 << 0);
-    const s2 = Object.values(m.segs).find((x) => x.id !== s)!;
-    s2.guard = { R: true };
-    let ch = guardChains(m);
-    check(ch.length === 1 && !ch[0].closed, `外侧护栏应连成一整段，实际 ${ch.length} 段`);
-    check(ch[0].pts.length === 3, `拐角处只有一个拐点（共 3 点），实际 ${ch[0].pts.length}`);
+    const loops = outlineLoops(m);
+    check(loops.length === 1 && loops[0].closed, `一条带拐角的路外沿应是一个闭合环，实际 ${loops.length} 个`);
+    // 从直路右侧（y=-2.5）x=10 处，绕过拐角外侧，到拐出去那段路右侧 y=10 处
+    const id = m.nextId++;
+    m.guards[id] = { id, a: [10, -2.5, 0], b: [32.5, 10, 0] };
+    const g = buildGuards(m).get(id);
+    check(!!g, '护栏应能生成');
+    if (!g) return;
+    check(g.route.pts.length === 3, `应绕过一个拐角（3 个点），实际 ${g.route.pts.length}`);
+    // 贴着路边外侧：横杆在 y = -2.5 - 0.25
+    const ys = [];
+    for (let i = 0; i < g.pos.length; i += 3) if (g.pos[i] < 12 && g.pos[i + 2] > 1) ys.push(g.pos[i + 1]);
+    const yc = (Math.max(...ys) + Math.min(...ys)) / 2;
+    check(Math.abs(yc - -2.75) < 0.01, `管中心应在路边外 0.25（y=-2.75），实际 ${yc.toFixed(3)}`);
+    const zs = g.pos.filter((_, i) => i % 3 === 2);
+    check(Math.abs(Math.max(...zs) - m.settings.guardTop) < 0.01 && Math.abs(Math.min(...zs) + m.settings.guardPostDepth) < 0.3,
+      `管顶应在路面上 ${m.settings.guardTop}、立柱伸到路面下 ${m.settings.guardPostDepth}`);
+    check(g.nails.length === 2 && g.nails.every((n) => n.name === 'RailNail'), '两头各一个铆钉');
     // 管子朝外：每个三角形的法线与顶点法线同向
-    const t = buildGuards(m)[0];
     let bad = 0;
-    for (let i = 0; i < t.pos.length; i += 9) {
-      const p = t.pos, a = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], b = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
+    for (let i = 0; i < g.pos.length; i += 9) {
+      const p = g.pos, a = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], b = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
       const n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-      const vn = [t.nrm[i] + t.nrm[i + 3] + t.nrm[i + 6], t.nrm[i + 1] + t.nrm[i + 4] + t.nrm[i + 7], t.nrm[i + 2] + t.nrm[i + 5] + t.nrm[i + 8]];
+      const vn = [g.nrm[i] + g.nrm[i + 3] + g.nrm[i + 6], g.nrm[i + 1] + g.nrm[i + 4] + g.nrm[i + 7], g.nrm[i + 2] + g.nrm[i + 5] + g.nrm[i + 8]];
       if (n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2] < 0) bad++;
     }
     check(bad === 0, `管子三角形朝向应向外，有 ${bad} 个朝里`);
-    // 坡道：抬高拐出去那段的末端，仍是一整段
+    // 坡道：抬高拐出去那段的末端，护栏仍能生成
+    const s2 = Object.values(m.segs).find((x) => x.id !== s)!;
     shiftFreeEnd(m, s2.id, 'b', 5);
-    ch = guardChains(m);
-    check(ch.length === 1, '坡道上护栏仍连成一整段');
+    check(!!buildGuards(m).get(id), '坡道上护栏仍是一整段');
   });
 }

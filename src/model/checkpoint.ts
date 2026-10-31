@@ -48,7 +48,7 @@ export function insertNodeOnSeg(m: Model, segId: number, c: number, half: number
     const id = m.nextId++;
     m.segs[id] = {
       id, x: s.x + DX[s.dir] * (c + half), y: s.y + DY[s.dir] * (c + half), dir: s.dir, len: Math.max(right, 0), style: s.style,
-      a: { node: nd.id }, b: s.b, guard: s.guard ? { ...s.guard } : undefined,
+      a: { node: nd.id }, b: s.b,
     };
   }
   if (left > 2.5 - EPS || (!isFree(s.a) && left > -EPS)) {

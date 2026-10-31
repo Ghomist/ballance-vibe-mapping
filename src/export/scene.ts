@@ -97,9 +97,12 @@ export function exportScene(m: Model): SceneDesc {
 
   // ---- 护栏：每段一个钢轨物体 ----
   let gi = 0;
-  for (const t of buildGuards(m)) {
+  const guardNails: SceneAsset[] = [];
+  for (const t of buildGuards(m).values()) {
     if (!t.pos.length) continue;
     meshes.push({ name: `A_Rail_BVM_Guard_${String(++gi).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: t.pos.map(r5) }] });
+    // 铆钉：装饰，不归组
+    for (const n of t.nails) guardNails.push({ asset: n.name, kind: 'deco', pos: n.pos.map(r5) as [number, number, number], rotZ: n.rotZ });
   }
 
   // ---- 挡块：合成一个物体 ----
@@ -111,7 +114,7 @@ export function exportScene(m: Model): SceneDesc {
   if (sp.length) meshes.push({ name: 'A_Stopper_BVM_01', kind: 'stopper', parts: [{ mat: 'Stopper', pos: sp, uv: su }] });
 
   // ---- 资产与机关 ----
-  const assets: SceneAsset[] = [];
+  const assets: SceneAsset[] = [...guardNails];
   const elements: SceneElement[] = [];
   const pushPart = (p: ReturnType<typeof prefabParts>[number], sector?: number) => {
     const pos = p.pos.map(r5) as [number, number, number];

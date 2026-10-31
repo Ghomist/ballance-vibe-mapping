@@ -1,5 +1,6 @@
 import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES } from './model/objects';
+import { DEFAULT_SETTINGS } from './model/types';
 
 const editor = new Editor(document.getElementById('viewport')!);
 const status = document.getElementById('status')!;
@@ -114,6 +115,32 @@ ${String(e).slice(0, 1500)}`);
     exportBtn.removeAttribute('disabled');
   }
 }));
+
+// 全图设置
+const panel = document.getElementById('settings-panel')!;
+const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; step: number }[] = [
+  { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（原版约 3.37）', step: 0.05 },
+  { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（手册：1.5）', step: 0.05 },
+  { key: 'guardOffset', label: '护栏离路边', hint: '管中心在路边外侧多远', step: 0.05 },
+  { key: 'guardRadius', label: '护栏管半径', hint: '', step: 0.01 },
+  { key: 'nailDepth', label: '铆钉深度', hint: '铆钉顶部在路面以下（手册：0.7）', step: 0.05 },
+  { key: 'propLift', label: '道具离地高度', hint: '球、箱子、加分 / 加命球抬高，防止穿模', step: 0.05 },
+];
+const renderSettings = () => {
+  panel.innerHTML = '<h3>全图设置</h3>' + FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${editor.settings[f.key]}"></label>`).join('')
+    + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
+  panel.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
+    const v = Number(inp.value);
+    if (Number.isFinite(v)) editor.setSettings({ [inp.dataset.key!]: v });
+  }));
+  panel.querySelector('#settings-reset')!.addEventListener('click', () => { editor.setSettings({ ...DEFAULT_SETTINGS }); renderSettings(); });
+  panel.querySelector('#settings-close')!.addEventListener('click', () => { panel.hidden = true; });
+};
+document.getElementById('settings')!.addEventListener('click', (e) => {
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderSettings();
+  (e.currentTarget as HTMLButtonElement).blur();
+});
 
 const file = document.getElementById('file') as HTMLInputElement;
 document.getElementById('open')!.addEventListener('click', () => file.click());

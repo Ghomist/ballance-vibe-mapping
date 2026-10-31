@@ -57,8 +57,6 @@ export interface MNode {
    * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
-  /** block：哪几边加护栏（按方向的位掩码，只对没接路的边有效） */
-  guardSides?: number;
   /** base：专属路面的种类 */
   baseKind?: BaseKind;
   /** base（变球器）：材质 */
@@ -91,8 +89,6 @@ export interface Seg {
   style: Style;
   a: End;
   b: End;
-  /** 护栏：沿 dir 方向看的左侧 / 右侧 */
-  guard?: { L?: boolean; R?: boolean };
 }
 
 export interface Model {
@@ -104,7 +100,34 @@ export interface Model {
   rails: Record<number, Rail>;
   /** 机关与装饰 */
   objs: Record<number, Obj>;
+  /** 护栏：沿路面外沿从 a 走到 b（外沿是有方向的环，见 outline.ts） */
+  guards: Record<number, Guard>;
+  /** 全图设置 */
+  settings: MapSettings;
 }
+
+export interface Guard { id: number; a: [number, number, number]; b: [number, number, number] }
+
+/** 全图设置（设置页里改，整张图生效） */
+export interface MapSettings {
+  /** 护栏横杆顶部离路面的高度 */
+  guardTop: number;
+  /** 护栏立柱伸到路面以下多深 */
+  guardPostDepth: number;
+  /** 护栏管中心离路边多远（往外） */
+  guardOffset: number;
+  /** 护栏管半径 */
+  guardRadius: number;
+  /** 铆钉顶部离路面多深 */
+  nailDepth: number;
+  /** 道具（球、箱子、加分 / 加命球）离路面多高，防止穿模 */
+  propLift: number;
+}
+
+/** 默认值：量自原版关卡，与制图手册一致（护栏底部在路面下 1.5，铆钉在路面下约 0.7） */
+export const DEFAULT_SETTINGS: MapSettings = {
+  guardTop: 3.37, guardPostDepth: 1.5, guardOffset: 0.25, guardRadius: 0.25, nailDepth: 0.7, propLift: 0.1,
+};
 
 export interface PortRef { seg: number; key: EndKey }
 
@@ -121,7 +144,7 @@ export function nodePortDirs(n: MNode): Dir[] {
 }
 
 export function emptyModel(): Model {
-  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {}, objs: {} };
+  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {}, objs: {}, guards: {}, settings: { ...DEFAULT_SETTINGS } };
   const id = m.nextId++;
   // 路块边沿对齐到 5 的整数倍，与 Blender / BBP 的习惯一致
   m.nodes[id] = { id, kind: 'block', x: HALF, y: HALF, z: 0, style: 'normal' };
@@ -134,10 +157,11 @@ export const cloneModel = (m: Model): Model => JSON.parse(JSON.stringify(m));
 /** 兼容旧版本存档 */
 export function migrateModel(m: Model): Model {
   m.rails ??= {};
-  for (const n of Object.values(m.nodes ?? {})) {
-    const g = (n as { guard?: boolean }).guard;
-    if (g) { n.guardSides = 15; delete (n as { guard?: boolean }).guard; }
-  }
+  m.guards ??= {};
+  m.settings = { ...DEFAULT_SETTINGS, ...(m.settings ?? {}) };
+  // 早期版本把护栏记在路边上，已改为独立的护栏对象
+  for (const s of Object.values(m.segs ?? {})) delete (s as { guard?: unknown }).guard;
+  for (const n of Object.values(m.nodes ?? {})) { delete (n as { guard?: unknown }).guard; delete (n as { guardSides?: unknown }).guardSides; }
   m.objs ??= {};
   return m;
 }
