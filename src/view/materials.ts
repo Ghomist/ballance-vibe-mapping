@@ -44,3 +44,11 @@ export function getMaterial(name: MatName): THREE.Material {
   cache.set(name, m);
   return m;
 }
+
+let railMat: THREE.Material | null = null;
+
+/** 钢轨：游戏里是环境贴图的金属质感，预览用高光材质近似 */
+export function getRailMaterial(): THREE.Material {
+  railMat ??= new THREE.MeshPhongMaterial({ color: 0x9ea8b4, specular: 0xe8f0ff, shininess: 70 });
+  return railMat;
+}

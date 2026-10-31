@@ -2,14 +2,18 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { buildElem, computeChains, elemKey, type MatName } from './geom/floor';
-import { getMaterial } from './view/materials';
+import { buildRail } from './geom/rail';
+import { getMaterial, getRailMaterial } from './view/materials';
 import { Fx, rectSegs } from './view/fx';
 import { createGrid } from './view/grid';
 import { lerpModel } from './view/tween';
 import {
   DX, DY, Dir, EndKey, HALF, HEIGHT_STEP, Model, Seg, Style,
-  axisOf, cloneModel, emptyModel, endPos, endZ, isFree, nodeLinks, nodePorts, opp, portCount, zAt,
+  axisOf, cloneModel, emptyModel, endPos, endZ, isFree, migrateModel, nodeLinks, nodePorts, opp, portCount, zAt,
 } from './model/types';
+import {
+  Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, nearestPiece, pieceLength, pushPiece, railEnd,
+} from './model/rail';
 import {
   addSegAtPort, applyConnection, blockToSeg, cutJoint, cutSeg, deleteElem, extendFlat, extendTo,
   findConnection, insertJoint, isSloped, makeBranch, normalize, setBlockStyle, setChainStyle, setSegStyle,
@@ -19,11 +23,11 @@ import {
   addSegAtPlatform, blockToPlatform, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
 } from './model/platform';
 
-export type Tool = 'edit' | 'cut';
+export type Tool = 'edit' | 'cut' | 'rail';
 
 interface Pick {
   id: number;
-  kind: 'seg' | 'node';
+  kind: 'seg' | 'node' | 'rail';
   point: THREE.Vector3;
   normal: THREE.Vector3;
 }
@@ -44,11 +48,14 @@ interface Action {
   dir: Dir;
   z: number;
   apply: (m: Model, coord: number) => GrowEnd;
+  /** 需要完整平面坐标的动作（钢轨：直线 / 圆弧由鼠标位置决定） */
+  apply2?: (m: Model, x: number, y: number) => void;
 }
 
 type Drag =
   | { type: 'action'; snapshot: Model; action: Action }
   | { type: 'height'; snapshot: Model; target: HeightTarget; plane: THREE.Plane; z0: number }
+  | { type: 'railHeight'; snapshot: Model; rail: number; plane: THREE.Plane; z0: number }
   | { type: 'orbit' };
 
 type HeightTarget = (m: Model) => number | { seg: number; key: EndKey } | null;
@@ -68,6 +75,9 @@ const C_INVALID = 0xff5d73;
 const C_CONNECT = 0x7dff9a;
 const C_JOINT = 0x55ccff;
 const C_ROOT = 0xffd76a;
+const C_RAIL = 0x9be7ff;
+const RAIL_HANDLE_GEO = new THREE.BoxGeometry(5, 5, 1.6).translate(-1.5, 0, 0);
+const RAIL_HANDLE_MAT = new THREE.MeshBasicMaterial({ visible: false });
 
 export class Editor {
   model: Model;
@@ -185,7 +195,7 @@ export class Editor {
     const data = JSON.parse(text);
     if (data.format !== 'bvm') throw new Error('不是 bvm 工程文件');
     this.pushUndo(this.model);
-    this.model = data.model;
+    this.model = migrateModel(data.model);
     this.commitView();
   }
 
@@ -233,19 +243,41 @@ export class Editor {
   private syncMeshes() {
     const m = this.display;
     const chains = computeChains(m);
-    const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes)].map(Number));
+    const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails)].map(Number));
     for (const [id, c] of this.meshCache) {
       if (ids.has(id)) continue;
-      for (const mesh of c.meshes) { mesh.geometry.dispose(); this.floor.remove(mesh); }
+      for (const mesh of c.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
       this.meshCache.delete(id);
     }
     for (const id of ids) {
-      const key = elemKey(m, id, chains);
+      const rail = m.rails[id];
+      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains);
       const cached = this.meshCache.get(id);
       if (cached && cached.key === key) continue;
-      if (cached) for (const mesh of cached.meshes) { mesh.geometry.dispose(); this.floor.remove(mesh); }
-      const em = buildElem(m, id, chains);
+      if (cached) for (const mesh of cached.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
       const meshes: THREE.Mesh[] = [];
+      if (rail) {
+        const rm = buildRail(rail);
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(rm.pos, 3));
+        g.setAttribute('normal', new THREE.Float32BufferAttribute(rm.nrm, 3));
+        const mesh = new THREE.Mesh(g, getRailMaterial());
+        mesh.userData = { id, kind: 'rail' };
+        this.floor.add(mesh);
+        meshes.push(mesh);
+        // 末端的隐形拾取块：双轨中间是空的，方便点中末端继续延伸
+        const E = railEnd(rail);
+        const handle = new THREE.Mesh(RAIL_HANDLE_GEO, RAIL_HANDLE_MAT);
+        handle.position.set(E.x, E.y, E.z + 0.3);
+        handle.rotation.z = (E.heading * Math.PI) / 180;
+        handle.userData = { id, kind: 'rail', handle: true };
+        handle.updateMatrixWorld();
+        this.floor.add(handle);
+        meshes.push(handle);
+        this.meshCache.set(id, { key, meshes });
+        continue;
+      }
+      const em = buildElem(m, id, chains);
       for (const [mat, part] of Object.entries(em?.parts ?? {})) {
         if (!part || part.pos.length === 0) continue;
         const g = new THREE.BufferGeometry();
@@ -292,7 +324,7 @@ export class Editor {
     if (this.selected !== null) show('select', this.outlineSegs(this.selected), C_SELECT, { width: 2.5, gradient: true });
 
     // 动作示意（左键 / Shift）
-    this.action = h && this.tool === 'edit' && !this.mods.alt ? this.actionFor(h) : null;
+    this.action = h && this.tool !== 'cut' && !this.mods.alt ? this.actionFor(h) : null;
     const a = this.action;
     if (a) show(this.mods.shift ? 'act-extrude' : 'act', a.segs, a.valid ? a.color : C_INVALID, { width: 2.5, pos: a.pos });
 
@@ -323,7 +355,8 @@ export class Editor {
   private outlineSegs(id: number): number[] {
     const out: number[] = [];
     for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
-      const e = new THREE.EdgesGeometry(mesh.geometry, 30);
+      if (mesh.userData.handle) continue;
+      const e = new THREE.EdgesGeometry(mesh.geometry, mesh.userData.kind === 'rail' ? 50 : 30);
       out.push(...(e.getAttribute('position').array as Float32Array));
       e.dispose();
     }
@@ -352,7 +385,7 @@ export class Editor {
     const hit = this.raycaster.intersectObjects(this.pickables, false)[0];
     if (!hit || !hit.face) return null;
     const { id, kind } = hit.object.userData;
-    if (!this.model.segs[id] && !this.model.nodes[id]) return null;
+    if (!this.model.segs[id] && !this.model.nodes[id] && !this.model.rails[id]) return null;
     return { id, kind, point: hit.point.clone(), normal: hit.face.normal.clone() };
   }
 
@@ -397,6 +430,14 @@ export class Editor {
   private actionFor(p: Pick): Action | null {
     const m = this.model;
     const shift = this.mods.shift;
+    if (p.kind === 'rail') return this.railEndAction(p);
+    if (this.tool === 'rail') {
+      if (p.kind !== 'seg') return null;
+      const s = m.segs[p.id];
+      const { t } = this.segLocal(s, p.point);
+      const k: EndKey = t < s.len / 2 ? 'a' : 'b';
+      return isFree(s[k]) ? this.railStartAction(s, k) : null;
+    }
     if (p.kind === 'seg') {
       const s = m.segs[p.id];
       if (!s) return null;
@@ -582,6 +623,109 @@ export class Editor {
     };
   }
 
+  // ---------------- 钢轨 ----------------
+
+  /** 由鼠标位置算出下一段钢轨：在正前方附近为直线，偏向一侧则为与当前方向相切的圆弧 */
+  private railPieceTo(E: RailState, mx: number, my: number, kind: RailKind): RailPiece | null {
+    const h = (E.heading * Math.PI) / 180;
+    const fx = Math.cos(h), fy = Math.sin(h);
+    const dx = mx - E.x, dy = my - E.y;
+    const fwd = dx * fx + dy * fy, lat = -dx * fy + dy * fx;
+    if (Math.abs(lat) < Math.max(1.5, 0.3 * Math.abs(fwd))) {
+      const st = this.curStep();
+      return { kind, len: Math.round(fwd / st) * st, radius: 0, angle: 0, dz: 0 };
+    }
+    const R = (fwd * fwd + lat * lat) / (2 * Math.abs(lat));
+    let th = Math.atan2(fwd, R - Math.abs(lat));
+    if (th <= 0) th += Math.PI * 2;
+    const angStep = this.mods.ctrl ? 15 : 90;
+    const deg = Math.min(Math.max(Math.round((th * 180) / Math.PI / angStep) * angStep, angStep), 270);
+    const radius = Math.max(Math.round(R / 2.5) * 2.5, 2.5);
+    return { kind, len: 0, radius, angle: deg * Math.sign(lat), dz: 0 };
+  }
+
+  private railStartAction(s: Seg, k: EndKey): Action {
+    const m = this.model;
+    const [ex, ey] = endPos(s, k);
+    const out = k === 'a' ? opp(s.dir) : s.dir;
+    const z = endZ(m, s, k);
+    const E: RailState = { x: ex, y: ey, z, heading: out * 90 };
+    return {
+      valid: true, segs: arrowSegs(out, 0, 4), pos: [ex, ey, z + 0.6], color: C_RAIL, dir: out, z,
+      apply: () => null,
+      apply2: (mm, x, y) => {
+        const p = this.railPieceTo(E, x, y, 'double');
+        if (!p || (p.angle === 0 && p.len <= 1e-6)) return;
+        const id = mm.nextId++;
+        mm.rails[id] = { id, ...E, pieces: [p] };
+      },
+    };
+  }
+
+  /** 钢轨末端：继续延伸 / 往回缩短 */
+  private railEndAction(p: Pick): Action | null {
+    const r = this.model.rails[p.id];
+    if (!r) return null;
+    const E = railEnd(r);
+    if (Math.hypot(p.point.x - E.x, p.point.y - E.y) > 3.5) return null;
+    const dir = (((Math.round(E.heading / 90) % 4) + 4) % 4) as Dir;
+    const segs = arrowSegs(0, 0, 4);
+    const h = (E.heading * Math.PI) / 180;
+    const rot = (q: number[]) => { for (let i = 0; i < q.length; i += 3) { const x = q[i], y = q[i + 1]; q[i] = x * Math.cos(h) - y * Math.sin(h); q[i + 1] = x * Math.sin(h) + y * Math.cos(h); } return q; };
+    const last = r.pieces[r.pieces.length - 1];
+    return {
+      valid: true, segs: rot(segs), pos: [E.x, E.y, E.z + 0.6], color: C_RAIL, dir, z: E.z,
+      apply: () => null,
+      apply2: (mm, x, y) => {
+        const rr = mm.rails[r.id];
+        const piece = this.railPieceTo(E, x, y, last?.kind ?? 'double');
+        if (!piece) return;
+        if (piece.angle === 0 && piece.len < 0) {
+          // 往回拖：缩短末段直线，缩到 0 就去掉这一段
+          let back = -piece.len;
+          while (back > 1e-6 && rr.pieces.length) {
+            const lp = rr.pieces[rr.pieces.length - 1];
+            if (lp.angle !== 0) break;
+            const cut = Math.min(back, lp.len);
+            lp.dz *= lp.len > 0 ? (lp.len - cut) / lp.len : 0;
+            lp.len -= cut;
+            back -= cut;
+            if (lp.len <= 1e-6) rr.pieces.pop();
+          }
+          if (!rr.pieces.length) delete mm.rails[r.id];
+          return;
+        }
+        if (piece.angle === 0 && piece.len <= 1e-6) return;
+        pushPiece(rr, piece);
+      },
+    };
+  }
+
+  private railMenu(p: Pick): (MenuItem | null)[] {
+    const r = this.model.rails[p.id];
+    const piece = nearestPiece(r, p.point.x, p.point.y);
+    const cur = r.pieces[piece]?.kind ?? 'double';
+    const other: RailKind = cur === 'double' ? 'mono' : 'double';
+    const name = (k: RailKind) => (k === 'double' ? '双轨' : '单轨');
+    const editRail = (fn: (rr: Rail) => void) => () => this.mutate((mm) => { const rr = mm.rails[r.id]; if (rr) fn(rr); if (rr && !rr.pieces.length) delete mm.rails[r.id]; });
+    const last = r.pieces[r.pieces.length - 1];
+    const spiral = (sg: number, up: number): MenuItem => ({
+      label: `末端接螺旋：${sg > 0 ? '左' : '右'}旋${up > 0 ? '上升' : '下降'}`, hint: `半径 ${SPIRAL_RADIUS}，每圈 ${SPIRAL_SCREW}`,
+      action: editRail((rr) => rr.pieces.push({ kind: last?.kind ?? 'double', len: 0, radius: SPIRAL_RADIUS, angle: 360 * sg, dz: SPIRAL_SCREW * up })),
+    });
+    const isSpiral = last && Math.abs(last.angle) >= 360;
+    return [
+      { label: `这一段改为${name(other)}`, hint: '切换处自动重叠', action: editRail((rr) => { rr.pieces[piece].kind = other; }) },
+      { label: `整条改为${name(other)}`, action: editRail((rr) => { for (const q of rr.pieces) q.kind = other; }) },
+      null,
+      spiral(1, -1), spiral(-1, -1), spiral(1, 1), spiral(-1, 1),
+      { label: '螺旋加一圈', disabled: !isSpiral, action: editRail((rr) => { const q = rr.pieces[rr.pieces.length - 1]; const sg = Math.sign(q.angle); const per = q.dz / (Math.abs(q.angle) / 360); q.angle += 360 * sg; q.dz += per; }) },
+      null,
+      { label: '删除末段', action: editRail((rr) => { rr.pieces.pop(); }) },
+      { label: '删除这条钢轨', hint: 'Del', action: () => this.mutate((mm) => { delete mm.rails[r.id]; }) },
+    ];
+  }
+
   /** 拖拽中可连接的位置：方框画在连接截面外侧那一格 */
   private dragConnection(): { x: number; y: number; z: number } | null {
     const d = this.drag;
@@ -618,6 +762,12 @@ export class Editor {
     const snapshot = cloneModel(this.model);
 
     if (this.tool === 'cut') { if (p.kind === 'seg') this.cutAt(p); return; }
+    if (e.altKey && p.kind === 'rail') {
+      const r = this.model.rails[p.id];
+      const n = new THREE.Vector3().subVectors(this.camera.position, p.point).setZ(0).normalize();
+      if (r.pieces.length) this.drag = { type: 'railHeight', snapshot, rail: r.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, p.point), z0: p.point.z };
+      return;
+    }
     if (e.altKey) {
       const target = this.heightTarget(p);
       if (!target) return;
@@ -651,8 +801,19 @@ export class Editor {
       const hit = this.rayOnPlaneZ(d.action.z);
       if (!hit) return;
       const m = cloneModel(d.snapshot);
-      this.growEnd = d.action.apply(m, axisOf(d.action.dir) === 0 ? hit.x : hit.y);
+      if (d.action.apply2) d.action.apply2(m, hit.x, hit.y);
+      else this.growEnd = d.action.apply(m, axisOf(d.action.dir) === 0 ? hit.x : hit.y);
       this.setModel(m);
+    } else if (d.type === 'railHeight') {
+      const hit = new THREE.Vector3();
+      if (!this.raycaster.ray.intersectPlane(d.plane, hit)) return;
+      const m = cloneModel(d.snapshot);
+      const r = m.rails[d.rail];
+      const lp = r.pieces[r.pieces.length - 1];
+      const st = this.mods.ctrl ? 0.25 : HEIGHT_STEP;
+      lp.dz = Math.round((lp.dz + hit.z - d.z0) / st) * st;
+      this.setModel(m);
+      this.onStatus(`末段高差 ${fmt(lp.dz)}，坡度 ${fmt(lp.dz / Math.max(pieceLength(lp), 1e-6))}`);
     } else if (d.type === 'height') {
       const hit = new THREE.Vector3();
       if (!this.raycaster.ray.intersectPlane(d.plane, hit)) return;
@@ -698,13 +859,14 @@ export class Editor {
     if (k === 'delete' || k === 'backspace') {
       if (this.selected === null) return;
       const id = this.selected;
-      this.mutate((m) => deleteElem(m, id));
+      this.mutate((m) => { if (m.rails[id]) delete m.rails[id]; else deleteElem(m, id); });
       this.select(null);
       return;
     }
     if (k === 'e') this.toggleHoveredEnd();
     if (k === '1') this.setTool('edit');
     if (k === '2') this.setTool('cut');
+    if (k === '3') this.setTool('rail');
     if (k === 'escape') { this.cancelDrag(); this.hideMenu(); }
   }
 
@@ -756,7 +918,7 @@ export class Editor {
     if (this.drag) return;
     this.setMouse(e);
     const p = this.pick();
-    const items: (MenuItem | null)[] = p ? this.menuItemsFor(p) : [
+    const items: (MenuItem | null)[] = p ? (p.kind === 'rail' ? this.railMenu(p) : this.menuItemsFor(p)) : [
       { label: '撤销', hint: 'Ctrl+Z', action: () => this.undo(), disabled: !this.undoStack.length },
       { label: '重做', hint: 'Ctrl+Y', action: () => this.redo(), disabled: !this.redoStack.length },
       null,
@@ -892,13 +1054,13 @@ export class Editor {
    * 新出现的元素闪一下轮廓作为反馈。
    */
   private commitView(before?: Model) {
-    if (this.selected !== null && !this.model.segs[this.selected] && !this.model.nodes[this.selected]) this.selected = null;
+    if (this.selected !== null && !this.model.segs[this.selected] && !this.model.nodes[this.selected] && !this.model.rails[this.selected]) this.selected = null;
     this.hover = null;
     this.display = this.model;
     this.syncMeshes();
     if (before) {
-      for (const id of [...Object.keys(this.model.segs), ...Object.keys(this.model.nodes)].map(Number)) {
-        if (before.segs[id] || before.nodes[id]) continue;
+      for (const id of [...Object.keys(this.model.segs), ...Object.keys(this.model.nodes), ...Object.keys(this.model.rails)].map(Number)) {
+        if (before.segs[id] || before.nodes[id] || before.rails?.[id]) continue;
         this.fx.pop(this.outlineSegs(id), 0xffffff);
       }
     }
@@ -915,7 +1077,7 @@ export class Editor {
   private loadLocal(): Model | null {
     try {
       const s = localStorage.getItem(STORAGE_KEY);
-      return s ? JSON.parse(s) : null;
+      return s ? migrateModel(JSON.parse(s)) : null;
     } catch { return null; }
   }
 
@@ -930,7 +1092,12 @@ export class Editor {
     const h = this.hover;
     const m = this.model;
     let info = '';
-    if (h && h.kind === 'seg' && m.segs[h.id]) {
+    if (h && h.kind === 'rail' && m.rails[h.id]) {
+      const r = m.rails[h.id];
+      const total = r.pieces.reduce((a, q) => a + pieceLength(q), 0);
+      const kinds = new Set(r.pieces.map((q) => q.kind));
+      info = `钢轨 #${r.id}  ${r.pieces.length} 段  长 ${fmt(total)}  ${[...kinds].map((k) => (k === 'double' ? '双轨' : '单轨')).join('+')}`;
+    } else if (h && h.kind === 'seg' && m.segs[h.id]) {
       const s = m.segs[h.id];
       const ends = (['a', 'b'] as EndKey[]).map((k) => {
         const e = s[k];
@@ -953,6 +1120,7 @@ export class Editor {
         : this.mods.alt ? 'Alt：拖动截面或路块调整高度（吸附到 1.25 的倍数），下游跟随'
         : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：改高度 · 中键：环视 · 右键：更多',
       cut: '点击截面：把花纹分开成两个封闭端点',
+      rail: '从路面端点拖出钢轨：正前方为直线，偏向一侧为圆弧（90° 吸附，Ctrl 15°）· 钢轨末端可继续拖 · Alt 拖末端改坡度 · 右键：单/双轨、螺旋',
     };
     this.onStatus(`${info ? info + '　|　' : ''}${hints[this.tool]}`);
   }

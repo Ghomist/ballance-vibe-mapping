@@ -87,3 +87,31 @@ export function platformScenarios(emptyModel: () => Model, check: (c: boolean, m
     check(Object.values(m.nodes).every((n) => n.kind !== 'block'), '路口应恢复成直道');
   });
 }
+
+import { buildRail } from '../src/geom/rail';
+import { DOUBLE_OFFSET, MONO_OFFSET, railEnd } from '../src/model/rail';
+
+export function railScenarios(check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
+  scenario('钢轨路径与网格', () => {
+    const r = { id: 1, x: 0, y: 0, z: 0, heading: 0, pieces: [
+      { kind: 'double' as const, len: 10, radius: 0, angle: 0, dz: 0 },
+      { kind: 'double' as const, len: 0, radius: 5, angle: 90, dz: 0 },
+      { kind: 'mono' as const, len: 10, radius: 0, angle: 0, dz: -2.5 },
+    ] };
+    const e = railEnd(r);
+    check(Math.abs(e.x - 15) < 1e-9 && Math.abs(e.y - 15) < 1e-9 && e.z === -2.5 && e.heading === 90, `终点应为 (15,15,-2.5) 朝 90°，实际 ${JSON.stringify(e)}`);
+    check(Math.abs(DOUBLE_OFFSET - MONO_OFFSET - 0.9334) < 1e-3, '单双轨高差应约为 0.933（与 BBP 单双轨转换下沉一致）');
+    const mesh = buildRail(r);
+    // 每个三角形的几何法线应与顶点径向法线同向（朝外）
+    let bad = 0;
+    for (let i = 0; i < mesh.pos.length; i += 9) {
+      const p = mesh.pos;
+      const e1 = [p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]];
+      const e2 = [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]];
+      const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+      const vn = mesh.nrm.slice(i, i + 3);
+      if (n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2] < 0) bad++;
+    }
+    check(bad === 0, `钢轨有 ${bad} 个三角形朝内`);
+  });
+}

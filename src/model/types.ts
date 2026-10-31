@@ -5,6 +5,8 @@
 //   - 直道（Seg）：沿坐标轴方向、宽 5、长度任意的路段，两端或接在节点端口上，或是自由端点。
 // 节点和直道共用一个 id 空间，这样 root 等引用只需要一个数字。
 
+import type { Rail } from './rail';
+
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
 export const DY = [0, 1, 0, -1] as const;
@@ -64,6 +66,7 @@ export interface Model {
   nextId: number;
   /** 高度传播的根元素（节点或直道 id）；改高度时，只有远离根的一侧跟着动 */
   root: number | null;
+  rails: Record<number, Rail>;
 }
 
 export interface PortRef { seg: number; key: EndKey }
@@ -72,7 +75,7 @@ export const isFree = (e: End): e is FreeEnd => e.node === null;
 export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : HALF);
 
 export function emptyModel(): Model {
-  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null };
+  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {} };
   const id = m.nextId++;
   // 路块边沿对齐到 5 的整数倍，与 Blender / BBP 的习惯一致
   m.nodes[id] = { id, kind: 'block', x: HALF, y: HALF, z: 0, style: 'normal' };
@@ -81,6 +84,12 @@ export function emptyModel(): Model {
 }
 
 export const cloneModel = (m: Model): Model => JSON.parse(JSON.stringify(m));
+
+/** 兼容旧版本存档 */
+export function migrateModel(m: Model): Model {
+  m.rails ??= {};
+  return m;
+}
 
 /** 直道某一端在路中线上的平面坐标 */
 export function endPos(s: Seg, k: EndKey): [number, number] {
