@@ -46,7 +46,7 @@ export interface MNode {
   inPlatform?: number;
   /**
    * transition（嵌入平台）：不是平凹转换，而是半块（2.5）平路，平台内侧一端下沉 0.7；
-   * 用于路面接凹槽平台。路是凹槽路时，靠路一端的中点也下沉 0.7。sinkDir 指向平台内侧。
+   * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
 }

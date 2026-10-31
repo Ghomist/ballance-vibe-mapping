@@ -241,13 +241,14 @@ export function insetCells(i: Inset): string[] {
 }
 
 /**
- * 平台与路面衔接处需要的衔接块：
- *   凹槽平台（无论接普通路还是凹槽路）→ 半块平路，平台内侧下沉；
- *   普通平台接凹槽路 → 窄平凹转换；普通接普通 → 不需要。
+ * 平台与路面衔接处需要的衔接块（嵌在平台边框带内）：
+ *   普通路接凹槽平台 → 半块平路，平台内侧下沉；
+ *   凹槽路接普通平台 → 窄平凹转换；
+ *   样式相同 → 不需要衔接块，由两块 1/4 内角拼接（几何生成时处理）。
  */
 export function insetKind(platformStyle: string, roadStyle: string): 'ramp' | 'narrow' | null {
-  if (platformStyle === 'sink') return 'ramp';
-  return roadStyle === 'sink' ? 'narrow' : null;
+  if (platformStyle === roadStyle) return null;
+  return platformStyle === 'sink' ? 'ramp' : 'narrow';
 }
 
 /** 在平台边框带内（开口处往里 2.5）放衔接块，路面长度不变。放不下返回 false */

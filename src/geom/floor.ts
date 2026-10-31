@@ -6,6 +6,7 @@ import {
   endZ, isFree, nodeLinks, nodePorts, opp,
 } from '../model/types';
 import { boundaryEdges, cellSet, insetCells, linkOpening, parseCell, platformInsets } from '../model/platform';
+import type { Dir } from '../model/types';
 
 export type MatName =
   | 'FloorTopBorder' | 'FloorTopBorderless' | 'FloorTopFlat'
@@ -208,14 +209,12 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
   const sx = n.narrow ? 0.5 : 1;
   const L = (lx: number, ly: number, lz: number): V3 =>
     [n.x + a[0] * (lx - HALF) * sx + p[0] * (ly - HALF), n.y + a[1] * (lx - HALF) * sx + p[1] * (ly - HALF), n.z + lz];
-  // ramp：半块平路，平台内侧（lx=0）整条边下沉 0.7；路是凹槽路时，靠路一端（lx=5）的中点也下沉 0.7
+  // ramp：半块平路（普通路接凹槽平台），平台内侧（lx=0）整条边下沉 0.7
   const cz = n.ramp ? -SINK_DEPTH : 0;
   if (n.ramp) {
-    const road = nodeLinks(m, n.id).map((l) => m.segs[l.seg]).find((s) => s.len > 1e-9);
-    const roadMid = road?.style === 'sink' ? -SINK_DEPTH : 0;
     for (const e0 of [0, 5]) {
       // 两条边框带：从路边沿（u=0）到中线（u=0.5），v 沿路方向
-      const E0 = L(0, e0, cz), E1 = L(5, e0, 0), M1 = L(5, 2.5, roadMid), M0 = L(0, 2.5, cz);
+      const E0 = L(0, e0, cz), E1 = L(5, e0, 0), M1 = L(5, 2.5, 0), M0 = L(0, 2.5, cz);
       mb.quad('FloorTopBorder', [E0, E1, M1, M0], [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0]], UP);
     }
   } else {
@@ -294,8 +293,19 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
   const insetLinks = new Set(insets.map((i) => i.link));
   const skip = new Set(insets.flatMap((i) => insetCells(i)));
   // 开口：从边界中扣掉，并补上道路两侧边沿的延长线
-  const roadOpenings = nodeLinks(m, n.id).filter((l) => !insetLinks.has(l.seg)).map((l) => linkOpening(m.segs[l.seg], l.key));
-  const openings = [...roadOpenings, ...insets.map((i) => ({ x: i.ox, y: i.oy, out: i.out }))];
+  // 同样式的路面接平台：开口处往里 2.5 的带子由两块 1/4 内角拼成（与 T 字路口一致），平台边框直线延续
+  const cornerOpenings: { x: number; y: number; out: Dir }[] = [];
+  const roadOpenings: { x: number; y: number; out: Dir }[] = [];
+  for (const l of nodeLinks(m, n.id)) {
+    if (insetLinks.has(l.seg)) continue;
+    const o = linkOpening(m.segs[l.seg], l.key);
+    const notch = insetCells({ tr: n, link: -1, out: o.out, ox: o.x, oy: o.y });
+    if (m.segs[l.seg].style === n.style && notch.every((c) => cells.has(c))) {
+      cornerOpenings.push(o);
+      for (const c of notch) skip.add(c);
+    } else roadOpenings.push(o);
+  }
+  const openings = [...roadOpenings, ...cornerOpenings, ...insets.map((i) => ({ x: i.ox, y: i.oy, out: i.out }))];
   const inOpening = (e: { x: number; y: number; along: 0 | 1; out: number }) => openings.some((o) => {
     if (o.out !== e.out) return false;
     if (e.along === 1) return Math.abs(e.x - o.x) < 1e-6 && e.y >= o.y - HALF - 1e-6 && e.y + CELL <= o.y + HALF + 1e-6;
@@ -330,6 +340,21 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
     return u;
   };
   const uScale = ribbon ? 2 : 1;
+  // 1/4 内角块：C 为开口角点（u=0），中线一侧与平台内侧都在 u=0.5（凹槽时下沉 0.7）
+  for (const o of cornerOpenings) {
+    const inward = opp(o.out);
+    const px = -DY[o.out], py = DX[o.out];
+    const zi = z0 - sink;
+    for (const sg of [1, -1]) {
+      const C: V3 = [o.x + px * HALF * sg, o.y + py * HALF * sg, z0];
+      const A1: V3 = [o.x, o.y, zi];
+      const O: V3 = [o.x + DX[inward] * HALF, o.y + DY[inward] * HALF, zi];
+      const A2: V3 = [C[0] + DX[inward] * HALF, C[1] + DY[inward] * HALF, zi];
+      const uv = (u: number, v: number): V2 => [u * uScale, v];
+      mb.tri(bandMat, [C, A1, O], [uv(0, 0), uv(0.5, 0), uv(0.5, 0.5)], UP);
+      mb.tri(bandMat, [C, O, A2], [uv(0, 0), uv(0.5, 0.5), uv(0.5, 0)], UP);
+    }
+  }
   const interior: [number, number][] = [];
   for (const key of cells) {
     if (skip.has(key)) continue;

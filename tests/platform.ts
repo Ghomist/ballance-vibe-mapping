@@ -238,20 +238,33 @@ export function deepTransitionScenario(emptyModel: () => Model, check: (c: boole
     check(inner.length > 0 && inner.every((v) => Math.abs(v.z + 0.7) < 1e-6), '平台内侧整条边应在 -0.7');
     check(outer.length > 0 && outer.every((v) => Math.abs(v.z) < 1e-6), '靠路一端应全在 0');
   });
-  scenario('凹槽路接凹槽平台：半块平路，靠路一端中点也下沉', () => {
-    const { m, tr } = setup('sink', 'sink');
-    check(!!tr && !!tr.ramp, '应在平台内放半块平路');
-    const outer = zsAt(m, tr!.id, 'FloorTopBorder', -2.5);
-    const mid = outer.filter((v) => Math.abs(v.x - 7.5) < 1e-6), edge = outer.filter((v) => Math.abs(v.x - 7.5) > 1);
-    check(mid.length > 0 && mid.every((v) => Math.abs(v.z + 0.7) < 1e-6), '靠路一端中点应在 -0.7');
-    check(edge.length > 0 && edge.every((v) => Math.abs(v.z) < 1e-6), '靠路一端两角应在 0');
+  scenario('样式相同的路接平台：开口带由两块 1/4 内角拼成', () => {
+    for (const st of ['normal', 'sink'] as const) {
+      const { m, p, tr } = setup(st, st);
+      check(!tr, `${st}：不应有衔接块`);
+      // 平台顶面（含内角块）面积 = 整个平台
+      let area = 0;
+      const em = buildFloorMeshes(m).find((e) => e.id === p)!;
+      for (const [mat, part] of Object.entries(em.parts)) {
+        if (!part || !mat.startsWith('FloorTop')) continue;
+        const q = part.pos;
+        for (let i = 0; i < q.length; i += 9) area += Math.abs((q[i + 3] - q[i]) * (q[i + 7] - q[i + 1]) - (q[i + 4] - q[i + 1]) * (q[i + 6] - q[i])) / 2;
+      }
+      check(Math.abs(area - 100) < 1e-6, `${st}：平台顶面面积应为 100，实际 ${area}`);
+      // 开口外沿：两角在 0，中点在 -sink
+      const outer = zsAt(m, p, st === 'sink' ? 'FloorTopProfil' : 'FloorTopBorder', -2.5).filter((v) => v.x > 4 && v.x < 11);
+      const mid = outer.filter((v) => Math.abs(v.x - 7.5) < 1e-6), corner = outer.filter((v) => Math.abs(Math.abs(v.x - 7.5) - 2.5) < 1e-6);
+      const sink = st === 'sink' ? -0.7 : 0;
+      check(mid.length > 0 && mid.every((v) => Math.abs(v.z - sink) < 1e-6) && corner.every((v) => Math.abs(v.z) < 1e-6), `${st}：开口处截面应与路面一致`);
+    }
   });
-  scenario('凹槽路接普通平台：窄平凹转换；普通接普通：直接相接', () => {
+  scenario('凹槽路接普通平台：窄平凹转换；样式变化后衔接块随之替换', () => {
     const a = setup('normal', 'sink');
     check(!!a.tr && !!a.tr.narrow && !a.tr.ramp && a.tr.inPlatform === a.p, '应为窄平凹转换');
-    const b = setup('normal', 'normal');
-    check(!b.tr, '普通接普通不需要衔接块');
-    // 切换样式后衔接块随之替换
+    // 切换样式后衔接块随之替换：路改为普通 -> 普通接普通，撤掉；平台再改凹槽 -> 半块平路
+    a.m.segs[a.s].style = 'normal';
+    normalize(a.m);
+    check(!Object.values(a.m.nodes).some((n) => n.kind === 'transition'), '样式一致后应撤掉衔接块');
     a.m.nodes[a.p].style = 'sink';
     normalize(a.m);
     const tr2 = Object.values(a.m.nodes).find((n) => n.kind === 'transition');
