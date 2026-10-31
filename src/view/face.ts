@@ -108,7 +108,5 @@ export function faceSegs(f: FaceSpec): number[] {
   out.push(0, 0, zc, tx, ty, zc);
   out.push(tx, ty, zc, tx - ox * 1.1 + px * 0.9, ty - oy * 1.1 + py * 0.9, zc);
   out.push(tx, ty, zc, tx - ox * 1.1 - px * 0.9, ty - oy * 1.1 - py * 0.9, zc);
-  out.push(tx, ty, zc, tx - ox * 1.1, ty - oy * 1.1, zc + 0.9);
-  out.push(tx, ty, zc, tx - ox * 1.1, ty - oy * 1.1, zc - 0.9);
   return out;
 }
