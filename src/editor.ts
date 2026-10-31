@@ -12,6 +12,7 @@ import { assetVersion, fallbackBox, getAsset, setAssetLoadedCallback } from './v
 import {
   addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
 } from './model/checkpoint';
+import { guardParts } from './model/deco';
 import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
@@ -303,7 +304,7 @@ export class Editor {
         continue;
       }
       const prefab = m.nodes[id]?.kind === 'checkpoint' ? m.nodes[id] : null;
-      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains) + (prefab ? `:${assetVersion}` : '');
+      const key = rail ? JSON.stringify(rail) : `${elemKey(m, id, chains)}:${assetVersion}`;
       const cached = this.meshCache.get(id);
       if (cached && cached.key === key) continue;
       if (cached) for (const mesh of cached.meshes) { if (!mesh.userData.shared && mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
@@ -346,6 +347,18 @@ export class Editor {
         this.floor.add(mesh);
         meshes.push(mesh);
       }
+      // 护栏
+      for (const part of guardParts(m, id)) {
+        for (const pc of getAsset('asset', part.name) ?? []) {
+          const mesh = new THREE.Mesh(pc.geometry, pc.material);
+          mesh.position.set(...part.pos);
+          mesh.rotation.set(0, ((part.pitch ?? 0) * Math.PI) / 180, (part.rotZ * Math.PI) / 180, 'ZYX');
+          mesh.userData = { id, kind: em?.kind ?? 'node', shared: true, element: true };
+          mesh.updateMatrixWorld();
+          this.floor.add(mesh);
+          meshes.push(mesh);
+        }
+      }
       this.meshCache.set(id, { key, meshes });
     }
     this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes);
@@ -366,7 +379,7 @@ export class Editor {
       for (const pc of pieces) {
         const mesh = new THREE.Mesh(pc.geometry, pc.material);
         mesh.position.set(...part.pos);
-        mesh.rotation.z = (part.rotZ * Math.PI) / 180;
+        mesh.rotation.set(0, ((part.pitch ?? 0) * Math.PI) / 180, (part.rotZ * Math.PI) / 180, 'ZYX');
         mesh.userData = { id: n.id, kind: 'node', shared, element: part.type === 'element' };
         mesh.updateMatrixWorld();
         this.floor.add(mesh);
@@ -1420,12 +1433,23 @@ export class Editor {
       const other: Style = s.style === 'sink' ? 'normal' : 'sink';
       items.push({ label: `整条直路改为${other === 'sink' ? '凹槽' : '普通'}`, hint: '跨过截面接头', action: () => this.mutate((mm) => setChainStyle(mm, s.id, other)) });
       items.push(null);
+      {
+        const { lat } = this.segLocal(s, p.point);
+        const side: 'L' | 'R' = lat >= 0 ? 'L' : 'R';
+        const has = !!s.guard?.[side];
+        const both = !!s.guard?.L && !!s.guard?.R;
+        items.push({ label: has ? '去掉这一侧护栏' : '这一侧加护栏', hint: 'BarrierRail_1Edge', action: () => this.mutate((mm) => { const g = (mm.segs[s.id].guard ??= {}); g[side] = !has; }) });
+        items.push({ label: both ? '去掉两侧护栏' : '两侧都加护栏', action: () => this.mutate((mm) => { mm.segs[s.id].guard = both ? undefined : { L: true, R: true }; }) });
+        items.push(null);
+      }
       items.push(setRoot(s.id));
       items.push({ label: '删除这段路', hint: 'Del', action: () => this.mutate((mm) => deleteElem(mm, s.id)) });
     } else {
       const n = m.nodes[p.id];
       if (n.kind === 'block') {
         items.push(...styleItems(n.style, (mm, st) => setBlockStyle(mm, n.id, st)));
+        items.push(null);
+        items.push({ label: n.guard ? '去掉护栏' : '没接路的各边加护栏', action: () => this.mutate((mm) => { mm.nodes[n.id].guard = !n.guard || undefined; }) });
         items.push(null);
       }
       if (n.kind === 'platform') {

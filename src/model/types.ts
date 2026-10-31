@@ -55,6 +55,8 @@ export interface MNode {
    * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
+  /** block：没接路的各边加护栏 */
+  guard?: boolean;
   /** checkpoint：起点 / 小节盘点 */
   prefab?: Prefab;
   /** checkpoint：朝向（模型本地 +X 对应的方向）。起点的路口在这一侧；小节盘点的路口在这一侧和对侧 */
@@ -79,6 +81,8 @@ export interface Seg {
   style: Style;
   a: End;
   b: End;
+  /** 护栏：沿 dir 方向看的左侧 / 右侧 */
+  guard?: { L?: boolean; R?: boolean };
 }
 
 export interface Model {

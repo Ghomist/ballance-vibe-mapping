@@ -50,7 +50,7 @@ export function placeCheckpointOnSeg(m: Model, segId: number, c: number): number
     const id = m.nextId++;
     m.segs[id] = {
       id, x: s.x + DX[s.dir] * (c + P), y: s.y + DY[s.dir] * (c + P), dir: s.dir, len: Math.max(right, 0), style: s.style,
-      a: { node: cp.id }, b: s.b,
+      a: { node: cp.id }, b: s.b, guard: s.guard ? { ...s.guard } : undefined,
     };
   }
   if (left > 2.5 - EPS || (!isFree(s.a) && left > -EPS)) {
@@ -114,6 +114,8 @@ export interface PrefabPart {
   pos: [number, number, number];
   /** 绕 Z 轴旋转（度） */
   rotZ: number;
+  /** 先绕本地 Y 轴转的角度（度，欧拉顺序 ZYX；坡道上的护栏用） */
+  pitch?: number;
 }
 
 /** 盘点路面由哪些模型组成：路面（按接了哪几侧选延伸段版本）+ 火焰占位符 + 重生点占位符 */

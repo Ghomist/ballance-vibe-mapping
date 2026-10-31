@@ -29,6 +29,8 @@ function replaceRoot(m: Model, oldId: number, newIdv: number) {
   if (m.root === oldId) m.root = newIdv;
 }
 
+export const copyGuard = (s: Seg) => (s.guard ? { ...s.guard } : undefined);
+
 /** 直道最短长度：每个封闭端要占 2.5 */
 export function minLen(s: Seg) {
   let n = 0;
@@ -42,7 +44,7 @@ export function splitSeg(m: Model, s: Seg, t: number): Seg {
   const zt = zAt(m, s, t);
   const s2 = addSeg(m, {
     x: s.x + DX[s.dir] * t, y: s.y + DY[s.dir] * t, dir: s.dir,
-    len: s.len - t, style: s.style, a: freeEnd(zt), b: s.b,
+    len: s.len - t, style: s.style, a: freeEnd(zt), b: s.b, guard: copyGuard(s),
   });
   s.len = t;
   s.b = freeEnd(zt);
@@ -75,7 +77,7 @@ export function insertBlockAt(m: Model, segId: number, c: number): number | null
   if (rightLen > EPS || !isFree(s.b)) {
     addSeg(m, {
       x: s.x + DX[s.dir] * (c + HALF), y: s.y + DY[s.dir] * (c + HALF), dir: s.dir,
-      len: Math.max(rightLen, 0), style: s.style, a: { node: blk.id }, b: s.b,
+      len: Math.max(rightLen, 0), style: s.style, a: { node: blk.id }, b: s.b, guard: copyGuard(s),
     });
   }
   const leftLen = c - HALF;
@@ -142,7 +144,7 @@ export function extendFlat(m: Model, segId: number, k: EndKey): number | null {
   const [x, y] = endPos(s, k);
   const out = endOutDir(s, k);
   const j = addNode(m, { kind: 'joint', x, y, z: e.z, style: s.style, axis: axisOf(s.dir) });
-  const ns = addSeg(m, { x, y, dir: out, len: 0, style: s.style, a: { node: j.id }, b: freeEnd(e.z, e.style) });
+  const ns = addSeg(m, { x, y, dir: out, len: 0, style: s.style, a: { node: j.id }, b: freeEnd(e.z, e.style), guard: out === s.dir ? copyGuard(s) : s.guard && { L: s.guard.R, R: s.guard.L } });
   s[k] = { node: j.id };
   return ns.id;
 }
