@@ -1,10 +1,11 @@
 // 路网编辑操作。所有操作都直接修改传入的 Model；调用方负责先 clone 再改（用于拖拽预览和撤销）。
 import {
   BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
-  axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp, portCount, zAt,
+  axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './types';
 import { cellSet, insetKind, makeInset, mergePlatforms, openingFits, revertInset } from './platform';
 import { railEnd } from './rail';
+import { renumberSectors } from './checkpoint';
 
 const EPS = 1e-6;
 
@@ -92,7 +93,8 @@ export function insertBlockAt(m: Model, segId: number, c: number): number | null
 export function addSegAtPort(m: Model, nodeId: number, d: Dir, len = 1.25): number | null {
   const n = m.nodes[nodeId];
   if (nodePorts(m, nodeId)[d]) return null;
-  if (n.kind !== 'block') return null;
+  if (n.kind !== 'block' && n.kind !== 'checkpoint') return null;
+  if (!nodePortDirs(n).includes(d)) return null;
   const h = nodeHalf(n);
   const s = addSeg(m, {
     x: n.x + DX[d] * h, y: n.y + DY[d] * h, dir: d, len, style: n.style,
@@ -403,9 +405,11 @@ export function findConnection(m: Model, segId: number, k: EndKey, adjust: boole
     }
   }
   for (const n of Object.values(m.nodes)) {
-    if (n.kind !== 'block' || !zok(n.z)) continue;
+    if ((n.kind !== 'block' && n.kind !== 'checkpoint') || !zok(n.z)) continue;
     const d = opp(out);
-    if (!near(n.x + DX[d] * HALF, px) || !near(n.y + DY[d] * HALF, py)) continue;
+    if (!nodePortDirs(n).includes(d)) continue;
+    const h = nodeHalf(n);
+    if (!near(n.x + DX[d] * h, px) || !near(n.y + DY[d] * h, py)) continue;
     if (nodePorts(m, n.id)[d]) continue;
     return { type: 'port', node: n.id, z: n.z };
   }
@@ -558,7 +562,7 @@ export function fixStyles(m: Model): boolean {
       insertTransition(m, m.segs[carve.seg], carve.key, { seg: m.segs[keep.seg], key: keep.key });
       return true;
     }
-    if (n.kind === 'block') {
+    if (n.kind === 'block' || n.kind === 'checkpoint') {
       for (let d = 0 as Dir; d < 4; d = (d + 1) as Dir) {
         const p = ports[d];
         if (!p) continue;
@@ -619,7 +623,7 @@ export function fixStyles(m: Model): boolean {
 /** 消除冗余结构：只剩一个连接的路块变成封闭端点、对穿路块变成接头、悬空接头去掉等。 */
 export function normalize(m: Model) {
   for (let guard = 0; guard < 1000; guard++) {
-    if (!normalizeOnce(m) && !fixStyles(m)) return;
+    if (!normalizeOnce(m) && !fixStyles(m) && !renumberSectors(m)) return;
   }
 }
 

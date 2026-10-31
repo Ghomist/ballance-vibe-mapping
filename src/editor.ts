@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { buildElem, computeChains, elemKey, type MatName } from './geom/floor';
 import { buildRail } from './geom/rail';
 import { getMaterial, getRailMaterial } from './view/materials';
@@ -8,10 +8,14 @@ import { Gizmo, type GizmoHandle } from './view/gizmo';
 import { Snapper, type SnapResult } from './view/snap';
 import { Fx, rectSegs } from './view/fx';
 import { createGrid } from './view/grid';
+import { assetVersion, fallbackBox, getAsset, setAssetLoadedCallback } from './view/assets';
+import {
+  addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
+} from './model/checkpoint';
 import { lerpModel } from './view/tween';
 import {
-  DX, DY, Dir, EndKey, HALF, Model, Seg, Style,
-  axisOf, cloneModel, emptyModel, endPos, endZ, isFree, migrateModel, nodeLinks, nodePorts, opp, portCount, zAt,
+  DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
+  axisOf, cloneModel, emptyModel, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './model/types';
 import {
   Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
@@ -99,6 +103,8 @@ export class Editor {
   /** 正在显示的模型（向 model 平滑过渡） */
   private display: Model;
   private meshCache = new Map<number, { key: string; meshes: THREE.Mesh[] }>();
+  /** 盘点上方的小节标签 */
+  private cpLabels = new Map<number, CSS2DObject>();
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private renderer: THREE.WebGLRenderer;
@@ -179,6 +185,7 @@ export class Editor {
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
 
+    setAssetLoadedCallback(() => { this.syncMeshes(); this.overlayDirty = true; });
     this.syncMeshes();
     this.renderer.setAnimationLoop(() => this.frame());
   }
@@ -269,15 +276,16 @@ export class Editor {
     const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails)].map(Number));
     for (const [id, c] of this.meshCache) {
       if (ids.has(id)) continue;
-      for (const mesh of c.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
+      for (const mesh of c.meshes) { if (!mesh.userData.shared && mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
       this.meshCache.delete(id);
     }
     for (const id of ids) {
       const rail = m.rails[id];
-      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains);
+      const prefab = m.nodes[id]?.kind === 'checkpoint' ? m.nodes[id] : null;
+      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains) + (prefab ? `:${assetVersion}` : '');
       const cached = this.meshCache.get(id);
       if (cached && cached.key === key) continue;
-      if (cached) for (const mesh of cached.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
+      if (cached) for (const mesh of cached.meshes) { if (!mesh.userData.shared && mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
       const meshes: THREE.Mesh[] = [];
       if (rail) {
         const rm = buildRail(rail);
@@ -300,6 +308,11 @@ export class Editor {
         this.meshCache.set(id, { key, meshes });
         continue;
       }
+      if (prefab) {
+        this.buildPrefabMeshes(m, prefab, meshes);
+        this.meshCache.set(id, { key, meshes });
+        continue;
+      }
       const em = buildElem(m, id, chains);
       for (const [mat, part] of Object.entries(em?.parts ?? {})) {
         if (!part || part.pos.length === 0) continue;
@@ -315,6 +328,55 @@ export class Editor {
       this.meshCache.set(id, { key, meshes });
     }
     this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes);
+    this.syncCheckpointLabels(m);
+  }
+
+  /** 盘点路面：资产库模型 + 火焰 / 重生点占位符（模型未加载时先用盒子占位） */
+  private buildPrefabMeshes(m: Model, n: MNode, out: THREE.Mesh[]) {
+    for (const part of prefabParts(m, n)) {
+      let pieces = getAsset(part.type, part.name);
+      let shared = true;
+      if (!pieces) {
+        if (part.type !== 'asset') continue;
+        const e = prefabExtent(n);
+        pieces = [fallbackBox(e.along * 2, e.across * 2, 5)];
+        shared = false;
+      }
+      for (const pc of pieces) {
+        const mesh = new THREE.Mesh(pc.geometry, pc.material);
+        mesh.position.set(...part.pos);
+        mesh.rotation.z = (part.rotZ * Math.PI) / 180;
+        mesh.userData = { id: n.id, kind: 'node', shared, element: part.type === 'element' };
+        mesh.updateMatrixWorld();
+        this.floor.add(mesh);
+        out.push(mesh);
+      }
+    }
+  }
+
+  private syncCheckpointLabels(m: Model) {
+    const live = new Set<number>();
+    for (const n of Object.values(m.nodes)) {
+      if (n.kind !== 'checkpoint') continue;
+      live.add(n.id);
+      let l = this.cpLabels.get(n.id);
+      if (!l) {
+        const div = document.createElement('div');
+        div.className = 'cp-label';
+        l = new CSS2DObject(div);
+        this.scene.add(l);
+        this.cpLabels.set(n.id, l);
+      }
+      const text = n.prefab === 'start' ? '起点 · 第 1 小节' : `第 ${n.sector} 小节`;
+      if (l.element.textContent !== text) l.element.textContent = text;
+      l.position.set(n.x, n.y, n.z + 9);
+    }
+    for (const [id, l] of this.cpLabels) {
+      if (live.has(id)) continue;
+      this.scene.remove(l);
+      l.element.remove();
+      this.cpLabels.delete(id);
+    }
   }
 
   // ---------------- 叠加层 ----------------
@@ -398,8 +460,9 @@ export class Editor {
   private outlineSegs(id: number): number[] {
     const out: number[] = [];
     for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
-      if (mesh.userData.handle) continue;
+      if (mesh.userData.handle || mesh.userData.element) continue;
       const e = new THREE.EdgesGeometry(mesh.geometry, mesh.userData.kind === 'rail' ? 50 : 30);
+      if (mesh.userData.shared) e.applyMatrix4(mesh.matrixWorld);
       out.push(...(e.getAttribute('position').array as Float32Array));
       e.dispose();
     }
@@ -457,7 +520,12 @@ export class Editor {
     this.noteGuide(r, axis, at);
     return r.v;
   }
-  private snapCenter(c: number, axis: 0 | 1, at?: [number, number, number]) { return this.snapEdge(c, axis, at); }
+  /** 路口中心：自由模式下连续移动，只在边沿 / 中心贴近别的特征时吸附 */
+  private snapCenter(c: number, axis: 0 | 1, at?: [number, number, number]) {
+    const r = this.snap().band(this.snapModel(), axis, c, HALF);
+    this.noteGuide(r, axis, at);
+    return r.v;
+  }
   private snapZ(z: number, at?: [number, number, number]) {
     const r = this.snap().z(this.snapModel(), z);
     this.noteGuide(r, 2, at);
@@ -536,6 +604,13 @@ export class Editor {
       return this.blockGrowAction(n.id, dir);
     }
     if (n.kind === 'platform') return shift ? this.extrudePlatformAction(n.id, p) : this.platformBranchAction(n.id, p);
+    if (n.kind === 'checkpoint' && !shift) {
+      // 盘点只能从延伸段末端的路口长出路：取鼠标所在一侧
+      const dx = p.point.x - n.x, dy = p.point.y - n.y;
+      const dot = (d: Dir) => DX[d] * dx + DY[d] * dy;
+      const dir = nodePortDirs(n).reduce((a, b) => (dot(b) > dot(a) ? b : a));
+      return this.blockGrowAction(n.id, dir);
+    }
     return null;
   }
 
@@ -588,9 +663,9 @@ export class Editor {
     const m = this.model;
     const n = m.nodes[nodeId];
     const ports = nodePorts(m, nodeId);
-    const base = { segs: arrowSegs(dir, HALF, 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z };
+    const base = { segs: arrowSegs(dir, nodeHalf(n), 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z };
     if (ports[dir]) return { ...base, valid: false, reason: '这一侧已经连着路了', apply: () => null };
-    const lone = portCount(ports) === 0;
+    const lone = n.kind === 'block' && portCount(ports) === 0;
     return {
       ...base, valid: true,
       apply: (mm, coord) => {
@@ -1181,6 +1256,14 @@ export class Editor {
         label: '在此新建路块', hint: '双击空白处也可以', disabled: !ground,
         action: () => { if (ground) this.newBlockAt(ground); },
       },
+      {
+        label: '在此新建起点', hint: findStart(this.model) ? '已经有起点了' : '四火 + 第 1 小节重生点', disabled: !ground || !!findStart(this.model),
+        action: () => { if (ground) this.newPrefabAt(ground, 'start'); },
+      },
+      {
+        label: '在此新建小节盘点', hint: `第 ${checkpoints(this.model).length + 2} 小节`, disabled: !ground,
+        action: () => { if (ground) this.newPrefabAt(ground, 'check'); },
+      },
       null,
       { label: '撤销', hint: 'Ctrl+Z', action: () => this.undo(), disabled: !this.undoStack.length },
       { label: '重做', hint: 'Ctrl+Y', action: () => this.redo(), disabled: !this.redoStack.length },
@@ -1215,6 +1298,10 @@ export class Editor {
           label: '连接到相邻路面', hint: c && Math.abs(c.z - endZ(m, s, k)) > 1e-6 ? '本段会变成坡道' : undefined,
           disabled: !c, action: () => this.mutate((mm) => { const cc = findConnection(mm, s.id, k, true); if (cc) applyConnection(mm, s.id, k, cc); }),
         });
+        items.push({
+          label: '在端点接上起点', hint: findStart(m) ? '已经有起点了' : undefined, disabled: !!findStart(m),
+          action: () => this.mutate((mm) => { placeStartAtEnd(mm, s.id, k); }),
+        });
         items.push(null);
       }
       const jointEnd = t < 1 && !isFree(s.a) && m.nodes[s.a.node].kind === 'joint' ? s.a.node
@@ -1227,6 +1314,10 @@ export class Editor {
         const inside = ts > 1e-6 && ts < s.len - 1e-6;
         items.push({ label: '在此插入截面', hint: '坡度转折点', disabled: !inside, action: () => this.mutate((mm) => { insertJoint(mm, s.id, ts); }) });
         items.push({ label: '在此分隔', disabled: !inside, action: () => this.cutAt(p) });
+        items.push({
+          label: '在此放置小节盘点', hint: isSloped(m, s) ? '坡道上不能放' : `第 ${checkpoints(m).length + 2} 小节`, disabled: isSloped(m, s),
+          action: () => this.mutate((mm) => { placeCheckpointOnSeg(mm, s.id, ts); }),
+        });
       }
       items.push(null);
       items.push(...styleItems(s.style, (mm, st) => setSegStyle(mm, s.id, st)));
@@ -1250,8 +1341,20 @@ export class Editor {
         items.push(opt('普通平台', 'normal', 'normal', false), opt('凹槽平台', 'sink', 'sink', false), opt('细边花纹平台', 'ribbon', 'sink', true));
         items.push(null);
       }
+      if (n.kind === 'checkpoint') {
+        const linked = nodeLinks(m, n.id).length > 0;
+        items.push({ label: '旋转 90°', hint: linked ? '接着路时不能转' : undefined, disabled: linked, action: () => this.mutate((mm) => { rotateCheckpoint(mm, n.id, 1); }) });
+        if (n.prefab === 'check') {
+          const list = checkpoints(m);
+          items.push({ label: '掉头', hint: '重生点朝向反过来', action: () => this.mutate((mm) => { rotateCheckpoint(mm, n.id, 2); }) });
+          items.push(null);
+          items.push({ label: '小节提前', hint: `当前第 ${n.sector} 小节`, disabled: n.sector === 2, action: () => this.mutate((mm) => { moveSector(mm, n.id, -1); }) });
+          items.push({ label: '小节推后', disabled: n.sector === list.length + 1, action: () => this.mutate((mm) => { moveSector(mm, n.id, 1); }) });
+        }
+        items.push(null);
+      }
       items.push(setRoot(n.id));
-      const name = n.kind === 'transition' ? '删除转换块' : n.kind === 'platform' ? `删除平台（连着 ${nodeLinks(m, n.id).length} 条路）` : '删除路块';
+      const name = n.kind === 'checkpoint' ? (n.prefab === 'start' ? '删除起点' : '删除小节盘点') : n.kind === 'transition' ? '删除转换块' : n.kind === 'platform' ? `删除平台（连着 ${nodeLinks(m, n.id).length} 条路）` : '删除路块';
       items.push({ label: name, hint: 'Del', action: () => this.mutate((mm) => deleteElem(mm, n.id)) });
     }
     return items;
@@ -1283,6 +1386,13 @@ export class Editor {
     const cy = this.snapEdge(p.y - HALF, 1) + HALF;
     this.guides = [];
     this.mutate((mm) => { addBlock(mm, cx, cy, 0); });
+  }
+
+  private newPrefabAt(p: THREE.Vector3, prefab: Prefab) {
+    const cx = this.snapEdge(p.x - HALF, 0) + HALF;
+    const cy = this.snapEdge(p.y - HALF, 1) + HALF;
+    this.guides = [];
+    this.mutate((mm) => { addCheckpoint(mm, prefab, cx, cy, 0, 0); });
   }
 
   private focusRoot() {
@@ -1377,7 +1487,11 @@ export class Editor {
       info = `直道 #${s.id}  长 ${fmt(s.len)}  高 ${fmt(endZ(m, s, 'a'))}→${fmt(endZ(m, s, 'b'))}  ${s.style === 'sink' ? '凹槽' : '普通'}  端点 ${ends.join(' / ')}`;
     } else if (h && m.nodes[h.id]) {
       const n = m.nodes[h.id];
-      if (n.kind === 'platform') {
+      if (n.kind === 'checkpoint') {
+        const two = (v: number) => String(v).padStart(2, '0');
+        info = n.prefab === 'start' ? `起点 · PS_FourFlames_01 + PR_Resetpoint_01  高 ${fmt(n.z)}`
+          : `小节盘点 · 第 ${n.sector} 小节 · PC_TwoFlames_${two(n.sector! - 1)} + PR_Resetpoint_${two(n.sector!)}  高 ${fmt(n.z)}`;
+      } else if (n.kind === 'platform') {
         const b = platformBBox(n);
         info = `平台 #${n.id}  ${fmt(b.x1 - b.x0)}×${fmt(b.y1 - b.y0)}  高 ${fmt(n.z)}  ${n.style === 'normal' ? '普通' : n.ribbon ? '细边花纹' : '凹槽'}`;
       } else {

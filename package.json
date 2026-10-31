@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "textures": "node scripts/copy-textures.mjs",
+    "assets": "node scripts/build-assets.mjs",
     "test": "tsx tests/run.ts",
     "typecheck": "tsc"
   },

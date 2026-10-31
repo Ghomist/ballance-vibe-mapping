@@ -24,3 +24,14 @@ button, select { transition: background 0.12s, border-color 0.12s; }
 .label-layer { position: absolute; inset: 0; pointer-events: none; }
 .axis-label { font: 10px/1 ui-monospace, Consolas, monospace; opacity: 0.75; padding: 1px 3px; text-shadow: 0 0 3px #1d2330; }
 button svg { vertical-align: -2px; margin-right: 3px; }
+
+.cp-label {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(20, 24, 32, 0.72);
+  border: 1px solid rgba(255, 170, 80, 0.55);
+  color: #ffd2a0;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}

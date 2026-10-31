@@ -15,7 +15,12 @@ export const axisOf = (d: Dir): 0 | 1 => (d % 2) as 0 | 1;
 
 export type Style = 'normal' | 'sink';
 export type EndStyle = 'open' | 'closed';
-export type NodeKind = 'block' | 'joint' | 'transition' | 'platform';
+export type NodeKind = 'block' | 'joint' | 'transition' | 'platform' | 'checkpoint';
+/** 盘点路面：起点（四火）或小节盘点（两火） */
+export type Prefab = 'start' | 'check';
+
+/** 盘点路面中心到路口端面的距离（资产库模型的延伸段末端） */
+export const PREFAB_PORT: Record<Prefab, number> = { start: 12.3861, check: 9.924 };
 
 export const HALF = 2.5;       // 半个路块
 export const BLOCK = 5;        // 路块边长
@@ -49,6 +54,12 @@ export interface MNode {
    * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
+  /** checkpoint：起点 / 小节盘点 */
+  prefab?: Prefab;
+  /** checkpoint：朝向（模型本地 +X 对应的方向）。起点的路口在这一侧；小节盘点的路口在这一侧和对侧 */
+  rot?: Dir;
+  /** checkpoint（小节盘点）：激活的小节号（≥2），对应 PC_TwoFlames_{sector-1} 与 PR_Resetpoint_{sector} */
+  sector?: number;
 }
 
 export interface AttachedEnd { node: number }
@@ -81,7 +92,14 @@ export interface Model {
 export interface PortRef { seg: number; key: EndKey }
 
 export const isFree = (e: End): e is FreeEnd => e.node === null;
-export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : n.kind === 'transition' && n.narrow ? HALF / 2 : HALF);
+export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : n.kind === 'checkpoint' ? PREFAB_PORT[n.prefab!]
+  : n.kind === 'transition' && n.narrow ? HALF / 2 : HALF);
+
+/** 节点可以接路的方向（路块四个方向都行；盘点路面只有延伸段那一侧 / 两侧） */
+export function nodePortDirs(n: MNode): Dir[] {
+  if (n.kind === 'checkpoint') return n.prefab === 'start' ? [n.rot!] : [n.rot!, opp(n.rot!)];
+  return [0, 1, 2, 3];
+}
 
 export function emptyModel(): Model {
   const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {} };
