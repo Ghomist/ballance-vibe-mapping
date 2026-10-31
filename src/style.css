@@ -1,0 +1,13 @@
+:root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; font-size: 13px; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #1d2330; color: #dde3ee; }
+body { display: grid; grid-template-rows: auto 1fr auto; }
+#toolbar { display: flex; align-items: center; gap: 14px; padding: 6px 10px; background: #252c3b; border-bottom: 1px solid #333c50; flex-wrap: wrap; }
+.brand { letter-spacing: 1px; color: #8fb8ff; }
+.group { display: flex; align-items: center; gap: 4px; }
+button, select { background: #313a4d; color: inherit; border: 1px solid #3f4a62; border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+button:hover { background: #3a4560; }
+button.active { background: #4a6fb0; border-color: #6a8fd0; }
+#viewport { position: relative; overflow: hidden; min-height: 0; }
+#viewport canvas { display: block; }
+#status { padding: 4px 10px; background: #252c3b; border-top: 1px solid #333c50; color: #aab4c6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

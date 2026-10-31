@@ -1,0 +1,25 @@
+{
+  "name": "ballance-vibe-mapping",
+  "version": "1.0.0",
+  "description": "Ballance 赛道制图器",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "textures": "node scripts/copy-textures.mjs",
+    "test": "tsx tests/run.ts",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

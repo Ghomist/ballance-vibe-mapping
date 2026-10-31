@@ -1,0 +1,490 @@
+// 路网编辑操作。所有操作都直接修改传入的 Model；调用方负责先 clone 再改（用于拖拽预览和撤销）。
+import {
+  BLOCK, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
+  axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount, zAt,
+} from './types';
+
+const EPS = 1e-6;
+
+function newId(m: Model) { return m.nextId++; }
+
+function addNode(m: Model, n: Omit<MNode, 'id'>): MNode {
+  const node = { ...n, id: newId(m) };
+  m.nodes[node.id] = node;
+  return node;
+}
+
+function addSeg(m: Model, s: Omit<Seg, 'id'>): Seg {
+  const seg = { ...s, id: newId(m) };
+  m.segs[seg.id] = seg;
+  return seg;
+}
+
+const freeEnd = (z: number, style: EndStyle = 'open'): End => ({ node: null, z, style });
+
+function replaceRoot(m: Model, oldId: number, newIdv: number) {
+  if (m.root === oldId) m.root = newIdv;
+}
+
+/** 直道最短长度：每个封闭端要占 2.5 */
+export function minLen(s: Seg) {
+  let n = 0;
+  if (isFree(s.a) && s.a.style === 'closed') n += HALF;
+  if (isFree(s.b) && s.b.style === 'closed') n += HALF;
+  return Math.max(n, 1.25);
+}
+
+/** 把直道在 t 处切成两段，返回后半段。切点两侧都暂时是开放自由端。 */
+export function splitSeg(m: Model, s: Seg, t: number): Seg {
+  const zt = zAt(m, s, t);
+  const s2 = addSeg(m, {
+    x: s.x + DX[s.dir] * t, y: s.y + DY[s.dir] * t, dir: s.dir,
+    len: s.len - t, style: s.style, a: freeEnd(zt), b: s.b,
+  });
+  s.len = t;
+  s.b = freeEnd(zt);
+  return s2;
+}
+
+/** 在直道 t 处插入截面接头；若 t 落在端点上，返回端点处已有的节点（自由端则返回 null）。 */
+export function insertJoint(m: Model, segId: number, t: number): number | null {
+  const s = m.segs[segId];
+  if (t <= EPS) return s.a.node;
+  if (t >= s.len - EPS) return s.b.node;
+  const s2 = splitSeg(m, s, t);
+  const [x, y] = endPos(s, 'b');
+  const j = addNode(m, { kind: 'joint', x, y, z: zAt(m, s2, 0), style: s.style, axis: axisOf(s.dir) });
+  s.b = { node: j.id };
+  s2.a = { node: j.id };
+  return j.id;
+}
+
+/** 在直道中心位置 c 处挖出一个 5×5 路块，返回路块 id。 */
+export function insertBlockAt(m: Model, segId: number, c: number): number | null {
+  const s = m.segs[segId];
+  if (s.len < BLOCK - EPS) return null;
+  c = Math.min(Math.max(c, HALF), s.len - HALF);
+  const zc = zAt(m, s, c);
+  const blk = addNode(m, {
+    kind: 'block', x: s.x + DX[s.dir] * c, y: s.y + DY[s.dir] * c, z: zc, style: s.style,
+  });
+  const rightLen = s.len - (c + HALF);
+  if (rightLen > EPS || !isFree(s.b)) {
+    addSeg(m, {
+      x: s.x + DX[s.dir] * (c + HALF), y: s.y + DY[s.dir] * (c + HALF), dir: s.dir,
+      len: Math.max(rightLen, 0), style: s.style, a: { node: blk.id }, b: s.b,
+    });
+  }
+  const leftLen = c - HALF;
+  if (leftLen > EPS || !isFree(s.a)) {
+    s.len = Math.max(leftLen, 0);
+    s.b = { node: blk.id };
+  } else {
+    delete m.segs[s.id];
+    replaceRoot(m, s.id, blk.id);
+  }
+  return blk.id;
+}
+
+/** 从路块端口长出一段新直道，返回新直道 id（生长端为 b）。 */
+export function addSegAtPort(m: Model, nodeId: number, d: Dir, len = 1.25): number | null {
+  const n = m.nodes[nodeId];
+  if (nodePorts(m, nodeId)[d]) return null;
+  if (n.kind !== 'block') return null;
+  const h = nodeHalf(n);
+  const s = addSeg(m, {
+    x: n.x + DX[d] * h, y: n.y + DY[d] * h, dir: d, len, style: n.style,
+    a: { node: n.id }, b: freeEnd(n.z, 'closed'),
+  });
+  return s.id;
+}
+
+/** 把孤立的 1×1 路块变成一段朝 d 方向的直道（两端封闭），返回直道 id（生长端为 b）。 */
+export function blockToSeg(m: Model, nodeId: number, d: Dir): number {
+  const n = m.nodes[nodeId];
+  const s = addSeg(m, {
+    x: n.x - DX[d] * HALF, y: n.y - DY[d] * HALF, dir: d, len: BLOCK, style: n.style,
+    a: freeEnd(n.z, 'closed'), b: freeEnd(n.z, 'closed'),
+  });
+  delete m.nodes[nodeId];
+  replaceRoot(m, nodeId, s.id);
+  return s.id;
+}
+
+/** 把自由端拉到轴向坐标 coord（X 轴向直道为 x，Y 轴向为 y）。 */
+export function extendTo(m: Model, segId: number, k: EndKey, coord: number) {
+  const s = m.segs[segId];
+  const ax = axisOf(s.dir);
+  const sign = ax === 0 ? DX[s.dir] : DY[s.dir];
+  const start = ax === 0 ? s.x : s.y;
+  const lo = minLen(s);
+  if (k === 'b') {
+    s.len = Math.max((coord - start) * sign, lo);
+  } else {
+    const endc = start + sign * s.len;
+    const len = Math.max((endc - coord) * sign, lo);
+    const ns = endc - sign * len;
+    if (ax === 0) s.x = ns; else s.y = ns;
+    s.len = len;
+  }
+}
+
+/** 拐角：把自由端最后 5 个单位变成路块，并从侧面 d 长出新直道。 */
+export function makeCorner(m: Model, segId: number, k: EndKey, d: Dir): number | null {
+  const s = m.segs[segId];
+  if (!isFree(s[k]) || s.len < BLOCK - EPS) return null;
+  const blk = insertBlockAt(m, segId, k === 'b' ? s.len - HALF : HALF);
+  if (blk === null) return null;
+  return addSegAtPort(m, blk, d);
+}
+
+/** 路口：在直道 c 处挖出路块，并从侧面 d 长出新直道。 */
+export function makeBranch(m: Model, segId: number, c: number, d: Dir): number | null {
+  const blk = insertBlockAt(m, segId, c);
+  if (blk === null) return null;
+  return addSegAtPort(m, blk, d);
+}
+
+// ---------------- 图遍历 / 高度 ----------------
+
+function neighbors(m: Model, id: number): number[] {
+  if (m.segs[id]) {
+    const s = m.segs[id];
+    return [s.a.node, s.b.node].filter((x): x is number => x !== null && !!m.nodes[x]);
+  }
+  return nodePorts(m, id).filter((p) => p).map((p) => p!.seg);
+}
+
+function component(m: Model, start: number): Set<number> {
+  const seen = new Set([start]);
+  const q = [start];
+  while (q.length) {
+    for (const nb of neighbors(m, q.shift()!)) if (!seen.has(nb)) { seen.add(nb); q.push(nb); }
+  }
+  return seen;
+}
+
+/** 目标节点及其“下游”（远离根的一侧）整体升降 dz。 */
+export function shiftDownstream(m: Model, target: number, dz: number) {
+  const comp = component(m, target);
+  const root = m.root !== null && comp.has(m.root) ? m.root : Math.min(...comp);
+  let sub: Set<number>;
+  if (root === target) {
+    sub = comp;
+  } else {
+    const parent = new Map<number, number>();
+    const seen = new Set([root]);
+    const q = [root];
+    while (q.length) {
+      const cur = q.shift()!;
+      for (const nb of neighbors(m, cur)) if (!seen.has(nb)) { seen.add(nb); parent.set(nb, cur); q.push(nb); }
+    }
+    const blocked = parent.get(target);
+    sub = new Set([target]);
+    const q2 = [target];
+    while (q2.length) {
+      for (const nb of neighbors(m, q2.shift()!)) {
+        if (nb === blocked || sub.has(nb)) continue;
+        sub.add(nb); q2.push(nb);
+      }
+    }
+  }
+  for (const id of sub) {
+    if (m.nodes[id]) m.nodes[id].z += dz;
+    const s = m.segs[id];
+    if (s) {
+      if (isFree(s.a)) s.a.z += dz;
+      if (isFree(s.b)) s.b.z += dz;
+    }
+  }
+}
+
+export function shiftFreeEnd(m: Model, segId: number, k: EndKey, dz: number) {
+  const e = m.segs[segId][k];
+  if (isFree(e)) e.z += dz;
+}
+
+// ---------------- 端点 / 分隔 ----------------
+
+export function toggleEnd(m: Model, segId: number, k: EndKey) {
+  const s = m.segs[segId];
+  const e = s[k];
+  if (!isFree(e)) return;
+  e.style = e.style === 'open' ? 'closed' : 'open';
+  if (s.len < minLen(s)) extendTo(m, segId, k, axisCoord(s, k) + endSign(s, k) * (minLen(s) - s.len));
+}
+
+const axisCoord = (s: Seg, k: EndKey) => endPos(s, k)[axisOf(s.dir)];
+const endSign = (s: Seg, k: EndKey) => { const d = endOutDir(s, k); return DX[d] + DY[d]; };
+
+/** 在直道 t 处把花纹分开，生成两个开放端点。 */
+export function cutSeg(m: Model, segId: number, t: number) {
+  const s = m.segs[segId];
+  if (t <= EPS || t >= s.len - EPS) return;
+  splitSeg(m, s, t);
+}
+
+/** 从截面接头处分开。 */
+export function cutJoint(m: Model, nodeId: number) {
+  const n = m.nodes[nodeId];
+  if (!n || n.kind !== 'joint') return;
+  for (const p of nodePorts(m, nodeId)) if (p) m.segs[p.seg][p.key] = freeEnd(n.z);
+  delete m.nodes[nodeId];
+}
+
+// ---------------- 删除 ----------------
+
+export function deleteElem(m: Model, id: number) {
+  if (m.segs[id]) {
+    delete m.segs[id];
+    if (m.root === id) m.root = null;
+    return;
+  }
+  const n = m.nodes[id];
+  if (!n) return;
+  if (n.kind === 'joint') {
+    mergeAtJoint(m, id);
+    return;
+  }
+  for (const p of nodePorts(m, id)) if (p) m.segs[p.seg][p.key] = freeEnd(n.z, 'closed');
+  delete m.nodes[id];
+  if (m.root === id) m.root = null;
+}
+
+/** 删掉接头，把两侧直道合并成一段。 */
+function mergeAtJoint(m: Model, jid: number) {
+  const ports = nodePorts(m, jid).filter((p) => p) as { seg: number; key: EndKey }[];
+  if (ports.length !== 2) { cutJoint(m, jid); return; }
+  const [p1, p2] = ports;
+  let s1 = m.segs[p1.seg];
+  let s2 = m.segs[p2.seg];
+  // 统一成 s1.b -> joint -> s2.a
+  if (p1.key === 'a') { [s1, s2] = [s2, s1]; }
+  if (s1.b.node !== jid || s2.a.node !== jid || s1.dir !== s2.dir) { cutJoint(m, jid); return; }
+  s1.len += s2.len;
+  s1.b = s2.b;
+  delete m.segs[s2.id];
+  replaceRoot(m, s2.id, s1.id);
+  delete m.nodes[jid];
+  replaceRoot(m, jid, s1.id);
+}
+
+// ---------------- 合并 ----------------
+
+const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
+
+/** 拖拽结束后：自由端如果正好落在别的开口上（高度一致），就把两边连起来。 */
+export function tryConnect(m: Model, segId: number, k: EndKey) {
+  const s = m.segs[segId];
+  if (!s || !isFree(s[k])) return;
+  const [px, py] = endPos(s, k);
+  const pz = endZ(m, s, k);
+  const out = endOutDir(s, k);
+
+  // 1. 对面的自由端
+  for (const o of Object.values(m.segs)) {
+    if (o.id === s.id) continue;
+    for (const ok of ['a', 'b'] as EndKey[]) {
+      if (!isFree(o[ok]) || endOutDir(o, ok) !== opp(out)) continue;
+      const [ox, oy] = endPos(o, ok);
+      if (!near(ox, px) || !near(oy, py) || !near(endZ(m, o, ok), pz)) continue;
+      const j = addNode(m, { kind: 'joint', x: px, y: py, z: pz, style: s.style, axis: axisOf(s.dir) });
+      s[k] = { node: j.id };
+      o[ok] = { node: j.id };
+      return;
+    }
+  }
+  // 2. 路块的空端口
+  for (const n of Object.values(m.nodes)) {
+    if (n.kind !== 'block' || !near(n.z, pz)) continue;
+    const d = opp(out);
+    if (!near(n.x + DX[d] * HALF, px) || !near(n.y + DY[d] * HALF, py)) continue;
+    if (nodePorts(m, n.id)[d]) continue;
+    s[k] = { node: n.id };
+    return;
+  }
+  // 3. 撞到另一条直道的侧面：在那里开 T 字路口
+  const cx = px + DX[out] * HALF;
+  const cy = py + DY[out] * HALF;
+  for (const o of Object.values(m.segs)) {
+    if (o.id === s.id || axisOf(o.dir) === axisOf(out)) continue;
+    const t = (cx - o.x) * DX[o.dir] + (cy - o.y) * DY[o.dir];
+    const lat = (cx - o.x) * -DY[o.dir] + (cy - o.y) * DX[o.dir];
+    if (!near(lat, 0) || t < HALF - 1e-3 || t > o.len - HALF + 1e-3) continue;
+    if (!near(zAt(m, o, t), pz)) continue;
+    const blk = insertBlockAt(m, o.id, t);
+    if (blk === null) continue;
+    m.segs[segId][k] = { node: blk };
+    return;
+  }
+}
+
+// ---------------- 样式（普通 / 凹槽）----------------
+
+/** 沿接头相连的整条直道链 */
+export function chainOf(m: Model, segId: number): number[] {
+  const out = new Set([segId]);
+  const q = [segId];
+  while (q.length) {
+    const s = m.segs[q.shift()!];
+    for (const k of ['a', 'b'] as EndKey[]) {
+      const e = s[k];
+      if (isFree(e) || m.nodes[e.node]?.kind !== 'joint') continue;
+      for (const p of nodePorts(m, e.node)) if (p && !out.has(p.seg)) { out.add(p.seg); q.push(p.seg); }
+    }
+  }
+  return [...out];
+}
+
+export function setChainStyle(m: Model, segId: number, style: Style) {
+  for (const id of chainOf(m, segId)) m.segs[id].style = style;
+  for (const id of chainOf(m, segId)) {
+    for (const k of ['a', 'b'] as EndKey[]) {
+      const e = m.segs[id][k];
+      if (!isFree(e) && m.nodes[e.node].kind === 'joint') m.nodes[e.node].style = style;
+    }
+  }
+}
+
+export function setBlockStyle(m: Model, nodeId: number, style: Style) {
+  const n = m.nodes[nodeId];
+  if (n && n.kind === 'block') n.style = style;
+}
+
+/** 从直道 k 端切掉 5 个单位，在那里放一个平凹转换块。 */
+function insertTransition(m: Model, s: Seg, k: EndKey, other: { seg: Seg; key: EndKey } | { node: number; dir: Dir }) {
+  const e = s[k] as { node: number };
+  const z = endZ(m, s, k);
+  const [ex, ey] = endPos(s, k);
+  const inward = opp(endOutDir(s, k));
+  if (k === 'a') { s.x += DX[s.dir] * BLOCK; s.y += DY[s.dir] * BLOCK; }
+  s.len -= BLOCK;
+  const sinkIsCarved = s.style === 'sink';
+  const tr = addNode(m, {
+    kind: 'transition', x: ex + DX[inward] * HALF, y: ey + DY[inward] * HALF, z,
+    style: 'sink', axis: axisOf(s.dir), sinkDir: sinkIsCarved ? inward : opp(inward),
+  });
+  s[k] = { node: tr.id };
+  if ('seg' in other) {
+    other.seg[other.key] = { node: tr.id };
+    if (m.nodes[e.node]?.kind === 'joint') delete m.nodes[e.node];
+  } else {
+    // 路块与转换块之间用零长度直道相连
+    const blk = m.nodes[other.node];
+    addSeg(m, {
+      x: ex, y: ey, dir: opp(inward), len: 0, style: blk.style,
+      a: { node: tr.id }, b: { node: blk.id },
+    });
+  }
+}
+
+/** 修正样式不一致的连接处：插入或移除平凹转换块。 */
+export function fixStyles(m: Model): boolean {
+  for (const n of Object.values(m.nodes)) {
+    const ports = nodePorts(m, n.id);
+    if (n.kind === 'joint') {
+      const ps = ports.filter((p) => p)!;
+      if (ps.length !== 2) continue;
+      const [p1, p2] = ps as { seg: number; key: EndKey }[];
+      const s1 = m.segs[p1.seg], s2 = m.segs[p2.seg];
+      if (s1.style === s2.style) continue;
+      const sinkP = s1.style === 'sink' ? p1 : p2;
+      const normP = sinkP === p1 ? p2 : p1;
+      const carve = m.segs[sinkP.seg].len >= BLOCK - EPS ? sinkP : m.segs[normP.seg].len >= BLOCK - EPS ? normP : null;
+      if (!carve) continue;
+      const keep = carve === sinkP ? normP : sinkP;
+      insertTransition(m, m.segs[carve.seg], carve.key, { seg: m.segs[keep.seg], key: keep.key });
+      return true;
+    }
+    if (n.kind === 'block') {
+      for (let d = 0 as Dir; d < 4; d = (d + 1) as Dir) {
+        const p = ports[d];
+        if (!p) continue;
+        const s = m.segs[p.seg];
+        if (s.style === n.style || s.len < BLOCK - EPS) continue;
+        insertTransition(m, s, p.key, { node: n.id, dir: d });
+        return true;
+      }
+    }
+    if (n.kind === 'transition') {
+      const sp = ports[n.sinkDir!];
+      const fp = ports[opp(n.sinkDir!)];
+      const sStyle = sp ? m.segs[sp.seg].style : 'sink';
+      const fStyle = fp ? m.segs[fp.seg].style : 'normal';
+      if (sStyle === 'sink' && fStyle === 'normal') continue;
+      if (sStyle === 'normal' && fStyle === 'sink') { n.sinkDir = opp(n.sinkDir!); return true; }
+      // 两边样式相同：转换块不再需要，变回接头并把两侧直道各延长 2.5
+      n.kind = 'joint';
+      n.style = sStyle;
+      delete n.sinkDir;
+      for (const p of [sp, fp]) {
+        if (!p) continue;
+        const s = m.segs[p.seg];
+        if (p.key === 'a') { s.x -= DX[s.dir] * HALF; s.y -= DY[s.dir] * HALF; }
+        s.len += HALF;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------- 规范化 ----------------
+
+/** 消除冗余结构：只剩一个连接的路块变成封闭端点、对穿路块变成接头、悬空接头去掉等。 */
+export function normalize(m: Model) {
+  for (let guard = 0; guard < 1000; guard++) {
+    if (!normalizeOnce(m) && !fixStyles(m)) return;
+  }
+}
+
+function normalizeOnce(m: Model): boolean {
+  for (const s of Object.values(m.segs)) {
+    if (s.len > EPS) continue;
+    if (isFree(s.a) || isFree(s.b)) { delete m.segs[s.id]; return true; }
+  }
+  for (const n of Object.values(m.nodes)) {
+    const ports = nodePorts(m, n.id);
+    const cnt = portCount(ports);
+    if (n.kind === 'joint') {
+      if (cnt === 2) continue;
+      if (cnt === 1) {
+        const p = ports.find((x) => x)!;
+        m.segs[p.seg][p.key] = freeEnd(n.z);
+        replaceRoot(m, n.id, p.seg);
+      }
+      delete m.nodes[n.id];
+      return true;
+    }
+    if (n.kind !== 'block') continue;
+    if (cnt === 1) {
+      // 只剩一个连接：并入那段直道，成为封闭端点
+      const d = ports.findIndex((x) => x) as Dir;
+      const p = ports[d]!;
+      const s = m.segs[p.seg];
+      if (p.key === 'a') { s.x -= DX[s.dir] * BLOCK; s.y -= DY[s.dir] * BLOCK; }
+      s.len += BLOCK;
+      s[p.key] = freeEnd(n.z, 'closed');
+      if (s.style !== n.style) s.style = n.style;
+      delete m.nodes[n.id];
+      replaceRoot(m, n.id, s.id);
+      return true;
+    }
+    if (cnt === 2) {
+      const d = ports.findIndex((x) => x) as Dir;
+      const p1 = ports[d], p2 = ports[opp(d)];
+      if (!p1 || !p2) continue;
+      if (m.segs[p1.seg].style !== n.style || m.segs[p2.seg].style !== n.style) continue;
+      // 对穿：变成接头，两侧直道各延长 2.5
+      for (const p of [p1, p2]) {
+        const s = m.segs[p.seg];
+        if (p.key === 'a') { s.x -= DX[s.dir] * HALF; s.y -= DY[s.dir] * HALF; }
+        s.len += HALF;
+      }
+      n.kind = 'joint';
+      n.axis = axisOf(d);
+      return true;
+    }
+  }
+  return false;
+}

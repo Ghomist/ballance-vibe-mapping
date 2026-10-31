@@ -1,0 +1,108 @@
+// 路网数据模型。坐标系与 Blender 一致：Z 轴向上，单位与 Ballance 相同（1 路块 = 5）。
+//
+// 路网由两种元素组成：
+//   - 节点（MNode）：5×5 的路块（拐角 / 路口 / 1×1 / 平凹转换），或零尺寸的“截面接头”（joint）。
+//   - 直道（Seg）：沿坐标轴方向、宽 5、长度任意的路段，两端或接在节点端口上，或是自由端点。
+// 节点和直道共用一个 id 空间，这样 root 等引用只需要一个数字。
+
+export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
+export const DX = [1, 0, -1, 0] as const;
+export const DY = [0, 1, 0, -1] as const;
+export const opp = (d: Dir): Dir => ((d + 2) % 4) as Dir;
+export const axisOf = (d: Dir): 0 | 1 => (d % 2) as 0 | 1;
+
+export type Style = 'normal' | 'sink';
+export type EndStyle = 'open' | 'closed';
+export type NodeKind = 'block' | 'joint' | 'transition';
+
+export const HALF = 2.5;       // 半个路块
+export const BLOCK = 5;        // 路块边长
+export const THICK = 5;        // 路面厚度
+export const SINK_DEPTH = 0.7; // 凹槽深度
+export const HEIGHT_STEP = 1.25;
+
+export interface MNode {
+  id: number;
+  kind: NodeKind;
+  x: number;
+  y: number;
+  z: number; // 顶面高度
+  style: Style;
+  /** joint / transition：沿哪根轴（0=X，1=Y） */
+  axis?: 0 | 1;
+  /** transition：从中心指向凹槽一侧的方向 */
+  sinkDir?: Dir;
+}
+
+export interface AttachedEnd { node: number }
+export interface FreeEnd { node: null; z: number; style: EndStyle }
+export type End = AttachedEnd | FreeEnd;
+export type EndKey = 'a' | 'b';
+
+export interface Seg {
+  id: number;
+  /** 起点（a 端）在路中线上的坐标 */
+  x: number;
+  y: number;
+  /** 从 a 端指向 b 端的方向 */
+  dir: Dir;
+  len: number;
+  style: Style;
+  a: End;
+  b: End;
+}
+
+export interface Model {
+  nodes: Record<number, MNode>;
+  segs: Record<number, Seg>;
+  nextId: number;
+  /** 高度传播的根元素（节点或直道 id）；改高度时，只有远离根的一侧跟着动 */
+  root: number | null;
+}
+
+export interface PortRef { seg: number; key: EndKey }
+
+export const isFree = (e: End): e is FreeEnd => e.node === null;
+export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : HALF);
+
+export function emptyModel(): Model {
+  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null };
+  const id = m.nextId++;
+  m.nodes[id] = { id, kind: 'block', x: 0, y: 0, z: 0, style: 'normal' };
+  m.root = id;
+  return m;
+}
+
+export const cloneModel = (m: Model): Model => JSON.parse(JSON.stringify(m));
+
+/** 直道某一端在路中线上的平面坐标 */
+export function endPos(s: Seg, k: EndKey): [number, number] {
+  if (k === 'a') return [s.x, s.y];
+  return [s.x + DX[s.dir] * s.len, s.y + DY[s.dir] * s.len];
+}
+
+/** 直道某一端的朝外方向 */
+export const endOutDir = (s: Seg, k: EndKey): Dir => (k === 'a' ? opp(s.dir) : s.dir);
+
+export function endZ(m: Model, s: Seg, k: EndKey): number {
+  const e = s[k];
+  return isFree(e) ? e.z : m.nodes[e.node].z;
+}
+
+export function zAt(m: Model, s: Seg, t: number): number {
+  const za = endZ(m, s, 'a');
+  const zb = endZ(m, s, 'b');
+  return s.len > 1e-9 ? za + ((zb - za) * t) / s.len : za;
+}
+
+/** 节点四个方向上连接的直道 */
+export function nodePorts(m: Model, id: number): (PortRef | null)[] {
+  const r: (PortRef | null)[] = [null, null, null, null];
+  for (const s of Object.values(m.segs)) {
+    if (s.a.node === id) r[s.dir] = { seg: s.id, key: 'a' };
+    if (s.b.node === id) r[opp(s.dir)] = { seg: s.id, key: 'b' };
+  }
+  return r;
+}
+
+export const portCount = (p: (PortRef | null)[]) => p.filter((x) => x).length;
