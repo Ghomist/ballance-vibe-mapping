@@ -1,9 +1,28 @@
-import { Editor, type Tool } from './editor';
+import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES } from './model/objects';
 
 const editor = new Editor(document.getElementById('viewport')!);
 const status = document.getElementById('status')!;
-editor.onStatus = (s) => { status.textContent = s; };
+editor.onStatus = (s) => { status.textContent = s; status.classList.toggle('warn', s.startsWith('⚠')); };
+
+// 状态栏左侧：Blender 式的按键提示
+const hintsEl = document.getElementById('hints')!;
+const MOUSE: Record<string, string> = { LMB: 'l', MMB: 'm', RMB: 'r', Wheel: 'm' };
+const mouseIcon = (b: string) => {
+  // 鼠标轮廓，按下的那个键涂亮
+  const fill = (k: string) => (MOUSE[b] === k ? 'currentColor' : 'none');
+  return `<svg class="mouse" viewBox="0 0 10 14" width="10" height="14"><rect x="0.6" y="0.6" width="8.8" height="12.8" rx="4.4" fill="none" stroke="currentColor" stroke-width="1"/>`
+    + `<path d="M5 0.6 V5.5" stroke="currentColor" stroke-width="0.8"/>`
+    + `<path d="M5 0.6 A4.4 4.4 0 0 0 0.6 5 V5.5 H5 Z" fill="${fill('l')}" opacity="0.9"/>`
+    + `<path d="M5 0.6 A4.4 4.4 0 0 1 9.4 5 V5.5 H5 Z" fill="${fill('r')}" opacity="0.9"/>`
+    + (b === 'MMB' || b === 'Wheel' ? '<rect x="4" y="2" width="2" height="3" rx="1" fill="currentColor"/>' : '')
+    + '</svg>';
+};
+const keyHtml = (k: string) => (k in MOUSE ? mouseIcon(k) : `<kbd>${k}</kbd>`);
+editor.onHints = (hs: Hint[]) => {
+  hintsEl.innerHTML = hs.map((h) => `<span class="hint">${h.keys.map(keyHtml).join('')}<span>${h.label}</span></span>`).join('');
+};
+editor.refreshStatus();
 
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools button')];
 const syncTools = () => toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === editor.tool));

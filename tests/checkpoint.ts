@@ -191,3 +191,26 @@ export function platformRepairScenarios(emptyModel: () => Model, check: Check, s
     check(platforms(m).length === 2, `挖掉连接部分后应重新分成 2 个，实际 ${platforms(m).length}`);
   });
 }
+
+import { movePiece, pieceOf } from '../src/model/ops';
+
+export function rippleScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
+  scenario('Ctrl 移动：接在平台边上的路沿边移动时只滑动路口，平台不动', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 20)!; // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 2.5]
+    const s = addSegAtPlatform(m, p, 7.5, 2.5, 1)!;
+    extendTo(m, s, 'b', 20);
+    normalize(m);
+    const cells = JSON.stringify(m.nodes[p].cells);
+    const info = { moved: new Set<number>(), stretched: new Set<number>() };
+    check(movePiece(m, pieceOf(m, s), 5, 0, 0, info), '应能移动');
+    normalize(m);
+    check(JSON.stringify(m.nodes[p].cells) === cells, '平台不应移动');
+    check(m.segs[s].x === 12.5 && m.segs[s].a.node === p, `路口应滑到 x=12.5 并仍接在平台上，实际 ${m.segs[s].x}`);
+    check(!info.moved.has(p), '移动范围里不应包含平台');
+    // 滑出平台边就不行了：只能带着平台走
+    const info2 = { moved: new Set<number>(), stretched: new Set<number>() };
+    movePiece(cloneModel(m), pieceOf(m, s), 15, 0, 0, info2);
+    check(info2.moved.has(p), '路口放不下时平台跟着移动');
+  });
+}

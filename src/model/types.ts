@@ -57,6 +57,8 @@ export interface MNode {
   ramp?: boolean;
   /** block：没接路的各边加护栏 */
   guard?: boolean;
+  /** 仅用于显示过渡：平台整体平移时，按目标形状绘制再偏移这么多（不会存进模型） */
+  dispOff?: [number, number, number];
   /** checkpoint：起点 / 小节盘点 */
   prefab?: Prefab;
   /** checkpoint：朝向（模型本地 +X 对应的方向）。起点的路口在这一侧；小节盘点的路口在这一侧和对侧 */

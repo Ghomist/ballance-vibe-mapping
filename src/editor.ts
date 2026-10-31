@@ -8,6 +8,7 @@ import { Gizmo, type GizmoHandle } from './view/gizmo';
 import { Snapper, type SnapResult } from './view/snap';
 import { Fx, rectSegs } from './view/fx';
 import { createGrid } from './view/grid';
+import { FaceFx, type FaceSpec, faceSegs } from './view/face';
 import { assetVersion, fallbackBox, getAsset, setAssetLoadedCallback } from './view/assets';
 import {
   addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
@@ -25,7 +26,7 @@ import {
   pieceLength, pushPiece, railEnd, railTopOffset, splitRail, stateAt,
 } from './model/rail';
 import {
-  addBlock, addSegAtPort, applyConnection, blockToSeg, cutJoint, movePiece, pieceOf, cutSeg, deleteElem, extendFlat, extendTo,
+  type MoveInfo, addBlock, addSegAtPort, applyConnection, blockToSeg, cutJoint, movePiece, pieceOf, cutSeg, deleteElem, extendFlat, extendTo,
   findConnection, insertJoint, isSloped, makeBranch, normalize, setBlockStyle, setChainStyle, setSegStyle,
   setPlatformStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
 } from './model/ops';
@@ -34,6 +35,9 @@ import {
 } from './model/platform';
 
 export type Tool = 'edit' | 'cut' | 'rail' | 'object';
+
+/** 状态栏的一条操作提示：按键（LMB / MMB / RMB / Wheel / Shift / Ctrl / Alt / 字母…）+ 简短说明 */
+export interface Hint { keys: string[]; label: string }
 
 interface Pick {
   id: number;
@@ -58,6 +62,8 @@ interface Action {
   dir: Dir;
   z: number;
   apply: (m: Model, coord: number) => GrowEnd;
+  /** 操作的截面：画成半透明的面 + 从面中心伸出的箭头（替代 segs 线框） */
+  face?: FaceSpec;
   /** 需要完整平面坐标的动作（钢轨：直线 / 圆弧由鼠标位置决定） */
   apply2?: (m: Model, x: number, y: number) => void;
 }
@@ -69,12 +75,14 @@ type Drag =
   | { type: 'gizmo'; snapshot: Model; target: GizmoTarget; handle: GizmoHandle; origin: THREE.Vector3; t0: number; ref: number }
   | { type: 'obj'; snapshot: Model; id: number; ox: number; oy: number; moved: boolean; sx: number; sy: number }
   | { type: 'objHeight'; snapshot: Model; id: number; plane: THREE.Plane; z0: number }
+  | { type: 'marquee'; sx: number; sy: number; add: boolean }
   | { type: 'orbit' };
 
 /** gizmo 作用对象：悬停元素所在的“一块”（两个折点之间的直路，或单个路块 / 平台）或一整条钢轨 */
 type GizmoTarget =
   | { type: 'comp'; id: number }
-  | { type: 'rail'; id: number };
+  | { type: 'rail'; id: number }
+  | { type: 'multi'; ids: number[] };
 
 type HeightTarget = (m: Model) => number | { seg: number; key: EndKey } | null;
 
@@ -107,6 +115,7 @@ export class Editor {
   objType = 'P_Extra_Point';
   onStatus: (s: string) => void = () => {};
   onChange: () => void = () => {};
+  onHints: (h: Hint[]) => void = () => {};
 
   /** 正在显示的模型（向 model 平滑过渡） */
   private display: Model;
@@ -144,6 +153,12 @@ export class Editor {
   private gizmo = new Gizmo();
   private gizmoTarget: GizmoTarget | null = null;
   private gizmoKey = '';
+  private gizmoHover: GizmoHandle | null = null;
+  private faceFx = new FaceFx();
+  /** 多选（框选） */
+  private selection = new Set<number>();
+  private marquee: HTMLDivElement;
+  private moveInfoCache: { key: string; info: MoveInfo | null } = { key: '', info: null };
 
   constructor(private host: HTMLElement) {
     this.model = this.loadLocal() ?? emptyModel();
@@ -173,8 +188,12 @@ export class Editor {
     this.scene.add(sun);
     this.scene.add(createGrid());
     this.scene.add(this.ghost);
+    this.scene.add(this.faceFx.group);
     this.scene.add(this.floor, this.fx.group, this.gizmo.group);
 
+    this.marquee = document.createElement('div');
+    this.marquee.className = 'marquee';
+    host.appendChild(this.marquee);
     this.menu = document.createElement('div');
     this.menu.className = 'ctx-menu';
     host.appendChild(this.menu);
@@ -269,6 +288,7 @@ export class Editor {
     }
     if (this.overlayDirty) { this.overlayDirty = false; this.updateOverlay(); }
     this.fx.tick(dt);
+    this.faceFx.tick(dt);
     this.gizmo.tick(dt, this.camera);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
@@ -308,9 +328,15 @@ export class Editor {
         continue;
       }
       const prefab = m.nodes[id]?.kind === 'checkpoint' ? m.nodes[id] : null;
-      const key = rail ? JSON.stringify(rail) : `${elemKey(m, id, chains)}:${assetVersion}`;
+      // 平台平移过渡：按目标形状绘制，再整体偏移（见 lerpModel）
+      const off = m.nodes[id]?.kind === 'platform' && this.model.nodes[id]?.kind === 'platform' ? m.nodes[id].dispOff ?? [0, 0, 0] : null;
+      const km = off ? this.model : m;
+      const key = rail ? JSON.stringify(rail) : `${elemKey(km, id, chains)}:${assetVersion}`;
       const cached = this.meshCache.get(id);
-      if (cached && cached.key === key) continue;
+      if (cached && cached.key === key) {
+        if (off) for (const mesh of cached.meshes) mesh.position.set(...off);
+        continue;
+      }
       if (cached) for (const mesh of cached.meshes) { if (!mesh.userData.shared && mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
       const meshes: THREE.Mesh[] = [];
       if (rail) {
@@ -339,7 +365,7 @@ export class Editor {
         this.meshCache.set(id, { key, meshes });
         continue;
       }
-      const em = buildElem(m, id, chains);
+      const em = buildElem(km, id, chains);
       for (const [mat, part] of Object.entries(em?.parts ?? {})) {
         if (!part || part.pos.length === 0) continue;
         const g = new THREE.BufferGeometry();
@@ -351,6 +377,7 @@ export class Editor {
         this.floor.add(mesh);
         meshes.push(mesh);
       }
+      if (off) for (const mesh of meshes) mesh.position.set(...off);
       // 护栏
       for (const part of guardParts(m, id)) {
         for (const pc of getAsset('asset', part.name) ?? []) {
@@ -457,11 +484,21 @@ export class Editor {
     const h = this.drag ? null : this.hover;
     if (h && h.id !== this.selected) show(`hover:${h.id}`, this.outlineSegs(h.id), C_HOVER, { width: 1.5, opacity: 0.4, gradient: true });
     if (this.selected !== null) show('select', this.outlineSegs(this.selected), C_SELECT, { width: 2.5, gradient: true });
+    if (this.selection.size) {
+      const segs: number[] = [];
+      for (const id of this.selection) segs.push(...this.outlineSegs(id));
+      show('multi', segs, C_SELECT, { width: 2, opacity: 0.9, gradient: true });
+    }
 
     // 动作示意（左键 / Shift）
-    this.action = h && this.tool !== 'cut' && !this.mods.alt ? this.actionFor(h) : null;
+    this.action = h && this.tool !== 'cut' && !this.mods.alt && !this.mods.ctrl ? this.actionFor(h) : null;
     const a = this.action;
-    if (a) show(this.mods.shift ? 'act-extrude' : 'act', a.segs, a.valid ? a.color : C_INVALID, { width: 2.5, pos: a.pos });
+    if (a) {
+      const color = a.valid ? a.color : C_INVALID;
+      if (a.face) show(this.mods.shift ? 'act-extrude' : 'act', faceSegs(a.face), color, { width: 2, pos: [a.face.x, a.face.y, a.face.z] });
+      else show(this.mods.shift ? 'act-extrude' : 'act', a.segs, color, { width: 2.5, pos: a.pos });
+    }
+    this.faceFx.set(a?.face ?? null, a?.valid ? a.color : C_INVALID);
 
     // Alt：截面预览；分隔工具：整个截面 + 斜线
     const sec = this.hoverSection();
@@ -475,7 +512,17 @@ export class Editor {
           C_CUT, { width: 2.5, pos });
         show('cut-hatch', hatchSegs(P), C_CUT, { width: 1.5, opacity: 0.8, dashed: true, pos });
       } else {
-        show('section', [-P[0] * HALF, -P[1] * HALF, 0, P[0] * HALF, P[1] * HALF, 0], C_SECTION, { width: 3, pos });
+        const face: FaceSpec = { x: pos[0], y: pos[1], z: pos[2] - 0.04, dir: s.dir, w: 5, arrow: 'updown' };
+        show('section', faceSegs(face), C_SECTION, { width: 2, pos: [face.x, face.y, face.z] });
+        this.faceFx.set(face, C_SECTION);
+      }
+    }
+    // Alt：哪部分会跟着升降（高亮）、哪段会变成坡道（虚线），其余保持不动
+    if (this.tool === 'edit' && this.mods.alt && !this.drag && h && h.kind !== 'rail' && h.kind !== 'obj') {
+      const pv = this.slopePreview(h);
+      if (pv) {
+        show('slope-moved', pv.moved, C_SECTION, { width: 1.5, opacity: 0.6, gradient: true });
+        show('slope-ramp', pv.ramp, 0xff8a3d, { width: 2, opacity: 0.95, dashed: true });
       }
     }
 
@@ -493,10 +540,21 @@ export class Editor {
 
     this.updateGizmo();
     const gt = this.gizmoTarget;
-    if (gt && this.gizmo.active && gt.type === 'comp' && (this.model.segs[gt.id] || this.model.nodes[gt.id])) {
+    if (gt && this.gizmo.active && gt.type !== 'rail') {
+      const piece = this.gizmoPieceIds(this.model, gt);
       const segs: number[] = [];
-      for (const id of pieceOf(this.model, gt.id)) segs.push(...this.outlineSegs(id));
+      for (const id of piece) segs.push(...this.outlineSegs(id));
       show('piece', segs, 0x9fd2ff, { width: 2, opacity: 0.8, gradient: true });
+      // 移动边界：悬停在箭头上（或拖动中）时，预览哪些会整体平移、哪些会伸缩 / 变坡
+      const hd = this.drag?.type === 'gizmo' ? this.drag.handle : this.gizmoHover;
+      const info = hd ? this.moveInfo(gt, hd) : null;
+      if (info) {
+        const mv: number[] = [], st: number[] = [];
+        for (const id of info.moved) if (!piece.has(id)) mv.push(...this.outlineSegs(id));
+        for (const id of info.stretched) st.push(...this.outlineSegs(id));
+        show('piece-moved', mv, 0x9fd2ff, { width: 1.5, opacity: 0.55 });
+        show('piece-stretch', st, 0xffc640, { width: 1.5, opacity: 0.85, dashed: true });
+      }
     }
 
     // 拖拽中：可连接提示
@@ -504,7 +562,78 @@ export class Editor {
     if (conn) show('connect', rectSegs(HALF, HALF, 0), C_CONNECT, { width: 3, pulse: true, pos: [conn.x, conn.y, conn.z + 0.1] });
 
     for (const key of this.hintKeys) if (!shown.has(key)) fx.hide(key);
+    this.updateCursor();
+    this.updateHints();
     this.hintKeys = shown;
+  }
+
+  private slopeCache: { key: string; v: { moved: number[]; ramp: number[] } | null } = { key: '', v: null };
+
+  /** Alt 调高度的预览：试着把目标抬高一点，看哪些元素整体升降、哪些直道变成坡道 */
+  private slopePreview(p: Pick): { moved: number[]; ramp: number[] } | null {
+    const sec = this.hoverSection();
+    const key = `${p.id}|${sec ? sec.t.toFixed(3) : ''}|${this.undoStack.length}`;
+    if (this.slopeCache.key === key) return this.slopeCache.v;
+    const target = this.heightTarget(p);
+    let v: { moved: number[]; ramp: number[] } | null = null;
+    if (target) {
+      const m0 = cloneModel(this.model);
+      const t = target(m0);
+      if (t !== null) {
+        const m1 = cloneModel(m0);
+        if (typeof t === 'number') shiftDownstream(m1, t, 1); else shiftFreeEnd(m1, t.seg, t.key, 1);
+        v = { moved: [], ramp: [] };
+        const zs = (mm: Model, s: Seg) => [endZ(mm, s, 'a'), endZ(mm, s, 'b')];
+        for (const s of Object.values(m0.segs)) {
+          const s1 = m1.segs[s.id];
+          if (!s1) continue;
+          const [a0, b0] = zs(m0, s), [a1, b1] = zs(m1, s1);
+          const ca = Math.abs(a1 - a0) > 1e-6, cb = Math.abs(b1 - b0) > 1e-6;
+          if (ca && cb) v.moved.push(...topRect(m0, s));
+          else if (ca || cb) v.ramp.push(...topRect(m0, s));
+        }
+        for (const n of Object.values(m0.nodes)) {
+          const n1 = m1.nodes[n.id];
+          if (!n1 || Math.abs(n1.z - n.z) < 1e-6 || n.kind === 'joint') continue;
+          if (n.kind === 'platform') {
+            const b = platformBBox(n);
+            v.moved.push(...rectLoop(b.x0, b.y0, b.x1, b.y1, n.z));
+          } else {
+            const hh = nodeHalf(n);
+            v.moved.push(...rectLoop(n.x - hh, n.y - hh, n.x + hh, n.y + hh, n.z));
+          }
+        }
+      }
+    }
+    this.slopeCache = { key, v };
+    return v;
+  }
+
+  /** 鼠标指针：按当前能做的事切换 */
+  private updateCursor() {
+    const d = this.drag;
+    const h = d ? null : this.hover;
+    let c = 'default';
+    if (d) c = d.type === 'marquee' ? 'crosshair' : d.type === 'height' || d.type === 'railHeight' || d.type === 'objHeight' ? 'ns-resize' : 'grabbing';
+    else if (this.gizmoHover && this.gizmo.active) c = 'grab';
+    else if (this.tool === 'object') c = h?.kind === 'obj' ? 'grab' : 'copy';
+    else if (!h) c = 'default';
+    else if (h.kind === 'obj') c = this.mods.alt ? 'ns-resize' : 'grab';
+    else if (this.tool === 'cut') c = h.kind === 'seg' || h.kind === 'rail' ? 'crosshair' : 'not-allowed';
+    else if (this.mods.alt) c = 'ns-resize';
+    else if (this.mods.ctrl) c = 'default';
+    else if (this.action) c = this.action.valid ? this.dirCursor(this.action) : 'not-allowed';
+    const el = this.renderer.domElement;
+    if (el.style.cursor !== c) el.style.cursor = c;
+  }
+
+  /** 按操作方向在屏幕上的朝向选双向箭头指针 */
+  private dirCursor(a: Action): string {
+    const p = a.face ? [a.face.x, a.face.y, a.face.z] : a.pos;
+    const s0 = this.projectToClient(p[0], p[1], p[2]);
+    const s1 = this.projectToClient(p[0] + DX[a.dir] * 5, p[1] + DY[a.dir] * 5, p[2]);
+    const ang = ((Math.atan2(s1.y - s0.y, s1.x - s0.x) * 180) / Math.PI + 180) % 180;
+    return ang < 22.5 || ang >= 157.5 ? 'ew-resize' : ang < 67.5 ? 'nwse-resize' : ang < 112.5 ? 'ns-resize' : 'nesw-resize';
   }
 
   private outlineSegs(id: number): number[] {
@@ -682,6 +811,7 @@ export class Editor {
     const endCoord = axisOf(out) === 0 ? ex : ey;
     return {
       valid: true, segs, pos: [ex, ey, endZ(m, s, k) + 0.06], color: C_CREATE, dir: out, z: endZ(m, s, k),
+      face: { x: ex, y: ey, z: endZ(m, s, k), dir: out, w: 5 },
       apply: (mm, coord) => {
         const c = this.snapEdge(coord, axisOf(out), [ex, ey, endZ(m, s, k)]);
         if (sloped && (c - endCoord) * sign > 1e-6) {
@@ -703,7 +833,10 @@ export class Editor {
     const c = this.snapCenter(axisOf(s.dir) === 0 ? p.point.x : p.point.y, axisOf(s.dir), at0);
     const tc = Math.min(Math.max(this.tOfCoord(s, c), HALF), s.len - HALF);
     const cx = s.x + DX[s.dir] * tc, cy = s.y + DY[s.dir] * tc, z = zAt(m, s, tc);
-    const base = { segs: [...rectSegs(HALF, HALF, 0), ...arrowSegs(side, HALF, 3.5)], pos: [cx, cy, z + 0.08] as [number, number, number], color: C_CREATE, dir: side, z };
+    const base = {
+      segs: [...rectSegs(HALF, HALF, 0), ...arrowSegs(side, HALF, 3.5)], pos: [cx, cy, z + 0.08] as [number, number, number], color: C_CREATE, dir: side, z,
+      face: { x: cx + DX[side] * HALF, y: cy + DY[side] * HALF, z, dir: side, w: 5 },
+    };
     if (isSloped(m, s)) return { ...base, valid: false, reason: '斜坡上不能开分叉', apply: () => null };
     if (s.len < 5 - 1e-6) return { ...base, valid: false, reason: '路段太短，放不下路口', apply: () => null };
     return {
@@ -721,7 +854,10 @@ export class Editor {
     const m = this.model;
     const n = m.nodes[nodeId];
     const ports = nodePorts(m, nodeId);
-    const base = { segs: arrowSegs(dir, nodeHalf(n), 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z };
+    const base = {
+      segs: arrowSegs(dir, nodeHalf(n), 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z,
+      face: { x: n.x + DX[dir] * nodeHalf(n), y: n.y + DY[dir] * nodeHalf(n), z: n.z, dir, w: 5 },
+    };
     if (ports[dir]) return { ...base, valid: false, reason: '这一侧已经连着路了', apply: () => null };
     const lone = n.kind === 'block' && portCount(ports) === 0;
     return {
@@ -754,6 +890,7 @@ export class Editor {
     const valid = openingFits(cellSet(n), cx, cy, run.out);
     return {
       valid, reason: valid ? undefined : '这里放不下 5 宽的路口', segs, pos: [cx, cy, n.z + 0.08], color: C_CREATE, dir: run.out, z: n.z,
+      face: { x: cx, y: cy, z: n.z, dir: run.out, w: 5 },
       apply: (mm, coord) => {
         const id = addSegAtPlatform(mm, pid, cx, cy, run.out);
         if (id === null) return null;
@@ -774,7 +911,10 @@ export class Editor {
     const mid = s.len / 2;
     const ex = s.x + DX[s.dir] * mid + DX[side] * HALF, ey = s.y + DY[s.dir] * mid + DY[side] * HALF;
     const z = zAt(m, s, mid);
-    const base = { segs: this.sideSegs(s.len / 2, side), pos: [ex, ey, z + 0.08] as [number, number, number], color: C_EXTRUDE, dir: side, z };
+    const base = {
+      segs: this.sideSegs(s.len / 2, side), pos: [ex, ey, z + 0.08] as [number, number, number], color: C_EXTRUDE, dir: side, z,
+      face: { x: ex, y: ey, z, dir: side, w: s.len },
+    };
     if (isSloped(m, s)) return { ...base, valid: false, reason: '斜坡不能拉成平台', apply: () => null };
     const line = axisOf(side) === 0 ? ex : ey;
     const sign = DX[side] + DY[side];
@@ -796,6 +936,7 @@ export class Editor {
     const sign = DX[dir] + DY[dir];
     return {
       valid: true, segs: this.sideSegs(HALF, dir), pos: [ex, ey, n.z + 0.08], color: C_EXTRUDE, dir, z: n.z,
+      face: { x: ex, y: ey, z: n.z, dir, w: 5 },
       apply: (mm, coord) => {
         const w = (this.snapEdge(coord, axisOf(dir), [ex, ey, n.z]) - line) * sign;
         if (w <= 1e-6) return null;
@@ -815,6 +956,7 @@ export class Editor {
     const sign = DX[run.out] + DY[run.out];
     return {
       valid: true, segs: this.sideSegs((run.to - run.from) / 2, run.out), pos: [ex, ey, n.z + 0.08], color: C_EXTRUDE, dir: run.out, z: n.z,
+      face: { x: ex, y: ey, z: n.z, dir: run.out, w: run.to - run.from },
       apply: (mm, coord) => {
         const w = (this.snapEdge(coord, axisOf(run.out), [ex, ey, n.z]) - run.line) * sign;
         if (Math.abs(w) < 1e-6) return null;
@@ -1007,6 +1149,29 @@ export class Editor {
     }
   }
 
+  /** 屏幕矩形内的元素：直道看中点或两端，节点看中心（接头不算），钢轨看起点 / 终点 / 中点 */
+  private idsInRect(x0: number, y0: number, x1: number, y1: number): number[] {
+    const m = this.model;
+    const inside = (p: [number, number, number]) => { const c = this.projectToClient(...p); return c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1; };
+    const out: number[] = [];
+    for (const s of Object.values(m.segs)) {
+      if (s.len <= 1e-6) continue;
+      const [ax, ay] = endPos(s, 'a'), [bx, by] = endPos(s, 'b');
+      const t = s.len / 2;
+      if (inside([s.x + DX[s.dir] * t, s.y + DY[s.dir] * t, zAt(m, s, t)]) || (inside([ax, ay, endZ(m, s, 'a')]) && inside([bx, by, endZ(m, s, 'b')]))) out.push(s.id);
+    }
+    for (const n of Object.values(m.nodes)) {
+      if (n.kind === 'joint' || n.inPlatform !== undefined) continue;
+      if (inside([n.x, n.y, n.z])) out.push(n.id);
+    }
+    for (const r of Object.values(m.rails)) {
+      const E = railEnd(r);
+      if (inside([r.x, r.y, r.z]) || inside([E.x, E.y, E.z])) out.push(r.id);
+    }
+    for (const o of Object.values(m.objs)) if (inside([o.x, o.y, o.z])) out.push(o.id);
+    return out;
+  }
+
   // ---------------- gizmo ----------------
 
   private gizmoTargetFor(p: Pick): GizmoTarget | null {
@@ -1017,6 +1182,21 @@ export class Editor {
   /** 手柄显示位置：悬停元素的中心 */
   private gizmoPos(m: Model, g: GizmoTarget): THREE.Vector3 | null {
     if (g.type === 'rail') { const r = m.rails[g.id]; return r ? new THREE.Vector3(r.x, r.y, r.z) : null; }
+    if (g.type === 'multi') {
+      // 多选：包围盒中心，高度取最高处
+      const pts: [number, number, number][] = [];
+      for (const id of g.ids) {
+        const s = m.segs[id], n = m.nodes[id], r = m.rails[id], o = m.objs[id];
+        if (s) for (const k of ['a', 'b'] as EndKey[]) { const [x, y] = endPos(s, k); pts.push([x, y, endZ(m, s, k)]); }
+        else if (n && n.kind === 'platform') { const b = platformBBox(n); pts.push([b.x0, b.y0, n.z], [b.x1, b.y1, n.z]); }
+        else if (n) pts.push([n.x, n.y, n.z]);
+        else if (r) { const E = railEnd(r); pts.push([r.x, r.y, r.z], [E.x, E.y, E.z]); }
+        else if (o) pts.push([o.x, o.y, o.z]);
+      }
+      if (!pts.length) return null;
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      return new THREE.Vector3((Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2, Math.max(...pts.map((p) => p[2])));
+    }
     const s = m.segs[g.id];
     if (s) { const t = s.len / 2; return new THREE.Vector3(s.x + DX[s.dir] * t, s.y + DY[s.dir] * t, zAt(m, s, t)); }
     const n = m.nodes[g.id];
@@ -1026,16 +1206,48 @@ export class Editor {
   /** 吸附参照点：网格对齐的特征（直道取 a 端、节点取中心），保证移动后边沿仍落在格栅上 */
   private gizmoAnchor(m: Model, g: GizmoTarget): THREE.Vector3 | null {
     if (g.type === 'comp' && m.segs[g.id]) { const s = m.segs[g.id]; return new THREE.Vector3(s.x, s.y, endZ(m, s, 'a')); }
+    if (g.type === 'multi') {
+      const sid = g.ids.find((id) => m.segs[id]);
+      if (sid !== undefined) { const sg = m.segs[sid]; return new THREE.Vector3(sg.x, sg.y, endZ(m, sg, 'a')); }
+      const nid = g.ids.find((id) => m.nodes[id]);
+      if (nid !== undefined) { const n = m.nodes[nid]; return new THREE.Vector3(n.x, n.y, n.z); }
+    }
     return this.gizmoPos(m, g);
   }
 
-  /** 只移动这一块；折点另一侧的路面自适应伸缩 / 成坡 */
-  private applyGizmo(m: Model, g: GizmoTarget, axis: 0 | 1 | 2, d: number): boolean {
+  /** gizmo 要移动的路面元素：悬停的那一块，或多选的全部 */
+  private gizmoPieceIds(m: Model, g: GizmoTarget): Set<number> {
+    if (g.type === 'comp') return m.segs[g.id] || m.nodes[g.id] ? pieceOf(m, g.id) : new Set();
+    if (g.type === 'multi') return new Set(g.ids.filter((id) => m.segs[id] || m.nodes[id]));
+    return new Set();
+  }
+
+  /** 只移动这一块（或选中的这一坨）；边界外的路面自适应伸缩 / 成坡 */
+  private applyGizmo(m: Model, g: GizmoTarget, axis: 0 | 1 | 2, d: number, info?: MoveInfo): boolean {
     const v = [0, 0, 0];
     v[axis] = d;
     if (g.type === 'rail') { const r = m.rails[g.id]; r.x += v[0]; r.y += v[1]; r.z += v[2]; return true; }
-    if (m.segs[g.id] || m.nodes[g.id]) return movePiece(m, pieceOf(m, g.id), v[0], v[1], v[2]);
-    return false;
+    const piece = this.gizmoPieceIds(m, g);
+    if (piece.size && !movePiece(m, piece, v[0], v[1], v[2], info)) return false;
+    if (g.type === 'multi') {
+      for (const id of g.ids) {
+        const r = m.rails[id];
+        if (r && !info?.moved.has(id)) { r.x += v[0]; r.y += v[1]; r.z += v[2]; }
+        const o = m.objs[id];
+        if (o) { o.x += v[0]; o.y += v[1]; o.z += v[2]; }
+      }
+    }
+    return piece.size > 0 || g.type === 'multi';
+  }
+
+  private moveInfo(g: GizmoTarget, hd: GizmoHandle): MoveInfo | null {
+    const base = this.drag?.type === 'gizmo' ? this.drag.snapshot : this.model;
+    const key = `${JSON.stringify(g)}|${hd.axis}|${hd.sign}|${this.undoStack.length}|${this.drag?.type ?? ''}`;
+    if (this.moveInfoCache.key === key) return this.moveInfoCache.info;
+    const info: MoveInfo = { moved: new Set(), stretched: new Set() };
+    const ok = this.applyGizmo(cloneModel(base), g, hd.axis, hd.sign * 2.5, info);
+    this.moveInfoCache = { key, info: ok || info.moved.size ? info : null };
+    return this.moveInfoCache.info;
   }
 
   private updateGizmo() {
@@ -1047,8 +1259,9 @@ export class Editor {
       if (pos) this.gizmo.group.position.copy(pos);
       return;
     }
-    if (!h || h.kind === undefined) { if (!this.gizmoTarget) this.gizmo.hide(); return; }
-    const g = this.gizmoTargetFor(h);
+    const sel = [...this.selection].filter((id) => this.model.segs[id] || this.model.nodes[id] || this.model.rails[id] || this.model.objs[id]);
+    if (!sel.length && (!h || h.kind === undefined)) { if (!this.gizmoTarget) this.gizmo.hide(); return; }
+    const g: GizmoTarget | null = sel.length ? { type: 'multi', ids: sel } : this.gizmoTargetFor(h!);
     if (!g) return;
     const key = JSON.stringify(g) + '|' + this.undoStack.length;
     if (key === this.gizmoKey) return;
@@ -1140,7 +1353,15 @@ export class Editor {
       this.drag = { type: 'obj', snapshot, id, ox: 0, oy: 0, moved: true, sx: e.clientX, sy: e.clientY };
       return;
     }
-    if (!p) { this.select(null); return; }
+    if (!p) {
+      // 空白处按下不松：拖出选框多选（Shift 追加）；只是点一下则清空选择
+      if (this.tool === 'edit' || this.tool === 'cut') {
+        this.drag = { type: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey };
+        return;
+      }
+      this.select(null);
+      return;
+    }
     e.preventDefault();
     this.hover = p;
     const snapshot = cloneModel(this.model);
@@ -1195,6 +1416,7 @@ export class Editor {
       // 悬停在 gizmo 手柄上时保持当前目标
       const hd = this.mods.ctrl && this.gizmoTarget ? this.pickGizmo() : null;
       this.gizmo.setHovered(hd);
+      if ((hd?.axis ?? -1) !== (this.gizmoHover?.axis ?? -1) || (hd?.sign ?? 0) !== (this.gizmoHover?.sign ?? 0)) { this.gizmoHover = hd; this.overlayDirty = true; }
       if (hd) return;
       const p = this.pick();
       const changed = (p?.id ?? null) !== (this.hover?.id ?? null);
@@ -1205,6 +1427,21 @@ export class Editor {
       return;
     }
     if (d.type === 'orbit') return;
+    if (d.type === 'marquee') {
+      const r = this.host.getBoundingClientRect();
+      const x0 = Math.min(d.sx, e.clientX), y0 = Math.min(d.sy, e.clientY);
+      const w = Math.abs(e.clientX - d.sx), h = Math.abs(e.clientY - d.sy);
+      Object.assign(this.marquee.style, { left: `${x0 - r.left}px`, top: `${y0 - r.top}px`, width: `${w}px`, height: `${h}px` });
+      this.marquee.classList.toggle('open', w > 4 || h > 4);
+      if (w > 4 || h > 4) {
+        const ids = this.idsInRect(x0, y0, x0 + w, y0 + h);
+        this.selection = d.add ? new Set([...this.selection, ...ids]) : new Set(ids);
+        this.selected = null;
+        this.overlayDirty = true;
+        this.onStatus(`选中 ${this.selection.size} 个 · 按住 Ctrl 拖箭头整体移动 · Del 删除`);
+      }
+      return;
+    }
     if (d.type === 'obj') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
       d.moved = true;
@@ -1283,6 +1520,13 @@ export class Editor {
     this.drag = null;
     if (wasFlipped) this.onChange();
     this.overlayDirty = true;
+    if (d?.type === 'marquee') {
+      const moved = this.marquee.classList.contains('open');
+      this.marquee.classList.remove('open');
+      if (!moved && !d.add) { this.selection.clear(); this.select(null); }
+      this.updateStatus();
+      return;
+    }
     if (!d || d.type === 'orbit') return;
     const before = d.snapshot;
     const m = this.model;
@@ -1322,6 +1566,13 @@ export class Editor {
     if (e.ctrlKey && k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
     if (e.ctrlKey && k === 'y') { e.preventDefault(); this.redo(); return; }
     if (k === 'delete' || k === 'backspace') {
+      if (this.selection.size) {
+        const ids = [...this.selection];
+        this.mutate((m) => { for (const id of ids) { if (m.rails[id]) delete m.rails[id]; else if (m.objs[id]) delete m.objs[id]; else if (m.segs[id] || m.nodes[id]) deleteElem(m, id); } });
+        this.selection.clear();
+        this.select(null);
+        return;
+      }
       if (this.selected === null) return;
       const id = this.selected;
       this.mutate((m) => { if (m.rails[id]) delete m.rails[id]; else if (m.objs[id]) delete m.objs[id]; else deleteElem(m, id); });
@@ -1338,7 +1589,12 @@ export class Editor {
       if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
-    if (k === 'escape') { this.cancelDrag(); this.hideMenu(); }
+    if (k === 'escape') {
+      if (!this.drag && this.selection.size) { this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
+      this.cancelDrag();
+      this.hideMenu();
+      this.marquee.classList.remove('open');
+    }
   }
 
   private cancelDrag() {
@@ -1626,6 +1882,7 @@ export class Editor {
   // ---------------- 状态与提交 ----------------
 
   private select(id: number | null) {
+    if (id !== null && !this.selection.has(id)) this.selection.clear();
     this.selected = id;
     this.overlayDirty = true;
     this.updateStatus();
@@ -1658,6 +1915,7 @@ export class Editor {
    */
   private commitView(before?: Model) {
     if (this.selected !== null && !this.model.segs[this.selected] && !this.model.nodes[this.selected] && !this.model.rails[this.selected] && !this.model.objs[this.selected]) this.selected = null;
+    for (const id of this.selection) if (!this.model.segs[id] && !this.model.nodes[id] && !this.model.rails[id] && !this.model.objs[id]) this.selection.delete(id);
     this.hover = null;
     this.display = this.model;
     this.syncMeshes();
@@ -1727,16 +1985,44 @@ export class Editor {
         info = `${kind} #${n.id}  高 ${fmt(n.z)}  ${n.style === 'sink' ? '凹槽' : '普通'}`;
       }
     }
-    const hints: Record<Tool, string> = {
-      edit: this.mods.shift ? 'Shift：拖动整个侧面拉成平台（平台边可往里推）'
-        : this.mods.ctrl ? 'Ctrl：拖箭头沿 X/Y/Z 移动高亮的这一块；相邻路面自动伸缩 / 成坡'
-        : this.mods.alt ? 'Alt：拖动截面或路块调整高度，形成坡道（下游跟随）'
-        : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：坡面 · Ctrl：移动 · 中键：环视 · 右键：更多',
-      cut: '点击截面：把花纹分开成两个封闭端点',
-      object: `点击路面放置「${objType(this.objType)?.label ?? this.objType}」（按住可拖动）· 拖动已放的物件移动 · Alt 拖动调高度 · R 旋转 · 右键：小节 / 删除`,
-      rail: '从路面端点拖出钢轨 · 钢轨端头：沿方向拉长（拉回 0 删除）· 末端侧面：拐弯 · Alt 拖末端改坡度 · 右键：单轨/双轨/单双转换、螺旋',
-    };
-    this.onStatus(`${info ? info + '　|　' : ''}${hints[this.tool]}`);
+    this.onStatus(info);
+    this.updateHints();
+  }
+
+  private hintsKey = '';
+
+  /** 重新发送状态栏内容（界面刚挂好回调时用） */
+  refreshStatus() { this.hintsKey = ''; this.updateStatus(); }
+
+  /** 状态栏左侧的按键提示（类似 Blender）：随工具、修饰键、拖动状态变化 */
+  private updateHints() {
+    const H = (keys: string[], label: string): Hint => ({ keys, label });
+    const d = this.drag;
+    let hs: Hint[];
+    if (d && d.type !== 'orbit') {
+      if (d.type === 'marquee') hs = [H(['LMB'], '框选'), H(['Shift'], '追加'), H(['Esc'], '取消')];
+      else {
+        hs = [H(['LMB'], '确认'), H(['Esc'], '取消')];
+        if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], this.gridMode !== this.gridFlipped ? '临时切到自由对齐' : '临时切到格栅'));
+      }
+    } else if (this.tool === 'edit') {
+      if (this.mods.shift) hs = [H(['Shift', 'LMB'], '侧面拉成平台 / 推平台边')];
+      else if (this.mods.ctrl) hs = [H(['Ctrl', 'LMB'], this.selection.size ? `移动选中的 ${this.selection.size} 个` : '沿箭头移动这一块'), H([], '蓝框整体平移 · 黄虚线伸缩 / 成坡')];
+      else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
+      else hs = [
+        H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'),
+      ];
+    } else if (this.tool === 'cut') hs = [H(['LMB'], '点截面分隔'), H(['LMB'], '空白处框选'), H(['RMB'], '菜单'), H(['MMB'], '环视')];
+    else if (this.tool === 'object') hs = [
+      H(['LMB'], `放置「${objType(this.objType)?.label ?? this.objType}」`), H(['LMB'], '拖动物件'), H(['Alt', 'LMB'], '调高度'), H(['R'], '旋转'), H(['RMB'], '小节 / 删除'),
+    ];
+    else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
+    if (this.selection.size && !d) hs.push(H(['Del'], '删除选中'), H(['Esc'], '取消选择'));
+    const key = JSON.stringify(hs);
+    if (key === this.hintsKey) return;
+    this.hintsKey = key;
+    this.onHints(hs);
   }
 }
 
@@ -1751,6 +2037,25 @@ function arrowSegs(dir: Dir, start: number, len: number): number[] {
     tx, ty, 0, tx - ox * 1.1 + px * 0.9, ty - oy * 1.1 + py * 0.9, 0,
     tx, ty, 0, tx - ox * 1.1 - px * 0.9, ty - oy * 1.1 - py * 0.9, 0,
   ];
+}
+
+/** 直道顶面的外框（随坡度） */
+function topRect(m: Model, s: Seg): number[] {
+  const P = [-DY[s.dir], DX[s.dir]];
+  const [ax, ay] = endPos(s, 'a'), [bx, by] = endPos(s, 'b');
+  const za = endZ(m, s, 'a') + 0.05, zb = endZ(m, s, 'b') + 0.05;
+  const c = [
+    [ax + P[0] * HALF, ay + P[1] * HALF, za], [bx + P[0] * HALF, by + P[1] * HALF, zb],
+    [bx - P[0] * HALF, by - P[1] * HALF, zb], [ax - P[0] * HALF, ay - P[1] * HALF, za],
+  ];
+  const out: number[] = [];
+  for (let i = 0; i < 4; i++) out.push(...c[i], ...c[(i + 1) % 4]);
+  return out;
+}
+
+function rectLoop(x0: number, y0: number, x1: number, y1: number, z: number): number[] {
+  const zz = z + 0.05;
+  return [x0, y0, zz, x1, y0, zz, x1, y0, zz, x1, y1, zz, x1, y1, zz, x0, y1, zz, x0, y1, zz, x0, y0, zz];
 }
 
 function diamondSegs(r: number): number[] {

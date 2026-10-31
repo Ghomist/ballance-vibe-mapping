@@ -3,7 +3,7 @@ import {
   BLOCK, CELL, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
   axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './types';
-import { cellSet, insetKind, makeInset, mergePlatforms, openingFits, repairPlatforms, revertInset } from './platform';
+import { cellSet, insetKind, linkOpening, makeInset, mergePlatforms, openingFits, repairPlatforms, revertInset } from './platform';
 import { railEnd } from './rail';
 import { renumberSectors } from './checkpoint';
 
@@ -755,19 +755,41 @@ export function pieceOf(m: Model, id: number): Set<number> {
  * 折点另一侧的路面自适应——沿移动方向的直道伸缩，竖直移动时变成坡道；
  * 只有垂直于水平移动方向、无法伸缩的直道才连带平移。返回 false 表示有直道会被压成负长度。
  */
-export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, dz: number): boolean {
+export interface MoveInfo {
+  /** 整体平移的元素 */
+  moved: Set<number>;
+  /** 伸缩 / 变坡的直道（移动的边界） */
+  stretched: Set<number>;
+}
+
+export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, dz: number, info?: MoveInfo): boolean {
   const horiz = Math.abs(dx) > EPS || Math.abs(dy) > EPS;
   const axis = Math.abs(dx) > EPS ? 0 : 1;
   const d = axis === 0 ? dx : dy;
   const S = new Set(piece);
   const q = [...piece];
+  // 路口沿平台边滑动（平台不动）时，记下每个平台上已经占用的开口，避免滑到彼此身上
+  const slid = new Map<number, { x: number; y: number; out: Dir }[]>();
+  const canSlide = (s: Seg, k: EndKey, p: MNode) => {
+    if (!horiz || p.kind !== 'platform' || s.len <= EPS || axisOf(s.dir) === axis) return false;
+    const o = linkOpening(s, k);
+    const nx = o.x + dx, ny = o.y + dy;
+    if (!openingFits(cellSet(p), nx, ny, o.out)) return false;
+    const others = nodeLinks(m, p.id).filter((l) => l.seg !== s.id && !S.has(l.seg)).map((l) => linkOpening(m.segs[l.seg], l.key));
+    const taken = [...others, ...(slid.get(p.id) ?? [])];
+    if (taken.some((t) => t.out === o.out && Math.abs((axis === 0 ? t.x - nx : t.y - ny)) < BLOCK - EPS && Math.abs(axis === 0 ? t.y - ny : t.x - nx) < EPS)) return false;
+    slid.set(p.id, [...(slid.get(p.id) ?? []), { x: nx, y: ny, out: o.out }]);
+    return true;
+  };
   while (q.length) {
     const id = q.shift()!;
     if (m.segs[id]) {
-      // 直道两端的节点是刚性连接的，跟着走
+      // 直道两端的节点是刚性连接的，跟着走；但接在平台边上、沿边方向移动的路口可以在边上滑动，平台不必跟着动
       for (const k of ['a', 'b'] as EndKey[]) {
         const e = m.segs[id][k];
-        if (!isFree(e) && !S.has(e.node)) { S.add(e.node); q.push(e.node); }
+        if (isFree(e) || S.has(e.node)) continue;
+        if (canSlide(m.segs[id], k, m.nodes[e.node])) continue;
+        S.add(e.node); q.push(e.node);
       }
       continue;
     }
@@ -779,6 +801,8 @@ export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, 
       if (rigid) { S.add(s.id); q.push(s.id); }
     }
   }
+  // 平台按 1.25 小格记录，只能按小格的整数倍平移
+  if (horiz && Math.abs(d / CELL - Math.round(d / CELL)) > 1e-6 && [...S].some((id) => m.nodes[id]?.kind === 'platform')) return false;
   // 检查并执行
   const stretch: { s: Seg; k: EndKey }[] = [];
   for (const s of Object.values(m.segs)) {
@@ -791,6 +815,14 @@ export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, 
       continue;
     }
     stretch.push({ s, k: ma ? 'a' : 'b' });
+  }
+  if (info) {
+    info.moved = new Set(S);
+    info.stretched = new Set(stretch.filter(({ s }) => {
+      const ma = !isFree(s.a) && S.has(s.a.node), mb = !isFree(s.b) && S.has(s.b.node);
+      if (ma && mb) { info.moved.add(s.id); return false; }
+      return true;
+    }).map(({ s }) => s.id));
   }
   if (horiz) {
     for (const { s, k } of stretch) {

@@ -10,7 +10,6 @@ button:hover { background: #3a4560; }
 button.active { background: #4a6fb0; border-color: #6a8fd0; }
 #viewport { position: relative; overflow: hidden; min-height: 0; }
 #viewport canvas { display: block; }
-#status { padding: 4px 10px; background: #252c3b; border-top: 1px solid #333c50; color: #aab4c6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .ctx-menu { position: absolute; z-index: 10; min-width: 200px; padding: 4px; background: rgba(37, 44, 59, 0.97); border: 1px solid #3f4a62; border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity 0.12s ease, transform 0.12s ease; }
 .ctx-menu.open { opacity: 1; transform: none; pointer-events: auto; }
@@ -66,3 +65,24 @@ button svg { vertical-align: -2px; margin-right: 3px; }
 .dropdown-menu button:hover { background: #2f3850; }
 
 #grid.temp { outline: 1px dashed #ffd76a; outline-offset: 1px; }
+
+.marquee {
+  position: absolute; z-index: 4; pointer-events: none; display: none;
+  border: 1px dashed #ffc640; background: rgba(255, 198, 64, 0.08); border-radius: 2px;
+}
+.marquee.open { display: block; }
+
+#statusbar {
+  display: flex; align-items: center; gap: 16px; padding: 3px 10px; min-height: 24px;
+  background: #252c3b; border-top: 1px solid #333c50; color: #aab4c6; font-size: 12px; white-space: nowrap; overflow: hidden;
+}
+#hints { display: flex; align-items: center; gap: 14px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+#hints .hint { display: inline-flex; align-items: center; gap: 4px; }
+#hints .hint > span { color: #c9d1df; }
+#hints kbd {
+  display: inline-block; min-width: 16px; padding: 0 4px; height: 16px; line-height: 15px; text-align: center;
+  font: 11px/15px inherit; color: #d8deea; background: #323b50; border: 1px solid #4a5672; border-bottom-width: 2px; border-radius: 3px;
+}
+#hints svg.mouse { color: #d8deea; flex: none; }
+#status { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #8f9bb3; text-align: right; }
+#status.warn { color: #ffb35c; }
