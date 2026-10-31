@@ -20,3 +20,6 @@ button.active { background: #4a6fb0; border-color: #6a8fd0; }
 .ctx-menu small { color: #8892a6; }
 .ctx-menu .sep { height: 1px; margin: 4px 6px; background: #3a4458; }
 button, select { transition: background 0.12s, border-color 0.12s; }
+
+.label-layer { position: absolute; inset: 0; pointer-events: none; }
+.axis-label { font: 10px/1 ui-monospace, Consolas, monospace; opacity: 0.75; padding: 1px 3px; text-shadow: 0 0 3px #1d2330; }

@@ -13,13 +13,15 @@ export const axisOf = (d: Dir): 0 | 1 => (d % 2) as 0 | 1;
 
 export type Style = 'normal' | 'sink';
 export type EndStyle = 'open' | 'closed';
-export type NodeKind = 'block' | 'joint' | 'transition';
+export type NodeKind = 'block' | 'joint' | 'transition' | 'platform';
 
 export const HALF = 2.5;       // 半个路块
 export const BLOCK = 5;        // 路块边长
 export const THICK = 5;        // 路面厚度
 export const SINK_DEPTH = 0.7; // 凹槽深度
 export const HEIGHT_STEP = 1.25;
+/** 平台按 1.25 的小格记录占用区域 */
+export const CELL = 1.25;
 
 export interface MNode {
   id: number;
@@ -32,6 +34,10 @@ export interface MNode {
   axis?: 0 | 1;
   /** transition：从中心指向凹槽一侧的方向 */
   sinkDir?: Dir;
+  /** platform：占用的小格（"i,j"，覆盖 [i·CELL,(i+1)·CELL]×[j·CELL,(j+1)·CELL]） */
+  cells?: string[];
+  /** platform：细边花纹（仅凹槽平台有效） */
+  ribbon?: boolean;
 }
 
 export interface AttachedEnd { node: number }
@@ -68,7 +74,8 @@ export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : HALF);
 export function emptyModel(): Model {
   const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null };
   const id = m.nextId++;
-  m.nodes[id] = { id, kind: 'block', x: 0, y: 0, z: 0, style: 'normal' };
+  // 路块边沿对齐到 5 的整数倍，与 Blender / BBP 的习惯一致
+  m.nodes[id] = { id, kind: 'block', x: HALF, y: HALF, z: 0, style: 'normal' };
   m.root = id;
   return m;
 }
@@ -101,6 +108,18 @@ export function nodePorts(m: Model, id: number): (PortRef | null)[] {
   for (const s of Object.values(m.segs)) {
     if (s.a.node === id) r[s.dir] = { seg: s.id, key: 'a' };
     if (s.b.node === id) r[opp(s.dir)] = { seg: s.id, key: 'b' };
+  }
+  return r;
+}
+
+export interface LinkRef { seg: number; key: EndKey; dir: Dir }
+
+/** 节点上连接的所有直道（平台一侧可能有多条，因此不按方向归并） */
+export function nodeLinks(m: Model, id: number): LinkRef[] {
+  const r: LinkRef[] = [];
+  for (const s of Object.values(m.segs)) {
+    if (s.a.node === id) r.push({ seg: s.id, key: 'a', dir: s.dir });
+    if (s.b.node === id) r.push({ seg: s.id, key: 'b', dir: opp(s.dir) });
   }
   return r;
 }

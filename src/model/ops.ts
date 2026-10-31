@@ -1,8 +1,9 @@
 // 路网编辑操作。所有操作都直接修改传入的 Model；调用方负责先 clone 再改（用于拖拽预览和撤销）。
 import {
   BLOCK, DX, DY, Dir, End, EndKey, EndStyle, HALF, MNode, Model, Seg, Style,
-  axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount, zAt,
+  axisOf, endOutDir, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp, portCount, zAt,
 } from './types';
+import { cellSet, mergePlatforms, openingFits } from './platform';
 
 const EPS = 1e-6;
 
@@ -117,7 +118,8 @@ export function extendTo(m: Model, segId: number, k: EndKey, coord: number) {
   const ax = axisOf(s.dir);
   const sign = ax === 0 ? DX[s.dir] : DY[s.dir];
   const start = ax === 0 ? s.x : s.y;
-  const lo = minLen(s);
+  const other = k === 'a' ? s.b : s.a;
+  const lo = isFree(other) ? minLen(s) : 0;
   if (k === 'b') {
     s.len = Math.max((coord - start) * sign, lo);
   } else {
@@ -127,6 +129,19 @@ export function extendTo(m: Model, segId: number, k: EndKey, coord: number) {
     if (ax === 0) s.x = ns; else s.y = ns;
     s.len = len;
   }
+}
+
+/** 斜坡的自由端往外拉：在端点处加接头，续接一段平路。返回新直道 id（生长端为 b）。 */
+export function extendFlat(m: Model, segId: number, k: EndKey): number | null {
+  const s = m.segs[segId];
+  const e = s[k];
+  if (!isFree(e)) return null;
+  const [x, y] = endPos(s, k);
+  const out = endOutDir(s, k);
+  const j = addNode(m, { kind: 'joint', x, y, z: e.z, style: s.style, axis: axisOf(s.dir) });
+  const ns = addSeg(m, { x, y, dir: out, len: 0, style: s.style, a: { node: j.id }, b: freeEnd(e.z, e.style) });
+  s[k] = { node: j.id };
+  return ns.id;
 }
 
 /** 拐角：把自由端最后 5 个单位变成路块，并从侧面 d 长出新直道。 */
@@ -153,7 +168,7 @@ function neighbors(m: Model, id: number): number[] {
     const s = m.segs[id];
     return [s.a.node, s.b.node].filter((x): x is number => x !== null && !!m.nodes[x]);
   }
-  return nodePorts(m, id).filter((p) => p).map((p) => p!.seg);
+  return nodeLinks(m, id).map((l) => l.seg);
 }
 
 export function component(m: Model, start: number): Set<number> {
@@ -235,14 +250,16 @@ const endSign = (s: Seg, k: EndKey) => { const d = endOutDir(s, k); return DX[d]
 export function cutSeg(m: Model, segId: number, t: number) {
   const s = m.segs[segId];
   if (t <= EPS || t >= s.len - EPS) return;
-  splitSeg(m, s, t);
+  const s2 = splitSeg(m, s, t);
+  (s.b as { style: EndStyle }).style = 'closed';
+  (s2.a as { style: EndStyle }).style = 'closed';
 }
 
 /** 从截面接头处分开。 */
 export function cutJoint(m: Model, nodeId: number) {
   const n = m.nodes[nodeId];
   if (!n || n.kind !== 'joint') return;
-  for (const p of nodePorts(m, nodeId)) if (p) m.segs[p.seg][p.key] = freeEnd(n.z);
+  for (const p of nodePorts(m, nodeId)) if (p) m.segs[p.seg][p.key] = freeEnd(n.z, 'closed');
   delete m.nodes[nodeId];
 }
 
@@ -260,7 +277,7 @@ export function deleteElem(m: Model, id: number) {
     mergeAtJoint(m, id);
     return;
   }
-  for (const p of nodePorts(m, id)) if (p) m.segs[p.seg][p.key] = freeEnd(n.z, 'closed');
+  for (const l of nodeLinks(m, id)) m.segs[l.seg][l.key] = freeEnd(n.z, 'closed');
   delete m.nodes[id];
   if (m.root === id) m.root = null;
 }
@@ -319,6 +336,10 @@ export function findConnection(m: Model, segId: number, k: EndKey, adjust: boole
     if (!near(n.x + DX[d] * HALF, px) || !near(n.y + DY[d] * HALF, py)) continue;
     if (nodePorts(m, n.id)[d]) continue;
     return { type: 'port', node: n.id, z: n.z };
+  }
+  for (const n of Object.values(m.nodes)) {
+    if (n.kind !== 'platform' || !zok(n.z)) continue;
+    if (openingFits(cellSet(n), px, py, opp(out))) return { type: 'port', node: n.id, z: n.z };
   }
   const cx = px + DX[out] * HALF;
   const cy = py + DY[out] * HALF;
@@ -391,6 +412,12 @@ export function chainOf(m: Model, segId: number): number[] {
   return [...out];
 }
 
+/** 只改这一段（接头之间）的样式；两端样式不一致处由 fixStyles 自动插入平凹转换 */
+export function setSegStyle(m: Model, segId: number, style: Style) {
+  const s = m.segs[segId];
+  if (s) s.style = style;
+}
+
 export function setChainStyle(m: Model, segId: number, style: Style) {
   for (const id of chainOf(m, segId)) m.segs[id].style = style;
   for (const id of chainOf(m, segId)) {
@@ -404,6 +431,13 @@ export function setChainStyle(m: Model, segId: number, style: Style) {
 export function setBlockStyle(m: Model, nodeId: number, style: Style) {
   const n = m.nodes[nodeId];
   if (n && n.kind === 'block') n.style = style;
+}
+
+export function setPlatformStyle(m: Model, id: number, style: Style, ribbon: boolean) {
+  const n = m.nodes[id];
+  if (!n || n.kind !== 'platform') return;
+  n.style = style;
+  n.ribbon = style === 'sink' && ribbon;
 }
 
 /** 从直道 k 端切掉 5 个单位，在那里放一个平凹转换块。 */
@@ -461,6 +495,14 @@ export function fixStyles(m: Model): boolean {
         return true;
       }
     }
+    if (n.kind === 'platform') {
+      for (const l of nodeLinks(m, n.id)) {
+        const s = m.segs[l.seg];
+        if (s.style === n.style || s.len < BLOCK - EPS) continue;
+        insertTransition(m, s, l.key, { node: n.id, dir: l.dir });
+        return true;
+      }
+    }
     if (n.kind === 'transition') {
       const sp = ports[n.sinkDir!];
       const fp = ports[opp(n.sinkDir!)];
@@ -493,11 +535,42 @@ export function normalize(m: Model) {
   }
 }
 
+/** 两个开放的自由端正对且重合（高度一致）时自动接上 */
+function joinOpenEnds(m: Model): boolean {
+  for (const s of Object.values(m.segs)) {
+    for (const k of ['a', 'b'] as EndKey[]) {
+      const e = s[k];
+      if (!isFree(e) || e.style !== 'open') continue;
+      const c = findConnection(m, s.id, k, false);
+      if (!c || c.type !== 'end') continue;
+      const oe = m.segs[c.seg][c.key];
+      if (!isFree(oe) || oe.style !== 'open') continue;
+      applyConnection(m, s.id, k, c);
+      return true;
+    }
+  }
+  return false;
+}
+
 function normalizeOnce(m: Model): boolean {
   for (const s of Object.values(m.segs)) {
     if (s.len > EPS) continue;
-    if (isFree(s.a) || isFree(s.b)) { delete m.segs[s.id]; return true; }
+    if (isFree(s.a) || isFree(s.b) || s.a.node === s.b.node) { delete m.segs[s.id]; return true; }
+    // 接头紧挨着别的节点（中间是零长度直道）：接头多余，让接头另一侧的直道直接接到那个节点
+    for (const [jk, nk] of [['a', 'b'], ['b', 'a']] as const) {
+      const j = m.nodes[(s[jk] as { node: number }).node];
+      const other = (s[nk] as { node: number }).node;
+      if (!j || j.kind !== 'joint') continue;
+      const rest = nodeLinks(m, j.id).find((l) => l.seg !== s.id);
+      if (rest) m.segs[rest.seg][rest.key] = { node: other };
+      delete m.segs[s.id];
+      delete m.nodes[j.id];
+      replaceRoot(m, j.id, other);
+      return true;
+    }
   }
+  if (mergePlatforms(m)) return true;
+  if (joinOpenEnds(m)) return true;
   for (const n of Object.values(m.nodes)) {
     const ports = nodePorts(m, n.id);
     const cnt = portCount(ports);

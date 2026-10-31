@@ -30,7 +30,7 @@ export function getMaterial(name: MatName): THREE.Material {
   loader.load(
     `${import.meta.env.BASE_URL}textures/${TEXTURE_FILES[name]}`,
     (tex) => {
-      tex.flipY = false; // UV 采用 Virtools 约定
+      // UV 与 BME 相同，为 Blender 约定（v 向上），即 three.js 默认的 flipY
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 8;

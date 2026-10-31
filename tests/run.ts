@@ -1,14 +1,23 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
+import { platformScenarios } from './platform';
 import { buildFloorMeshes } from '../src/geom/floor';
 import {
   addSegAtPort, component, moveIds, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
   setChainStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
 } from '../src/model/ops';
 import {
-  DX, DY, HALF, Model, emptyModel, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount,
+  DX, DY, HALF, Model, emptyModel as baseModel, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount,
 } from '../src/model/types';
 
 let failed = 0;
+
+/** 测试沿用以原点为中心的 1×1，坐标更直观 */
+function emptyModel() {
+  const m = baseModel();
+  m.nodes[1].x = 0;
+  m.nodes[1].y = 0;
+  return m;
+}
 function check(cond: boolean, msg: string) {
   if (!cond) { failed++; console.error('  ✗ ' + msg); }
 }
@@ -151,9 +160,15 @@ scenario('分隔与端点切换', () => {
   normalize(m);
   validate(m, 'cut');
   check(Object.keys(m.segs).length === 2, '分隔后应有两段');
+  check((m.segs[s].b as { style: string }).style === 'closed', '分隔后端点应为封闭');
   toggleEnd(m, s, 'b');
   validate(m, 'toggle');
-  check((m.segs[s].b as { style: string }).style === 'closed', '端点应切换为封闭');
+  check((m.segs[s].b as { style: string }).style === 'open', '端点应切换为开放');
+  const other = Object.values(m.segs).find((x) => x.id !== s)!;
+  toggleEnd(m, other.id, 'a');
+  normalize(m);
+  validate(m, 'auto-join');
+  check(Object.values(m.nodes).some((n) => n.kind === 'joint'), '两侧都开放后应自动接上');
 });
 
 scenario('环路：端点落在开口上自动连接', () => {
@@ -237,6 +252,8 @@ scenario('拖动端点到另一端点：高度不同时本段变坡道并连接'
   validate(m, 'connect-adjust');
   check(endZ(m, m.segs[s], 'b') === 2.5, '本段末端应被拉到目标高度');
 });
+
+platformScenarios(emptyModel, check, scenario);
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
 console.log('\n全部通过');

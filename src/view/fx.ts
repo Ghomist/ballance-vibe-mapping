@@ -13,6 +13,8 @@ export interface FxOptions {
   pos?: [number, number, number];
   /** 轻微呼吸（用于“可连接”等提示） */
   pulse?: boolean;
+  /** 虚线（仅在首次创建该 key 时生效） */
+  dashed?: boolean;
 }
 
 interface Item {
@@ -52,6 +54,7 @@ export class Fx {
       const mat = new LineMaterial({
         vertexColors: true, linewidth: opts.width ?? 1.5, transparent: true, opacity: 0,
         depthTest: false, depthWrite: false,
+        dashed: !!opts.dashed, dashSize: 0.45, gapSize: 0.3,
       });
       mat.resolution.copy(this.resolution);
       const obj = new LineSegments2(geo, mat);
@@ -63,6 +66,7 @@ export class Fx {
     }
     it.obj.geometry.setPositions(segs);
     it.obj.geometry.setColors(colors);
+    if (it.mat.dashed) it.obj.computeLineDistances();
     it.mat.linewidth = opts.width ?? 1.5;
     it.target = opts.opacity ?? 1;
     it.pulse = opts.pulse ?? false;

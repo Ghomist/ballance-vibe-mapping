@@ -1,10 +1,11 @@
 // 路面网格生成：按四分之一格（2.5×2.5）判断边框，自动分配材质与 UV。
 // UV 规则沿用 BBP / BME 原型：边框贴图 u=0 在路外沿、u=0.5 在路中线，v 方向每 5 个单位走 1。
-// UV 采用 Virtools 约定（v 向下），预览时贴图关闭 flipY 即可对齐。
+// UV 与 BME 一致，采用 Blender 约定（v 向上）。
 import {
-  DX, DY, EndKey, HALF, MNode, Model, SINK_DEPTH, Seg, THICK,
-  endZ, isFree, nodePorts, opp,
+  CELL, DX, DY, EndKey, HALF, MNode, Model, SINK_DEPTH, Seg, THICK,
+  endZ, isFree, nodeLinks, nodePorts, opp,
 } from '../model/types';
+import { boundaryEdges, cellSet, linkOpening, parseCell } from '../model/platform';
 
 export type MatName =
   | 'FloorTopBorder' | 'FloorTopBorderless' | 'FloorTopFlat'
@@ -107,8 +108,10 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo) {
   const topMat: MatName = sink ? 'FloorTopProfil' : 'FloorTopBorder';
   const closedA = isFree(s.a) && s.a.style === 'closed';
   const closedB = isFree(s.b) && s.b.style === 'closed';
-  const t0 = closedA ? HALF : 0;
-  const t1 = closedB ? s.len - HALF : s.len;
+  // 封闭端各占 2.5；路段太短时按比例压缩
+  const cap = closedA && closedB ? Math.min(HALF, s.len / 2) : Math.min(HALF, s.len);
+  const t0 = closedA ? cap : 0;
+  const t1 = closedB ? s.len - cap : s.len;
 
   // 顶面：左右两条边框带
   if (t1 > t0 + 1e-9) {
@@ -126,8 +129,8 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo) {
       mb.tri(topMat, [C, O, A2], [[0, 0.5], [0.5, 0], [0, 0]], UP);
     }
   };
-  if (closedA) outerCorner(0, HALF);
-  if (closedB) outerCorner(s.len, s.len - HALF);
+  if (closedA) outerCorner(0, cap);
+  if (closedB) outerCorner(s.len, s.len - cap);
 
   // 侧面
   for (const side of [1, -1]) {
@@ -225,6 +228,131 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
   }
 }
 
+// ---------------- 平台 ----------------
+
+interface BSeg { x0: number; y0: number; x1: number; y1: number; hor: boolean }
+interface Run { along: 0 | 1; out: number; line: number; from: number; to: number }
+
+function distToSeg(px: number, py: number, b: BSeg) {
+  const dx = b.x1 - b.x0, dy = b.y1 - b.y0;
+  const l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((px - b.x0) * dx + (py - b.y0) * dy) / l2)) : 0;
+  return Math.hypot(px - (b.x0 + dx * t), py - (b.y0 + dy * t));
+}
+
+/** 把同一直线上相邻的单位边合并成长边 */
+function mergeRuns(edges: { x: number; y: number; along: 0 | 1; out: number }[]): Run[] {
+  const groups = new Map<string, number[]>();
+  for (const e of edges) {
+    const key = [e.along, e.out, e.along === 0 ? e.y : e.x].join('|');
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = []));
+    g.push(e.along === 0 ? e.x : e.y);
+  }
+  const runs: Run[] = [];
+  for (const [key, list] of groups) {
+    const [along, out, line] = key.split('|').map(Number);
+    list.sort((a, b) => a - b);
+    let from = list[0], to = list[0] + CELL;
+    for (let i = 1; i <= list.length; i++) {
+      if (i < list.length && Math.abs(list[i] - to) < 1e-6) { to += CELL; continue; }
+      runs.push({ along: along as 0 | 1, out, line, from, to });
+      if (i < list.length) { from = list[i]; to = list[i] + CELL; }
+    }
+  }
+  return runs;
+}
+
+/**
+ * 平台顶面：每个顶点的 u = min(到边界的距离, 2.5) / 5，与 BME 的边框 / 内外角规则一致；
+ * 距边界 2.5 以外的部分用无边框贴图，并按行合并成大面。
+ */
+function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
+  const cells = cellSet(n);
+  const sink = n.style === 'sink' ? SINK_DEPTH : 0;
+  const ribbon = !!n.ribbon && !!sink;
+  const bandMat: MatName = ribbon ? 'FloorTopFlat' : sink ? 'FloorTopProfil' : 'FloorTopBorder';
+  const z0 = n.z;
+
+  // 开口：从边界中扣掉，并补上道路两侧边沿的延长线
+  const openings = nodeLinks(m, n.id).map((l) => linkOpening(m.segs[l.seg], l.key));
+  const inOpening = (e: { x: number; y: number; along: 0 | 1; out: number }) => openings.some((o) => {
+    if (o.out !== e.out) return false;
+    if (e.along === 1) return Math.abs(e.x - o.x) < 1e-6 && e.y >= o.y - HALF - 1e-6 && e.y + CELL <= o.y + HALF + 1e-6;
+    return Math.abs(e.y - o.y) < 1e-6 && e.x >= o.x - HALF - 1e-6 && e.x + CELL <= o.x + HALF + 1e-6;
+  });
+  const runs = mergeRuns(boundaryEdges(cells).filter((e) => !inOpening(e)));
+  const bsegs: BSeg[] = runs.map((r) => r.along === 0
+    ? { x0: r.from, y0: r.line, x1: r.to, y1: r.line, hor: true }
+    : { x0: r.line, y0: r.from, x1: r.line, y1: r.to, hor: false });
+  for (const o of openings) {
+    const ox = DX[o.out], oy = DY[o.out], px = -oy, py = ox;
+    for (const sg of [1, -1]) {
+      const cx = o.x + px * HALF * sg, cy = o.y + py * HALF * sg;
+      bsegs.push({ x0: cx, y0: cy, x1: cx + ox * 3, y1: cy + oy * 3, hor: oy === 0 });
+    }
+  }
+  const near = (x: number, y: number) => {
+    let d = Infinity, hor = true;
+    for (const b of bsegs) {
+      if (Math.min(b.x0, b.x1) - x > HALF || x - Math.max(b.x0, b.x1) > HALF) continue;
+      if (Math.min(b.y0, b.y1) - y > HALF || y - Math.max(b.y0, b.y1) > HALF) continue;
+      const dd = distToSeg(x, y, b);
+      if (dd < d) { d = dd; hor = b.hor; }
+    }
+    return { d: Math.min(d, HALF), hor };
+  };
+  const uCache = new Map<string, number>();
+  const uAt = (i: number, j: number) => {
+    const k = `${i},${j}`;
+    let u = uCache.get(k);
+    if (u === undefined) { u = near(i * CELL, j * CELL).d / 5; uCache.set(k, u); }
+    return u;
+  };
+  const uScale = ribbon ? 2 : 1;
+  const interior: [number, number][] = [];
+  for (const key of cells) {
+    const [i, j] = parseCell(key);
+    const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+    const us = c.map(([a, b]) => uAt(a, b));
+    if (us.every((u) => u >= 0.5 - 1e-9)) { interior.push([i, j]); continue; }
+    // 选择与真实距离场更吻合的对角线（让外角 / 内角的折痕落在对角线上）
+    const uc = near((i + 0.5) * CELL, (j + 0.5) * CELL).d / 5;
+    const diag02 = Math.abs((us[0] + us[2]) / 2 - uc) <= Math.abs((us[1] + us[3]) / 2 - uc);
+    const tris = diag02 ? [[0, 1, 2], [0, 2, 3]] : [[0, 1, 3], [1, 2, 3]];
+    for (const t of tris) {
+      const pts = t.map((q) => [c[q][0] * CELL, c[q][1] * CELL, us[q]]);
+      const hor = near((pts[0][0] + pts[1][0] + pts[2][0]) / 3, (pts[0][1] + pts[1][1] + pts[2][1]) / 3).hor;
+      const P = pts.map(([x, y, u]) => [x, y, z0 - sink * (u / 0.5)] as V3);
+      const UV = pts.map(([x, y, u]) => [u * uScale, (hor ? x : y) / 5] as V2);
+      mb.tri(bandMat, [P[0], P[1], P[2]], [UV[0], UV[1], UV[2]], UP);
+    }
+  }
+  // 内部：按行合并成长条
+  const rows = new Map<number, number[]>();
+  for (const [i, j] of interior) { let r = rows.get(j); if (!r) rows.set(j, (r = [])); r.push(i); }
+  const zi = z0 - sink;
+  for (const [j, list] of rows) {
+    list.sort((a, b) => a - b);
+    let s0 = list[0], prev = list[0];
+    for (let q = 1; q <= list.length; q++) {
+      if (q < list.length && list[q] === prev + 1) { prev = list[q]; continue; }
+      const x0 = s0 * CELL, x1 = (prev + 1) * CELL, y0 = j * CELL, y1 = (j + 1) * CELL;
+      mb.quad('FloorTopBorderless', [[x0, y0, zi], [x1, y0, zi], [x1, y1, zi], [x0, y1, zi]],
+        [[x0 / 5, y0 / 5], [x1 / 5, y0 / 5], [x1 / 5, y1 / 5], [x0 / 5, y1 / 5]], UP);
+      if (q < list.length) { s0 = list[q]; prev = list[q]; }
+    }
+  }
+  // 侧面
+  for (const r of runs) {
+    const out: V3 = [DX[r.out], DY[r.out], 0];
+    const A: V3 = r.along === 0 ? [r.from, r.line, z0] : [r.line, r.from, z0];
+    const B: V3 = r.along === 0 ? [r.to, r.line, z0] : [r.line, r.to, z0];
+    const Ab: V3 = [A[0], A[1], z0 - THICK], Bb: V3 = [B[0], B[1], z0 - THICK];
+    mb.quad('FloorSide', [A, B, Bb, Ab], [[0, r.from / 5], [0, r.to / 5], [THICK / 5, r.to / 5], [THICK / 5, r.from / 5]], out);
+  }
+}
+
 // ---------------- 汇总 ----------------
 
 export type Chains = Map<number, ChainInfo>;
@@ -235,6 +363,7 @@ export function elemKey(m: Model, id: number, chains: Chains): string {
   if (s) return JSON.stringify([s, endZ(m, s, 'a'), endZ(m, s, 'b'), chains.get(id)]);
   const n = m.nodes[id];
   if (!n) return '';
+  if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key))]);
   return JSON.stringify([n, nodePorts(m, id).map((p) => !!p)]);
 }
 
@@ -248,6 +377,7 @@ export function buildElem(m: Model, id: number, chains: Chains): ElemMesh | null
   const n = m.nodes[id];
   if (!n || n.kind === 'joint') return null;
   if (n.kind === 'block') buildBlock(mb, m, n);
+  else if (n.kind === 'platform') buildPlatform(mb, m, n);
   else buildTransition(mb, m, n);
   return { id, kind: 'node', parts: mb.parts };
 }
