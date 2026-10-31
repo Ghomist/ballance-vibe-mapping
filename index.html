@@ -30,6 +30,14 @@
       <button id="new">新建</button>
       <button id="open">打开</button>
       <button id="save">保存</button>
+      <span class="dropdown">
+        <button id="export">导出 ▾</button>
+        <div class="dropdown-menu" id="export-menu">
+          <button data-format="nmo"><span>导出 NMO</span><small>本机 Blender + BBP 生成</small></button>
+          <button data-format="blend"><span>导出 Blender 文件</span><small>.blend，可继续手工修改</small></button>
+          <button data-format="json"><span>导出场景描述</span><small>JSON，配合 scripts/blender/build_scene.py</small></button>
+        </div>
+      </span>
       <input type="file" id="file" accept=".bvm,.json" hidden />
     </div>
   </header>

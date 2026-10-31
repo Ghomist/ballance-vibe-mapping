@@ -50,6 +50,44 @@ document.getElementById('save')!.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+// 导出
+const exportBtn = document.getElementById('export')!;
+const exportMenu = document.getElementById('export-menu')!;
+exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.toggle('open'); });
+window.addEventListener('pointerdown', (e) => { if (!exportMenu.contains(e.target as Node) && e.target !== exportBtn) exportMenu.classList.remove('open'); });
+const download = (blob: Blob, name: string) => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+exportMenu.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.addEventListener('click', async () => {
+  exportMenu.classList.remove('open');
+  const format = b.dataset.format!;
+  const desc = editor.exportScene();
+  if (desc.warnings.length && !confirm(`${desc.warnings.join('\n')}\n\n仍然导出？`)) return;
+  const body = JSON.stringify(desc);
+  if (format === 'json') { download(new Blob([body], { type: 'application/json' }), 'map.scene.json'); return; }
+  status.textContent = `正在用 Blender 生成 .${format}…`;
+  exportBtn.setAttribute('disabled', '');
+  try {
+    const res = await fetch(`/api/export?format=${format}`, { method: 'POST', body });
+    if (!res.ok) throw new Error(await res.text());
+    download(await res.blob(), `map.${format}`);
+    status.textContent = `已导出 map.${format}`;
+  } catch (e) {
+    console.error(e);
+    alert(`导出失败。需要在本机用 npm run dev 启动编辑器，并安装 Blender 与 BBP。
+也可以先“导出场景描述”，再在 Blender 里运行 scripts/blender/build_scene.py。
+
+${String(e).slice(0, 1500)}`);
+    status.textContent = '导出失败';
+  } finally {
+    exportBtn.removeAttribute('disabled');
+  }
+}));
+
 const file = document.getElementById('file') as HTMLInputElement;
 document.getElementById('open')!.addEventListener('click', () => file.click());
 file.addEventListener('change', async () => {

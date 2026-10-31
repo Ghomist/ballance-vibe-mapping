@@ -13,6 +13,7 @@ import {
   addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
 } from './model/checkpoint';
 import { guardParts } from './model/deco';
+import { exportScene } from './export/scene';
 import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
@@ -230,6 +231,9 @@ export class Editor {
   }
 
   exportJSON(): string { return JSON.stringify({ format: 'bvm', version: 1, model: this.model }, null, 1); }
+
+  /** 导出用的场景描述（交给 Blender + BBP 生成地图） */
+  exportScene() { return exportScene(this.model); }
 
   importJSON(text: string) {
     const data = JSON.parse(text);

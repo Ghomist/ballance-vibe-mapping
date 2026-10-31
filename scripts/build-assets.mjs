@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASSET_OBJECTS } from './asset-list.mjs';
+import { ASSETS_BLEND, TEXTURES, findBlender } from './blender.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pub = join(root, 'public');
@@ -63,21 +64,14 @@ if (bbp) {
 } else console.warn('跳过机关占位符：找不到 BBP（可设置 BBP_DIR）');
 
 // ---------- 资产库物体 ----------
-function findBlender() {
-  if (process.env.BLENDER) return process.env.BLENDER;
-  for (const p of ['D:/Blender/blender.exe', 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe', 'C:/Program Files/Blender Foundation/Blender 4.4/blender.exe']) {
-    if (existsSync(p)) return p;
-  }
-  return 'blender';
-}
-const blend = process.env.BALLANCE_ASSETS ?? 'D:/BlenderLibrary/BallanceAssets/BallanceAssets.blend';
+const blend = ASSETS_BLEND;
 const assetsOut = join(pub, 'assets');
 if (existsSync(blend)) {
   execFileSync(findBlender(), ['-b', blend, '--python', join(root, 'scripts/dump-blend-assets.py'), '--', assetsOut, ...ASSET_OBJECTS], { stdio: ['ignore', 'inherit', 'inherit'] });
 } else console.warn(`跳过资产库：找不到 ${blend}`);
 
 // ---------- 贴图 ----------
-const texSrc = process.env.BALLANCE_TEXTURES ?? 'D:/Ballance/Textures';
+const texSrc = TEXTURES;
 const texOut = join(pub, 'textures');
 mkdirSync(texOut, { recursive: true });
 const tex = new Set([

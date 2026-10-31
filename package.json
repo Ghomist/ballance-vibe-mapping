@@ -7,6 +7,7 @@
     "build": "tsc && vite build",
     "assets": "node scripts/build-assets.mjs",
     "test": "tsx tests/run.ts",
+    "export": "tsx scripts/export.ts",
     "typecheck": "tsc"
   },
   "keywords": [],
