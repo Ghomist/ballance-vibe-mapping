@@ -111,6 +111,8 @@ export class Editor {
   tool: Tool = 'edit';
   /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附 */
   gridMode = true;
+  /** 吸附：靠近其它元素的边界 / 端点 / 高度时对齐过去（与格栅相互独立） */
+  snapMode = true;
   /** 机关工具当前要放的物件类型 */
   objType = 'P_Extra_Point';
   onStatus: (s: string) => void = () => {};
@@ -161,6 +163,7 @@ export class Editor {
   private moveInfoCache: { key: string; info: MoveInfo | null } = { key: '', info: null };
 
   constructor(private host: HTMLElement) {
+    this.loadPrefs();
     this.model = this.loadLocal() ?? emptyModel();
     this.display = this.model;
 
@@ -225,7 +228,19 @@ export class Editor {
 
   setTool(t: Tool) { this.tool = t; this.overlayDirty = true; this.updateGhost(); this.updateStatus(); this.onChange(); }
 
-  setGridMode(on: boolean) { this.gridMode = on; this.overlayDirty = true; this.updateStatus(); this.onChange(); }
+  setGridMode(on: boolean) { this.gridMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
+  setSnapMode(on: boolean) { this.snapMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
+
+  private savePrefs() {
+    try { localStorage.setItem('bvm.prefs', JSON.stringify({ grid: this.gridMode, snap: this.snapMode })); } catch { /* 存不了就算了 */ }
+  }
+  private loadPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem('bvm.prefs') ?? '{}');
+      if (typeof p.grid === 'boolean') this.gridMode = p.grid;
+      if (typeof p.snap === 'boolean') this.snapMode = p.snap;
+    } catch { /* 用默认值 */ }
+  }
 
   undo() {
     const s = this.undoStack.pop();
@@ -686,6 +701,7 @@ export class Editor {
   }
   private snap(): Snapper {
     this.snapper.grid = this.gridMode !== this.gridFlipped;
+    this.snapper.snap = this.snapMode;
     const dist = this.camera.position.distanceTo(this.controls.target);
     this.snapper.tol = THREE.MathUtils.clamp(dist * 0.015, 0.3, 2.5);
     return this.snapper;
@@ -699,8 +715,8 @@ export class Editor {
     this.guides.push(...r.from, ...p);
   }
   /** 水平坐标吸附（截面、端点、边沿、路块中心——格栅模式下都是 2.5 的倍数） */
-  private snapEdge(c: number, axis: 0 | 1, at?: [number, number, number]) {
-    const r = this.snap().axis(this.snapModel(), axis, c);
+  private snapEdge(c: number, axis: 0 | 1, at?: [number, number, number], step?: number) {
+    const r = this.snap().axis(this.snapModel(), axis, c, undefined, step);
     this.noteGuide(r, axis, at);
     return r.v;
   }
@@ -1590,6 +1606,7 @@ export class Editor {
       if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
+    if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
     if (k === 'escape') {
       if (!this.drag && this.selection.size) { this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
       this.cancelDrag();
@@ -1811,8 +1828,8 @@ export class Editor {
       x = p.x + ox; y = p.y + oy; z = zz;
     }
     const at: [number, number, number] = [x, y, z];
-    if (this.gridMode) { x = Math.round(x / 1.25) * 1.25; y = Math.round(y / 1.25) * 1.25; }
-    else { x = this.snapEdge(x, 0, at); y = this.snapEdge(y, 1, at); }
+    // 物件按 1.25 的格栅放（路块中心、边沿、四分之一处都能放到）
+    x = this.snapEdge(x, 0, at, 1.25); y = this.snapEdge(y, 1, at, 1.25);
     return { x, y, z, rot: 0 };
   }
 
@@ -2004,7 +2021,7 @@ export class Editor {
       if (d.type === 'marquee') hs = [H(['LMB'], '框选'), H(['Shift'], '追加'), H(['Esc'], '取消')];
       else {
         hs = [H(['LMB'], '确认'), H(['Esc'], '取消')];
-        if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], this.gridMode !== this.gridFlipped ? '临时切到自由对齐' : '临时切到格栅'));
+        if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], this.gridMode !== this.gridFlipped ? '临时关格栅' : '临时开格栅'));
       }
     } else if (this.tool === 'edit') {
       if (this.mods.shift) hs = [H(['Shift', 'LMB'], '侧面拉成平台 / 推平台边')];
@@ -2012,7 +2029,7 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '吸附'),
       ];
     } else if (this.tool === 'cut') hs = [H(['LMB'], '点截面分隔'), H(['LMB'], '空白处框选'), H(['RMB'], '菜单'), H(['MMB'], '环视')];
     else if (this.tool === 'object') hs = [

@@ -1,4 +1,4 @@
-// 吸附：格栅模式下一切对齐到世界坐标 2.5 的倍数；自由模式下吸附到其它元素的边界 / 端点 / 高度。
+// 对齐：格栅（世界坐标 2.5 的倍数）与吸附（其它元素的边界 / 端点 / 高度）是两个独立开关，可以同时生效。
 import { DX, DY, HALF, Model, endPos, endZ, nodeHalf } from '../model/types';
 import { platformBBox } from '../model/platform';
 import { railEnd } from '../model/rail';
@@ -17,7 +17,10 @@ const round = (v: number, s: number) => Math.round(v / s) * s;
 const tidy = (v: number) => Math.round(v * 100) / 100;
 
 export class Snapper {
+  /** 格栅：对齐到 2.5 的倍数 */
   grid = true;
+  /** 吸附：靠近其它元素的边界、端点、高度时对齐过去（与格栅相互独立，可同时开） */
+  snap = true;
   /** 自由模式吸附距离（世界单位） */
   tol = 1;
   private cacheFor: Model | null = null;
@@ -59,41 +62,53 @@ export class Snapper {
     return f;
   }
 
-  /** 水平坐标（axis 0 = x，1 = y） */
-  axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set()): SnapResult {
-    if (this.grid) return { v: round(raw, GRID) };
-    let best: SnapResult = { v: tidy(raw) }, bd = this.tol;
-    for (const { p } of this.features(m, exclude)) {
-      const d = Math.abs(p[axis] - raw);
-      if (d < bd) { bd = d; best = { v: p[axis], from: p }; }
+  /** 吸附到特征的距离：同时开着格栅时不超过半格，免得挡住相邻的格点 */
+  private reach() { return this.grid ? Math.min(this.tol, GRID * 0.4) : this.tol; }
+
+  /** 没吸附到特征时：格栅模式取格点，否则保持原值 */
+  private fallback(raw: number, step = GRID): SnapResult { return { v: this.grid ? round(raw, step) : tidy(raw) }; }
+
+  /** 水平坐标（axis 0 = x，1 = y）；step 为格栅步长 */
+  axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set(), step = GRID): SnapResult {
+    if (this.snap) {
+      let best: SnapResult | null = null, bd = this.reach();
+      for (const { p } of this.features(m, exclude)) {
+        const d = Math.abs(p[axis] - raw);
+        if (d < bd) { bd = d; best = { v: p[axis], from: p }; }
+      }
+      if (best) return best;
     }
-    return best;
+    return this.fallback(raw, step);
   }
 
   /**
-   * 宽 2·half 的带子（路口）沿轴放置：格栅模式下中心对齐 2.5；
-   * 自由模式下中心随鼠标连续移动，带子的边沿或中心靠近别的特征（端点、边沿、平台角）时吸附过去。
+   * 宽 2·half 的带子（路口）沿轴放置：带子的边沿或中心靠近别的特征（端点、边沿、平台角）时吸附过去；
+   * 否则格栅模式下中心对齐 2.5，关掉格栅时随鼠标连续移动。
    */
   band(m: Model, axis: 0 | 1, raw: number, half: number, exclude: Set<number> = new Set()): SnapResult {
-    if (this.grid) return { v: round(raw, GRID) };
-    let best: SnapResult = { v: tidy(raw) }, bd = this.tol;
-    for (const { p } of this.features(m, exclude)) {
-      for (const off of [0, -half, half]) {
-        const d = Math.abs(p[axis] - (raw + off));
-        if (d < bd) { bd = d; best = { v: p[axis] - off, from: p }; }
+    if (this.snap) {
+      let best: SnapResult | null = null, bd = this.reach();
+      for (const { p } of this.features(m, exclude)) {
+        for (const off of [0, -half, half]) {
+          const d = Math.abs(p[axis] - (raw + off));
+          if (d < bd) { bd = d; best = { v: p[axis] - off, from: p }; }
+        }
       }
+      if (best) return best;
     }
-    return best;
+    return this.fallback(raw);
   }
 
   z(m: Model, raw: number, exclude: Set<number> = new Set()): SnapResult {
-    if (this.grid) return { v: round(raw, GRID) };
-    let best: SnapResult = { v: tidy(raw) }, bd = this.tol;
-    for (const { p } of this.features(m, exclude)) {
-      const d = Math.abs(p[2] - raw);
-      if (d < bd) { bd = d; best = { v: p[2], from: p }; }
+    if (this.snap) {
+      let best: SnapResult | null = null, bd = this.reach();
+      for (const { p } of this.features(m, exclude)) {
+        const d = Math.abs(p[2] - raw);
+        if (d < bd) { bd = d; best = { v: p[2], from: p }; }
+      }
+      if (best) return best;
     }
-    return best;
+    return this.fallback(raw);
   }
 
   /** 无方向的长度 / 半径 */

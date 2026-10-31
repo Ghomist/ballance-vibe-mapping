@@ -34,6 +34,9 @@ const syncGrid = () => {
   grid.classList.toggle('temp', editor.gridFlipped);
 };
 grid.addEventListener('click', () => { editor.setGridMode(!editor.gridMode); grid.blur(); });
+const snapBtn = document.getElementById('snap') as HTMLButtonElement;
+const syncSnap = () => snapBtn.classList.toggle('active', editor.snapMode);
+snapBtn.addEventListener('click', () => { editor.setSnapMode(!editor.snapMode); snapBtn.blur(); });
 
 // 机关工具的物件面板
 const palette = document.getElementById('palette')!;
@@ -55,9 +58,10 @@ const syncPalette = () => {
   palette.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('active', b.dataset.type === editor.objType));
 };
 
-editor.onChange = () => { syncTools(); syncGrid(); syncPalette(); };
+editor.onChange = () => { syncTools(); syncGrid(); syncSnap(); syncPalette(); };
 syncTools();
 syncGrid();
+syncSnap();
 syncPalette();
 
 document.getElementById('undo')!.addEventListener('click', () => editor.undo());
