@@ -7,7 +7,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 export function lerpModel(disp: Model, target: Model, t: number): { model: Model; done: boolean } {
   let maxDiff = 0;
   const track = (a: number, b: number) => { maxDiff = Math.max(maxDiff, Math.abs(a - b)); return lerp(a, b, t); };
-  const out: Model = { nodes: {}, segs: {}, nextId: target.nextId, root: target.root, rails: target.rails };
+  const out: Model = { nodes: {}, segs: {}, nextId: target.nextId, root: target.root, rails: target.rails, objs: target.objs };
 
   for (const s of Object.values(target.segs)) {
     const d = disp.segs[s.id];

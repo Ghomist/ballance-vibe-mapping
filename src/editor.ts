@@ -12,6 +12,7 @@ import { assetVersion, fallbackBox, getAsset, setAssetLoadedCallback } from './v
 import {
   addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
 } from './model/checkpoint';
+import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
   DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
@@ -30,11 +31,11 @@ import {
   addSegAtPlatform, blockToPlatform, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
 } from './model/platform';
 
-export type Tool = 'edit' | 'cut' | 'rail';
+export type Tool = 'edit' | 'cut' | 'rail' | 'object';
 
 interface Pick {
   id: number;
-  kind: 'seg' | 'node' | 'rail';
+  kind: 'seg' | 'node' | 'rail' | 'obj';
   point: THREE.Vector3;
   normal: THREE.Vector3;
 }
@@ -64,6 +65,8 @@ type Drag =
   | { type: 'height'; snapshot: Model; target: HeightTarget; plane: THREE.Plane; z0: number }
   | { type: 'railHeight'; snapshot: Model; rail: number; plane: THREE.Plane; z0: number }
   | { type: 'gizmo'; snapshot: Model; target: GizmoTarget; handle: GizmoHandle; origin: THREE.Vector3; t0: number; ref: number }
+  | { type: 'obj'; snapshot: Model; id: number; ox: number; oy: number; moved: boolean; sx: number; sy: number }
+  | { type: 'objHeight'; snapshot: Model; id: number; plane: THREE.Plane; z0: number }
   | { type: 'orbit' };
 
 /** gizmo 作用对象：悬停元素所在的“一块”（两个折点之间的直路，或单个路块 / 平台）或一整条钢轨 */
@@ -91,12 +94,15 @@ const C_ROOT = 0xffd76a;
 const C_RAIL = 0x9be7ff;
 const RAIL_HANDLE_GEO = new THREE.BoxGeometry(5, 5, 1.6).translate(-1.5, 0, 0);
 const RAIL_HANDLE_MAT = new THREE.MeshBasicMaterial({ visible: false });
+const GHOST_MAT = new THREE.MeshBasicMaterial({ color: 0x9fd2ff, transparent: true, opacity: 0.35, depthWrite: false });
 
 export class Editor {
   model: Model;
   tool: Tool = 'edit';
   /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附 */
   gridMode = true;
+  /** 机关工具当前要放的物件类型 */
+  objType = 'P_Extra_Point';
   onStatus: (s: string) => void = () => {};
   onChange: () => void = () => {};
 
@@ -105,6 +111,9 @@ export class Editor {
   private meshCache = new Map<number, { key: string; meshes: THREE.Mesh[] }>();
   /** 盘点上方的小节标签 */
   private cpLabels = new Map<number, CSS2DObject>();
+  /** 机关工具：跟随鼠标的半透明预览 */
+  private ghost = new THREE.Group();
+  private ghostType = '';
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private renderer: THREE.WebGLRenderer;
@@ -161,6 +170,7 @@ export class Editor {
     sun.position.set(-0.4, -0.7, 1);
     this.scene.add(sun);
     this.scene.add(createGrid());
+    this.scene.add(this.ghost);
     this.scene.add(this.floor, this.fx.group, this.gizmo.group);
 
     this.menu = document.createElement('div');
@@ -192,7 +202,7 @@ export class Editor {
 
   // ---------------- 公共接口 ----------------
 
-  setTool(t: Tool) { this.tool = t; this.overlayDirty = true; this.updateStatus(); this.onChange(); }
+  setTool(t: Tool) { this.tool = t; this.overlayDirty = true; this.updateGhost(); this.updateStatus(); this.onChange(); }
 
   setGridMode(on: boolean) { this.gridMode = on; this.overlayDirty = true; this.updateStatus(); this.onChange(); }
 
@@ -273,7 +283,7 @@ export class Editor {
   private syncMeshes() {
     const m = this.display;
     const chains = computeChains(m);
-    const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails)].map(Number));
+    const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails), ...Object.keys(m.objs)].map(Number));
     for (const [id, c] of this.meshCache) {
       if (ids.has(id)) continue;
       for (const mesh of c.meshes) { if (!mesh.userData.shared && mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
@@ -281,6 +291,17 @@ export class Editor {
     }
     for (const id of ids) {
       const rail = m.rails[id];
+      const obj = m.objs[id];
+      if (obj) {
+        const okey = JSON.stringify(obj) + ':' + assetVersion;
+        const oc = this.meshCache.get(id);
+        if (oc && oc.key === okey) continue;
+        if (oc) for (const mesh of oc.meshes) { if (!mesh.userData.shared) mesh.geometry.dispose(); this.floor.remove(mesh); }
+        const meshes = this.objMeshes(obj);
+        for (const mesh of meshes) { mesh.userData = { id, kind: 'obj', shared: true }; this.floor.add(mesh); }
+        this.meshCache.set(id, { key: okey, meshes });
+        continue;
+      }
       const prefab = m.nodes[id]?.kind === 'checkpoint' ? m.nodes[id] : null;
       const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains) + (prefab ? `:${assetVersion}` : '');
       const cached = this.meshCache.get(id);
@@ -352,6 +373,18 @@ export class Editor {
         out.push(mesh);
       }
     }
+  }
+
+  private objMeshes(o: { type: string; x: number; y: number; z: number; rot: number }, ghost = false): THREE.Mesh[] {
+    const t = objType(o.type);
+    const pieces = getAsset(t?.cat === 'deco' ? 'asset' : 'element', o.type) ?? [];
+    return pieces.map((pc) => {
+      const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
+      mesh.position.set(o.x, o.y, o.z);
+      mesh.rotation.z = (o.rot * Math.PI) / 180;
+      mesh.updateMatrixWorld();
+      return mesh;
+    });
   }
 
   private syncCheckpointLabels(m: Model) {
@@ -491,7 +524,7 @@ export class Editor {
     const hit = this.raycaster.intersectObjects(this.pickables, false)[0];
     if (!hit || !hit.face) return null;
     const { id, kind } = hit.object.userData;
-    if (!this.model.segs[id] && !this.model.nodes[id] && !this.model.rails[id]) return null;
+    if (!this.model.segs[id] && !this.model.nodes[id] && !this.model.rails[id] && !this.model.objs[id]) return null;
     return { id, kind, point: hit.point.clone(), normal: hit.face.normal.clone() };
   }
 
@@ -562,6 +595,7 @@ export class Editor {
   private actionFor(p: Pick): Action | null {
     const m = this.model;
     const shift = this.mods.shift;
+    if (p.kind === 'obj' || this.tool === 'object') return null;
     if (p.kind === 'rail') return this.railEndAction(p);
     if (this.tool === 'rail') {
       if (p.kind !== 'seg') return null;
@@ -945,6 +979,7 @@ export class Editor {
   // ---------------- gizmo ----------------
 
   private gizmoTargetFor(p: Pick): GizmoTarget | null {
+    if (p.kind === 'obj') return null;
     return p.kind === 'rail' ? { type: 'rail', id: p.id } : { type: 'comp', id: p.id };
   }
 
@@ -1061,10 +1096,34 @@ export class Editor {
       }
     }
     const p = this.pick();
+    // 机关工具：点到路面（或空地）就放下一个，按住可以继续拖动调整位置
+    if (this.tool === 'object' && (!p || p.kind !== 'obj')) {
+      e.preventDefault();
+      const at = this.objPlacement(this.objType);
+      if (!at) return;
+      const snapshot = cloneModel(this.model);
+      const id = addObj(this.model, this.objType, at.x, at.y, at.z, at.rot);
+      if (id === null) { this.flashStatus(`${objType(this.objType)?.label ?? this.objType} 只能有一个`); return; }
+      this.setModel(this.model);
+      this.select(id);
+      this.drag = { type: 'obj', snapshot, id, ox: 0, oy: 0, moved: true, sx: e.clientX, sy: e.clientY };
+      return;
+    }
     if (!p) { this.select(null); return; }
     e.preventDefault();
     this.hover = p;
     const snapshot = cloneModel(this.model);
+    if (p.kind === 'obj' && this.tool !== 'cut') {
+      const o = this.model.objs[p.id];
+      this.select(o.id);
+      if (e.altKey) {
+        const n = new THREE.Vector3().subVectors(this.camera.position, p.point).setZ(0).normalize();
+        this.drag = { type: 'objHeight', snapshot, id: o.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, p.point), z0: p.point.z };
+      } else {
+        this.drag = { type: 'obj', snapshot, id: o.id, ox: o.x - p.point.x, oy: o.y - p.point.y, moved: false, sx: e.clientX, sy: e.clientY };
+      }
+      return;
+    }
 
     if (this.tool === 'cut') {
       if (p.kind === 'seg') this.cutAt(p);
@@ -1106,11 +1165,35 @@ export class Editor {
       const p = this.pick();
       const changed = (p?.id ?? null) !== (this.hover?.id ?? null);
       this.hover = p;
+      this.updateGhost();
       if (changed || p) this.overlayDirty = true;
       if (changed) this.updateStatus();
       return;
     }
     if (d.type === 'orbit') return;
+    if (d.type === 'obj') {
+      if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
+      d.moved = true;
+      const o = this.model.objs[d.id];
+      if (!o) return;
+      const at = this.objPlacement(o.type, d.ox, d.oy, o.z);
+      if (!at) return;
+      const m = cloneModel(this.model);
+      Object.assign(m.objs[d.id], { x: at.x, y: at.y, z: at.z });
+      this.setModel(m);
+      this.overlayDirty = true;
+      return;
+    }
+    if (d.type === 'objHeight') {
+      const hit = new THREE.Vector3();
+      if (!this.raycaster.ray.intersectPlane(d.plane, hit)) return;
+      const m = cloneModel(d.snapshot);
+      const o = m.objs[d.id];
+      o.z = this.snapZ(o.z + hit.z - d.z0);
+      this.setModel(m);
+      this.onStatus(`高度 ${fmt(o.z)}`);
+      return;
+    }
     if (d.type === 'gizmo') {
       const raw = d.ref + this.axisParam(d.origin, d.handle.axis) - d.t0;
       const at = d.origin.toArray() as [number, number, number];
@@ -1167,6 +1250,13 @@ export class Editor {
     if (!d || d.type === 'orbit') return;
     const before = d.snapshot;
     const m = this.model;
+    if (d.type === 'obj' || d.type === 'objHeight') {
+      this.guides = [];
+      if (JSON.stringify(before) === JSON.stringify(m)) return;
+      this.pushUndo(before);
+      this.commitView(before);
+      return;
+    }
     if (d.type === 'action' && this.growEnd && m.segs[this.growEnd.seg]) {
       tryConnect(m, this.growEnd.seg, this.growEnd.key, true);
     }
@@ -1174,6 +1264,7 @@ export class Editor {
     this.guides = [];
     normalize(m);
     this.alignRailsToRoads(m);
+    followSurfaces(before, m);
     if (JSON.stringify(before) === JSON.stringify(m)) return;
     this.pushUndo(before);
     this.commitView(before);
@@ -1190,7 +1281,7 @@ export class Editor {
     if (k === 'delete' || k === 'backspace') {
       if (this.selected === null) return;
       const id = this.selected;
-      this.mutate((m) => { if (m.rails[id]) delete m.rails[id]; else deleteElem(m, id); });
+      this.mutate((m) => { if (m.rails[id]) delete m.rails[id]; else if (m.objs[id]) delete m.objs[id]; else deleteElem(m, id); });
       this.select(null);
       return;
     }
@@ -1198,6 +1289,11 @@ export class Editor {
     if (k === '1') this.setTool('edit');
     if (k === '2') this.setTool('cut');
     if (k === '3') this.setTool('rail');
+    if (k === '4') this.setTool('object');
+    if (k === 'r') {
+      const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
+      if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; });
+    }
     if (k === 'g') this.setGridMode(!this.gridMode);
     if (k === 'escape') { this.cancelDrag(); this.hideMenu(); }
   }
@@ -1251,7 +1347,7 @@ export class Editor {
     this.setMouse(e);
     const p = this.pick();
     const ground = this.rayOnPlaneZ(0);
-    const items: (MenuItem | null)[] = p ? (p.kind === 'rail' ? this.railMenu(p) : this.menuItemsFor(p)) : [
+    const items: (MenuItem | null)[] = p ? (p.kind === 'rail' ? this.railMenu(p) : p.kind === 'obj' ? this.objMenu(p.id) : this.menuItemsFor(p)) : [
       {
         label: '在此新建路块', hint: '双击空白处也可以', disabled: !ground,
         action: () => { if (ground) this.newBlockAt(ground); },
@@ -1360,6 +1456,76 @@ export class Editor {
     return items;
   }
 
+  private objMenu(id: number): (MenuItem | null)[] {
+    const m = this.model;
+    const o = m.objs[id];
+    const t = objType(o.type);
+    const items: (MenuItem | null)[] = [
+      { label: '旋转 90°', hint: 'R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 90) % 360; }) },
+      { label: '旋转 -90°', hint: 'Shift+R', action: () => this.mutate((mm) => { mm.objs[id].rot = (mm.objs[id].rot + 270) % 360; }) },
+    ];
+    if (o.cat === 'module' && o.type !== 'PE_Balloon') {
+      items.push(null);
+      const auto = autoSector(m, o);
+      items.push({
+        label: `小节：自动（第 ${auto} 小节）`, hint: o.sector === undefined ? '当前' : undefined, disabled: o.sector === undefined,
+        action: () => this.mutate((mm) => { delete mm.objs[id].sector; }),
+      });
+      for (let s = 1; s <= sectorCount(m); s++) {
+        items.push({
+          label: `小节：固定为第 ${s} 小节`, hint: o.sector === s ? '当前' : undefined, disabled: o.sector === s,
+          action: () => this.mutate((mm) => { mm.objs[id].sector = s; }),
+        });
+      }
+    }
+    items.push(null);
+    items.push({ label: `删除${t?.label ?? o.type}`, hint: 'Del', action: () => this.mutate((mm) => { delete mm.objs[id]; }) });
+    return items;
+  }
+
+  /** 物件放置位置：鼠标下的路面（顶面 + 抬升），没有路面时放在当前高度平面上 */
+  private objPlacement(type: string, ox = 0, oy = 0, zKeep?: number): { x: number; y: number; z: number; rot: number } | null {
+    const lift = objType(type)?.lift ?? 0;
+    const floorHit = this.raycaster.intersectObjects(this.pickables.filter((p) => p.userData.kind !== 'obj'), false)[0];
+    let x: number, y: number, z: number;
+    if (floorHit && floorHit.face && floorHit.face.normal.z > 0.5) {
+      x = floorHit.point.x + ox; y = floorHit.point.y + oy;
+      const top = this.surfaceTop(x, y, floorHit.point.z);
+      z = top + lift;
+    } else {
+      const zz = zKeep ?? lift;
+      const p = this.rayOnPlaneZ(zz);
+      if (!p) return null;
+      x = p.x + ox; y = p.y + oy; z = zz;
+    }
+    const at: [number, number, number] = [x, y, z];
+    if (this.gridMode) { x = Math.round(x / 1.25) * 1.25; y = Math.round(y / 1.25) * 1.25; }
+    else { x = this.snapEdge(x, 0, at); y = this.snapEdge(y, 1, at); }
+    return { x, y, z, rot: 0 };
+  }
+
+  /** 路面顶面高度（凹槽里点到的是槽底，取路面标称高度） */
+  private surfaceTop(x: number, y: number, hz: number): number {
+    const near = surfacesAt(this.model, x, y).filter((sf) => Math.abs(sf.z - hz) < 1);
+    return near.length ? near.reduce((p, c) => (Math.abs(c.z - hz) < Math.abs(p.z - hz) ? c : p)).z : hz;
+  }
+
+  private updateGhost() {
+    const show = this.tool === 'object' && !this.drag && this.hover?.kind !== 'obj';
+    if (!show) { this.ghost.visible = false; return; }
+    const at = this.objPlacement(this.objType);
+    if (!at) { this.ghost.visible = false; return; }
+    if (this.ghostType !== this.objType || this.ghost.children.length === 0) {
+      this.ghost.clear();
+      for (const mesh of this.objMeshes({ type: this.objType, x: 0, y: 0, z: 0, rot: 0 }, true)) this.ghost.add(mesh);
+      this.ghostType = this.ghost.children.length ? this.objType : '';
+    }
+    this.ghost.position.set(at.x, at.y, at.z);
+    this.ghost.visible = true;
+  }
+
+  setObjType(t: string) { this.objType = t; this.ghostType = ''; this.setTool('object'); }
+
   private showMenu(x: number, y: number, items: (MenuItem | null)[]) {
     const menu = this.menu;
     menu.innerHTML = '';
@@ -1419,6 +1585,7 @@ export class Editor {
     const before = cloneModel(this.model);
     fn(this.model);
     normalize(this.model);
+    followSurfaces(before, this.model);
     if (JSON.stringify(before) === JSON.stringify(this.model)) return;
     this.pushUndo(before);
     this.commitView(before);
@@ -1435,7 +1602,7 @@ export class Editor {
    * 新出现的元素闪一下轮廓作为反馈。
    */
   private commitView(before?: Model) {
-    if (this.selected !== null && !this.model.segs[this.selected] && !this.model.nodes[this.selected] && !this.model.rails[this.selected]) this.selected = null;
+    if (this.selected !== null && !this.model.segs[this.selected] && !this.model.nodes[this.selected] && !this.model.rails[this.selected] && !this.model.objs[this.selected]) this.selected = null;
     this.hover = null;
     this.display = this.model;
     this.syncMeshes();
@@ -1473,7 +1640,12 @@ export class Editor {
     const h = this.hover;
     const m = this.model;
     let info = '';
-    if (h && h.kind === 'rail' && m.rails[h.id]) {
+    if (h && h.kind === 'obj' && m.objs[h.id]) {
+      const o = m.objs[h.id];
+      const t = objType(o.type);
+      info = `${t?.label ?? o.type}（${o.type}）  高 ${fmt(o.z)}  朝向 ${o.rot}°`;
+      if (o.cat === 'module' && o.type !== 'PE_Balloon') info += `  第 ${objSector(m, o)} 小节${o.sector === undefined ? '（自动）' : '（手动）'}`;
+    } else if (h && h.kind === 'rail' && m.rails[h.id]) {
       const r = m.rails[h.id];
       const total = r.pieces.reduce((a, q) => a + pieceLength(q), 0);
       const kinds = new Set(r.pieces.map((q) => q.kind));
@@ -1506,6 +1678,7 @@ export class Editor {
         : this.mods.alt ? 'Alt：拖动截面或路块调整高度，形成坡道（下游跟随）'
         : '左键按示意方向拖：拉长 / 开路口（拉回 0 即删除）· Shift：拉平台 · Alt：坡面 · Ctrl：移动 · 中键：环视 · 右键：更多',
       cut: '点击截面：把花纹分开成两个封闭端点',
+      object: `点击路面放置「${objType(this.objType)?.label ?? this.objType}」（按住可拖动）· 拖动已放的物件移动 · Alt 拖动调高度 · R 旋转 · 右键：小节 / 删除`,
       rail: '从路面端点拖出钢轨 · 钢轨端头：沿方向拉长（拉回 0 删除）· 末端侧面：拐弯 · Alt 拖末端改坡度 · 右键：单轨/双轨/单双转换、螺旋',
     };
     this.onStatus(`${info ? info + '　|　' : ''}${hints[this.tool]}`);

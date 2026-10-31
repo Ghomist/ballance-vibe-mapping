@@ -1,4 +1,5 @@
 import { Editor, type Tool } from './editor';
+import { OBJ_TYPES } from './model/objects';
 
 const editor = new Editor(document.getElementById('viewport')!);
 const status = document.getElementById('status')!;
@@ -11,9 +12,30 @@ const grid = document.getElementById('grid') as HTMLButtonElement;
 const syncGrid = () => grid.classList.toggle('active', editor.gridMode);
 grid.addEventListener('click', () => { editor.setGridMode(!editor.gridMode); grid.blur(); });
 
-editor.onChange = () => { syncTools(); syncGrid(); };
+// 机关工具的物件面板
+const palette = document.getElementById('palette')!;
+const groups: [string, string][] = [['module', '机关'], ['deco', '装饰']];
+for (const [cat, title] of groups) {
+  const h = document.createElement('h4');
+  h.textContent = title;
+  palette.appendChild(h);
+  for (const t of OBJ_TYPES.filter((x) => x.cat === cat)) {
+    const b = document.createElement('button');
+    b.dataset.type = t.type;
+    b.innerHTML = `<span>${t.label}</span><small>${t.type}</small>`;
+    b.addEventListener('click', () => { editor.setObjType(t.type); b.blur(); });
+    palette.appendChild(b);
+  }
+}
+const syncPalette = () => {
+  palette.hidden = editor.tool !== 'object';
+  palette.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('active', b.dataset.type === editor.objType));
+};
+
+editor.onChange = () => { syncTools(); syncGrid(); syncPalette(); };
 syncTools();
 syncGrid();
+syncPalette();
 
 document.getElementById('undo')!.addEventListener('click', () => editor.undo());
 document.getElementById('redo')!.addEventListener('click', () => editor.redo());

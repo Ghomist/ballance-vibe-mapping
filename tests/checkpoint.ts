@@ -94,3 +94,40 @@ export function checkpointScenarios(emptyModel: () => Model, check: Check, scena
     check(Math.abs(endPos(m.segs[s], 'b')[0] - (50 - PREFAB_PORT.check)) < 1e-9 && endZ(m, m.segs[s], 'b') === 0, '端点位置不变');
   });
 }
+
+import { addObj, autoSector, followSurfaces, objSector } from '../src/model/objects';
+import { cloneModel } from '../src/model/types';
+
+export function objectScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
+  scenario('机关小节：两个盘点之间属于前一个；起点之后是第 1 小节', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 200);
+    placeStartAtEnd(m, s, 'a');
+    const c2 = placeCheckpointOnSeg(m, s, 60)!;
+    normalize(m);
+    const after2 = Object.values(m.segs).find((x) => x.a.node === c2)!;
+    placeCheckpointOnSeg(m, after2.id, 60);
+    normalize(m);
+    const at = (x: number) => { const id = addObj(m, 'P_Box', x, 0, 2.5)!; return autoSector(m, m.objs[id]); };
+    check(at(20) === 1, `起点与第一个盘点之间应为第 1 小节，实际 ${at(20)}`);
+    check(at(100) === 2, `两个盘点之间应为第 2 小节，实际 ${at(100)}`);
+    check(at(180) === 3, `最后一个盘点之后应为第 3 小节，实际 ${at(180)}`);
+    const id = addObj(m, 'P_Box', 20, 0, 2.5)!;
+    m.objs[id].sector = 3;
+    check(objSector(m, m.objs[id]) === 3, '手动指定的小节优先');
+    check(addObj(m, 'PE_Balloon', 0, 0, 0) !== null && addObj(m, 'PE_Balloon', 5, 0, 0) === null, '终点气球只能有一个');
+  });
+
+  scenario('机关跟着脚下的路面升降', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 40);
+    const id = addObj(m, 'P_Box', 30, 0, 2.5)!;
+    const before = cloneModel(m);
+    shiftDownstream(m, s, 5);
+    normalize(m);
+    followSurfaces(before, m);
+    check(Math.abs(m.objs[id].z - 7.5) < 1e-9, `路面抬高 5 后箱子应在 7.5，实际 ${m.objs[id].z}`);
+  });
+}

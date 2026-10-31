@@ -6,6 +6,7 @@
 // 节点和直道共用一个 id 空间，这样 root 等引用只需要一个数字。
 
 import type { Rail } from './rail';
+import type { Obj } from './objects';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -87,6 +88,8 @@ export interface Model {
   /** 高度传播的根元素（节点或直道 id）；改高度时，只有远离根的一侧跟着动 */
   root: number | null;
   rails: Record<number, Rail>;
+  /** 机关与装饰 */
+  objs: Record<number, Obj>;
 }
 
 export interface PortRef { seg: number; key: EndKey }
@@ -102,7 +105,7 @@ export function nodePortDirs(n: MNode): Dir[] {
 }
 
 export function emptyModel(): Model {
-  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {} };
+  const m: Model = { nodes: {}, segs: {}, nextId: 1, root: null, rails: {}, objs: {} };
   const id = m.nextId++;
   // 路块边沿对齐到 5 的整数倍，与 Blender / BBP 的习惯一致
   m.nodes[id] = { id, kind: 'block', x: HALF, y: HALF, z: 0, style: 'normal' };
@@ -115,6 +118,7 @@ export const cloneModel = (m: Model): Model => JSON.parse(JSON.stringify(m));
 /** 兼容旧版本存档 */
 export function migrateModel(m: Model): Model {
   m.rails ??= {};
+  m.objs ??= {};
   return m;
 }
 
