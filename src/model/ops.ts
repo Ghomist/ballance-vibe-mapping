@@ -619,16 +619,22 @@ export function normalize(m: Model) {
   }
 }
 
-/** 两个开放的自由端正对且重合（高度一致）时自动接上 */
+/**
+ * 花纹能对上就直接接上（看起来是一整块的，逻辑上也必须是一整块）：
+ * 开放的自由端正对另一个开放自由端、路块空端口或平台开口，且高度、样式一致。
+ * 封闭端点的边框可见，属于显式断开，不会自动接上。
+ */
 function joinOpenEnds(m: Model): boolean {
   for (const s of Object.values(m.segs)) {
     for (const k of ['a', 'b'] as EndKey[]) {
       const e = s[k];
       if (!isFree(e) || e.style !== 'open') continue;
       const c = findConnection(m, s.id, k, false);
-      if (!c || c.type !== 'end') continue;
-      const oe = m.segs[c.seg][c.key];
-      if (!isFree(oe) || oe.style !== 'open') continue;
+      if (!c || c.type === 'side') continue;
+      if (c.type === 'end') {
+        const oe = m.segs[c.seg][c.key];
+        if (!isFree(oe) || oe.style !== 'open' || m.segs[c.seg].style !== s.style) continue;
+      } else if (m.nodes[c.node].style !== s.style) continue;
       applyConnection(m, s.id, k, c);
       return true;
     }

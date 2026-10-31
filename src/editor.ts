@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { buildElem, computeChains, computeVisualJoins, elemKey, type MatName } from './geom/floor';
+import { buildElem, computeChains, elemKey, type MatName } from './geom/floor';
 import { buildRail } from './geom/rail';
 import { getMaterial, getRailMaterial } from './view/materials';
 import { Gizmo, type GizmoHandle } from './view/gizmo';
@@ -265,8 +265,7 @@ export class Editor {
   /** 按缓存键增量重建网格 */
   private syncMeshes() {
     const m = this.display;
-    const vj = computeVisualJoins(m);
-    const chains = computeChains(m, vj);
+    const chains = computeChains(m);
     const ids = new Set([...Object.keys(m.segs), ...Object.keys(m.nodes), ...Object.keys(m.rails)].map(Number));
     for (const [id, c] of this.meshCache) {
       if (ids.has(id)) continue;
@@ -275,7 +274,7 @@ export class Editor {
     }
     for (const id of ids) {
       const rail = m.rails[id];
-      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains, vj);
+      const key = rail ? JSON.stringify(rail) : elemKey(m, id, chains);
       const cached = this.meshCache.get(id);
       if (cached && cached.key === key) continue;
       if (cached) for (const mesh of cached.meshes) { if (mesh.geometry !== RAIL_HANDLE_GEO) mesh.geometry.dispose(); this.floor.remove(mesh); }
@@ -301,7 +300,7 @@ export class Editor {
         this.meshCache.set(id, { key, meshes });
         continue;
       }
-      const em = buildElem(m, id, chains, vj);
+      const em = buildElem(m, id, chains);
       for (const [mat, part] of Object.entries(em?.parts ?? {})) {
         if (!part || part.pos.length === 0) continue;
         const g = new THREE.BufferGeometry();

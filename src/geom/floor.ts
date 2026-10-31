@@ -5,8 +5,7 @@ import {
   CELL, DX, DY, EndKey, HALF, MNode, Model, SINK_DEPTH, Seg, THICK,
   endZ, isFree, nodeLinks, nodePorts, opp,
 } from '../model/types';
-import { boundaryEdges, cellSet, insetCells, linkOpening, openingFits, parseCell, platformInsets } from '../model/platform';
-import { Dir, endPos } from '../model/types';
+import { boundaryEdges, cellSet, insetCells, linkOpening, parseCell, platformInsets } from '../model/platform';
 
 export type MatName =
   | 'FloorTopBorder' | 'FloorTopBorderless' | 'FloorTopFlat'
@@ -47,68 +46,6 @@ const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[
 const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const UP: V3 = [0, 0, 1];
 
-// ---------------- 视觉连接 ----------------
-//
-// 两段逻辑上独立的路面（例如分隔后），只要端点正对重合、高度与样式一致，就画成一整块：
-// 不画封闭边框和端面、花纹连续。逻辑结构不变，移开后封闭端头会重新出现。
-
-export interface VisualJoins {
-  /** "segId:key" -> 对面（"segId:key" 或 "node:id"） */
-  ends: Map<string, string>;
-  /** 路块上被视觉连接的空端口 */
-  ports: Map<number, Set<Dir>>;
-  /** 平台上被视觉连接的开口 */
-  openings: Map<number, { x: number; y: number; out: Dir }[]>;
-}
-
-export function computeVisualJoins(m: Model): VisualJoins {
-  const vj: VisualJoins = { ends: new Map(), ports: new Map(), openings: new Map() };
-  const pk = (x: number, y: number) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
-  const free = new Map<string, { seg: Seg; key: EndKey; z: number; out: Dir }[]>();
-  for (const s of Object.values(m.segs)) for (const k of ['a', 'b'] as EndKey[]) {
-    const e = s[k];
-    if (!isFree(e)) continue;
-    const [x, y] = endPos(s, k);
-    const key = pk(x, y);
-    let list = free.get(key);
-    if (!list) free.set(key, (list = []));
-    list.push({ seg: s, key: k, z: e.z, out: (k === 'a' ? opp(s.dir) : s.dir) as Dir });
-  }
-  const sameZ = (a: number, b: number) => Math.abs(a - b) < 1e-4;
-  for (const list of free.values()) {
-    for (const a of list) for (const b of list) {
-      if (a === b || b.out !== opp(a.out) || !sameZ(a.z, b.z) || a.seg.style !== b.seg.style) continue;
-      vj.ends.set(`${a.seg.id}:${a.key}`, `${b.seg.id}:${b.key}`);
-    }
-  }
-  for (const n of Object.values(m.nodes)) {
-    if (n.kind === 'block') {
-      const ports = nodePorts(m, n.id);
-      for (let d = 0 as Dir; d < 4; d = (d + 1) as Dir) {
-        if (ports[d]) continue;
-        const hit = free.get(pk(n.x + DX[d] * HALF, n.y + DY[d] * HALF))?.find((f) => f.out === opp(d) && sameZ(f.z, n.z) && f.seg.style === n.style);
-        if (!hit) continue;
-        vj.ends.set(`${hit.seg.id}:${hit.key}`, `node:${n.id}`);
-        let set = vj.ports.get(n.id);
-        if (!set) vj.ports.set(n.id, (set = new Set()));
-        set.add(d);
-      }
-    } else if (n.kind === 'platform') {
-      const cells = cellSet(n);
-      for (const list of free.values()) for (const f of list) {
-        if (!sameZ(f.z, n.z) || f.seg.style !== n.style) continue;
-        const [x, y] = endPos(f.seg, f.key);
-        if (!openingFits(cells, x, y, opp(f.out))) continue;
-        vj.ends.set(`${f.seg.id}:${f.key}`, `node:${n.id}`);
-        let arr = vj.openings.get(n.id);
-        if (!arr) vj.openings.set(n.id, (arr = []));
-        arr.push({ x, y, out: opp(f.out) });
-      }
-    }
-  }
-  return vj;
-}
-
 // ---------------- 直道链：保证接头两侧纹理连续 ----------------
 
 interface ChainInfo { off: number; rev: boolean }
@@ -118,17 +55,11 @@ function len3(m: Model, s: Seg) {
 }
 
 /** 沿接头相连的直道共享一条连续的 v 坐标 */
-export function computeChains(m: Model, vj?: VisualJoins): Map<number, ChainInfo> {
+export function computeChains(m: Model): Map<number, ChainInfo> {
   const res = new Map<number, ChainInfo>();
   const jointNext = (segId: number, k: EndKey): { seg: Seg; key: EndKey } | null => {
     const e = m.segs[segId][k];
-    if (isFree(e)) {
-      // 视觉连接的另一段路：花纹接着走
-      const o = vj?.ends.get(`${segId}:${k}`);
-      if (!o || o.startsWith('node:')) return null;
-      const [sid, key] = o.split(':');
-      return m.segs[Number(sid)] ? { seg: m.segs[Number(sid)], key: key as EndKey } : null;
-    }
+    if (isFree(e)) return null;
     const n = m.nodes[e.node];
     if (!n || n.kind !== 'joint') return null;
     for (const p of nodePorts(m, n.id)) if (p && p.seg !== segId) return { seg: m.segs[p.seg], key: p.key };
@@ -164,8 +95,7 @@ export function computeChains(m: Model, vj?: VisualJoins): Map<number, ChainInfo
 
 // ---------------- 直道 ----------------
 
-function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo, vj?: VisualJoins) {
-  const joined = (k: EndKey) => !!vj?.ends.has(`${s.id}:${k}`);
+function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo) {
   if (s.len < 1e-6) return;
   const D: V2 = [DX[s.dir], DY[s.dir]];
   const P: V2 = [-D[1], D[0]]; // 左侧
@@ -176,8 +106,8 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo, vj?: Visu
   const pt = (t: number, l: number, dz = 0): V3 => [s.x + D[0] * t + P[0] * l, s.y + D[1] * t + P[1] * l, zf(t) + dz];
   const sink = s.style === 'sink' ? SINK_DEPTH : 0;
   const topMat: MatName = sink ? 'FloorTopProfil' : 'FloorTopBorder';
-  const closedA = isFree(s.a) && s.a.style === 'closed' && !joined('a');
-  const closedB = isFree(s.b) && s.b.style === 'closed' && !joined('b');
+  const closedA = isFree(s.a) && s.a.style === 'closed';
+  const closedB = isFree(s.b) && s.b.style === 'closed';
   // 封闭端各占 2.5；路段太短时按比例压缩
   const cap = closedA && closedB ? Math.min(HALF, s.len / 2) : Math.min(HALF, s.len);
   const t0 = closedA ? cap : 0;
@@ -212,7 +142,7 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo, vj?: Visu
   // 自由端的端面
   for (const k of ['a', 'b'] as EndKey[]) {
     const e = s[k];
-    if (!isFree(e) || joined(k)) continue;
+    if (!isFree(e)) continue;
     const t = k === 'a' ? 0 : s.len;
     const sg = k === 'a' ? -1 : 1;
     const out: V3 = [D[0] * sg, D[1] * sg, 0];
@@ -232,9 +162,8 @@ function endFace(mb: MeshBuilder, L: V3, M: V3, R: V3, notch: number, out: V3) {
 
 // ---------------- 路块 ----------------
 
-function buildBlock(mb: MeshBuilder, m: Model, n: MNode, vj?: VisualJoins) {
-  const vp = vj?.ports.get(n.id);
-  const ports = nodePorts(m, n.id).map((p, d) => !!p || !!vp?.has(d as Dir));
+function buildBlock(mb: MeshBuilder, m: Model, n: MNode) {
+  const ports = nodePorts(m, n.id).map((p) => !!p);
   const sink = n.style === 'sink' ? SINK_DEPTH : 0;
   const mat: MatName = sink ? 'FloorTopProfil' : 'FloorTopBorder';
   const cx = n.x, cy = n.y, z = n.z;
@@ -341,7 +270,7 @@ function mergeRuns(edges: { x: number; y: number; along: 0 | 1; out: number }[])
  * 平台顶面：每个顶点的 u = min(到边界的距离, 2.5) / 5，与 BME 的边框 / 内外角规则一致；
  * 距边界 2.5 以外的部分用无边框贴图，并按行合并成大面。
  */
-function buildPlatform(mb: MeshBuilder, m: Model, n: MNode, vj?: VisualJoins) {
+function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
   const cells = cellSet(n);
   const sink = n.style === 'sink' ? SINK_DEPTH : 0;
   const ribbon = !!n.ribbon && !!sink;
@@ -353,10 +282,7 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode, vj?: VisualJoins) {
   const insetLinks = new Set(insets.map((i) => i.link));
   const skip = new Set(insets.flatMap((i) => insetCells(i)));
   // 开口：从边界中扣掉，并补上道路两侧边沿的延长线
-  const roadOpenings = [
-    ...nodeLinks(m, n.id).filter((l) => !insetLinks.has(l.seg)).map((l) => linkOpening(m.segs[l.seg], l.key)),
-    ...(vj?.openings.get(n.id) ?? []),
-  ];
+  const roadOpenings = nodeLinks(m, n.id).filter((l) => !insetLinks.has(l.seg)).map((l) => linkOpening(m.segs[l.seg], l.key));
   const openings = [...roadOpenings, ...insets.map((i) => ({ x: i.ox, y: i.oy, out: i.out }))];
   const inOpening = (e: { x: number; y: number; along: 0 | 1; out: number }) => openings.some((o) => {
     if (o.out !== e.out) return false;
@@ -441,33 +367,32 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode, vj?: VisualJoins) {
 export type Chains = Map<number, ChainInfo>;
 
 /** 元素几何的缓存键：只要键不变，网格就不需要重建 */
-export function elemKey(m: Model, id: number, chains: Chains, vj?: VisualJoins): string {
+export function elemKey(m: Model, id: number, chains: Chains): string {
   const s = m.segs[id];
-  if (s) return JSON.stringify([s, endZ(m, s, 'a'), endZ(m, s, 'b'), chains.get(id), vj?.ends.has(`${id}:a`), vj?.ends.has(`${id}:b`)]);
+  if (s) return JSON.stringify([s, endZ(m, s, 'a'), endZ(m, s, 'b'), chains.get(id)]);
   const n = m.nodes[id];
   if (!n) return '';
-  if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key)), vj?.openings.get(id), platformInsets(m, id).map((i) => i.tr.id)]);
-  return JSON.stringify([n, nodePorts(m, id).map((p) => !!p), [...(vj?.ports.get(id) ?? [])]]);
+  if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key)), platformInsets(m, id).map((i) => i.tr.id)]);
+  return JSON.stringify([n, nodePorts(m, id).map((p) => !!p)]);
 }
 
-export function buildElem(m: Model, id: number, chains: Chains, vj?: VisualJoins): ElemMesh | null {
+export function buildElem(m: Model, id: number, chains: Chains): ElemMesh | null {
   const mb = new MeshBuilder();
   const s = m.segs[id];
   if (s) {
-    buildSeg(mb, m, s, chains.get(id) ?? { off: 0, rev: false }, vj);
+    buildSeg(mb, m, s, chains.get(id) ?? { off: 0, rev: false });
     return { id, kind: 'seg', parts: mb.parts };
   }
   const n = m.nodes[id];
   if (!n || n.kind === 'joint') return null;
-  if (n.kind === 'block') buildBlock(mb, m, n, vj);
-  else if (n.kind === 'platform') buildPlatform(mb, m, n, vj);
+  if (n.kind === 'block') buildBlock(mb, m, n);
+  else if (n.kind === 'platform') buildPlatform(mb, m, n);
   else buildTransition(mb, m, n);
   return { id, kind: 'node', parts: mb.parts };
 }
 
 export function buildFloorMeshes(m: Model): ElemMesh[] {
-  const vj = computeVisualJoins(m);
-  const chains = computeChains(m, vj);
+  const chains = computeChains(m);
   const ids = [...Object.keys(m.segs), ...Object.keys(m.nodes)].map(Number);
-  return ids.map((id) => buildElem(m, id, chains, vj)).filter((e): e is ElemMesh => !!e);
+  return ids.map((id) => buildElem(m, id, chains)).filter((e): e is ElemMesh => !!e);
 }

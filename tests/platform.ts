@@ -187,18 +187,27 @@ export function visualJoinScenarios(emptyModel: () => Model, check: (c: boolean,
     }
     return a;
   };
-  scenario('分隔后仍对齐的两段：看上去是一整块', () => {
+  scenario('断开都是显式的：分隔后两端封闭可见；开放端点对上就接成一整块', () => {
     const m = emptyModel();
     const s = blockToSeg(m, 1, 0);
     extendTo(m, s, 'b', 22.5);
     const whole = sideArea(m);
     cutSeg(m, s, 10);
     normalize(m);
-    check(Object.keys(m.segs).length === 2, '逻辑上应是两段');
-    check(Math.abs(sideArea(m) - whole) < 1e-6, `对齐时不应多出端面：${sideArea(m)} vs ${whole}`);
-    // 移开后端面出现
+    check(Object.keys(m.segs).length === 2, '分隔后应是两段');
+    check(sideArea(m) > whole + 1, '分隔处应显示封闭端面');
+    // 两端都改成开放：花纹对上，逻辑上接回一整块
     const other = Object.values(m.segs).find((x) => x.id !== s)!;
-    other.x += 5;
-    check(sideArea(m) > whole + 1, '移开后应出现封闭端面');
+    (m.segs[s].b as { style: string }).style = 'open';
+    (other.a as { style: string }).style = 'open';
+    normalize(m);
+    check(Object.values(m.nodes).some((n) => n.kind === 'joint'), '开放端点对上后应接上');
+    check(Math.abs(sideArea(m) - whole) < 1e-6, '接上后不应有端面');
+    // 开放端点正对路块空端口：也接上
+    const m2 = emptyModel();
+    const id = m2.nextId++;
+    m2.segs[id] = { id, x: 2.5, y: 0, dir: 0, len: 10, style: 'normal', a: { node: null, z: 0, style: 'open' }, b: { node: null, z: 0, style: 'closed' } };
+    normalize(m2);
+    check(!m2.nodes[1] && Math.abs(m2.segs[id].len - 15) < 1e-9, '开放端点正对路块空端口应接上（1×1 并入成为封闭端头）');
   });
 }
