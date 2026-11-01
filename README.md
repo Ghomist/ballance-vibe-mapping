@@ -1,8 +1,30 @@
 # Ballance Vibe Mapping
 
-一个只关心赛道走向与结构的 Ballance 制图器：路面材质的衔接、UV、平凹转换都由程序自动处理。
+一个只关心赛道走向与结构的 Ballance 制图器：路面材质的衔接、UV、平凹转换都由程序自动处理。纯前端（TypeScript + Three.js + Vite），在浏览器里画图、直接导出能玩的 NMO。
 
-在线版本：https://ghomist.github.io/ballance-vibe-mapping/（推到 master 后由 GitHub Actions 自动发布；线上版本可以直接导出 NMO，只有 .blend 需要本地运行）
+在线版本：https://ghomist.github.io/ballance-vibe-mapping/（推到 master 后由 GitHub Actions 跑测试、构建并发布；线上版本可以直接导出 NMO，只有 .blend 需要本地运行）
+
+## 现状
+
+已经能从头画完一张图并导出进游戏玩：
+
+- **路面**：路块、直道、拐角、T / 十字路口、坡道，普通 / 凹槽两种样式，平凹转换自动插入；封闭 / 开放端点，短的封闭端截断花纹；普通、凹槽、细边花纹三种平台，相邻同高自动合并、推回 5 宽自动变回路面。
+- **钢轨**：单轨、双轨、单双转换，直线、拐弯、坡、螺旋；接在路面上的钢轨跟着路面走。
+- **护栏**：沿路面外沿的连续钢管，参数可调，路面改动后自动重新落位。
+- **盘点**：起点、小节盘点用资产库模型，火焰、重生点按 BBP 偏移放置；机关自动判断所属小节，也可以手动指定。
+- **机关与装饰**：24 种机关、3 种装饰，对准方块吸附到路面；专属路面（变球器底座、风扇底座、栅栏路面）自动替换，从中间断开的机关自动断路；凹槽上的机关融进槽底；挡块自动配上。机关可以显示成假机关模型或 BBP 占位符。
+- **编辑**：格栅对齐（步长可调）与自动对齐、Ctrl 六向手柄、框选、撤销 / 重做、悬停示意（能不能做、为什么）。
+- **导出**：网页端 NMO 写入器，与 Blender + BBP 导出逐项一致；也能导出 .blend（本地）和场景描述 JSON。
+- **其它**：素材离线缓存，第二次打开不用重新下载；暗色主题；刷新后恢复视角。
+
+测试：`npm test` 跑路网编辑、平台、钢轨、盘点、机关断路 / 嵌入、NMO 导出等场景测试，发布前在 CI 里也会跑。
+
+### 已知限制
+
+- 机关只能转 90°。
+- 机关模型只用于显示：吸附、断路、导出都按 BBP 占位符，导出的机关在游戏里由原版机关替换。
+- 导出 .blend 需要本机 Blender + BBP，只能在开发服务器上用；重新生成 `public/` 下的素材也需要本机 Ballance、Blender 和 BBP。
+- 有几项还在等游戏里实测确认：挡块材质颜色，凹槽路面 / 平台上嵌入的风扇、变球器底座。
 
 ## 运行
 
@@ -53,7 +75,7 @@ npm run dev
 | X / Del | 删除选中的元素（没有选中时删除鼠标下的元素） |
 | 拖路端点连接 | 靠近能接上的地方会吸过去并显示绿框：只自动接同一高度的；按住 Alt 时高度不同的也接（本段变成坡） |
 | E | 切换端点封闭 / 开放；开放端点正对另一个开放端点、路块空端口或平台开口（高度、样式一致）时自动接上 |
-| G / 工具栏「格栅对齐」 | 格栅对齐：一切对齐到 2.5 的倍数（含高度，物件为 1.25）。拖动途中按住 Alt 临时开 / 关格栅（按钮显示虚线框），松开或结束拖动后恢复 |
+| G / 工具栏「格栅对齐」 | 格栅对齐：一切对齐到格栅间距的倍数（默认 2.5，设置里可改；含高度，物件自由移动时为 1.25）。拖动途中按住 Alt 临时开 / 关格栅（按钮显示虚线框），松开或结束拖动后恢复 |
 | S / 工具栏「自动对齐」 | 自动对齐：靠近其它元素的边界、端点和高度时对齐过去，并显示对齐参考线。与格栅相互独立：都开时优先对齐（距离不超过半格），没对上再取格点；都关时完全自由。拖路端点时的自动连接（绿色提示框）常驻，不受这两个开关影响 |
 | 按住 C 分隔 | 按住 C 时点击截面，把路面或钢轨分开成独立的两段（松开 C 回到原来的工具），两侧是可见的封闭端点（断开都是显式的） |
 | 2 钢轨 | 和路块一样拉出钢轨（双轨，最顶端与路面顶面对齐）：直道端面或侧面、路块 / 底座 / 盘点的空路口、平台边，或在空地上按住拖。钢轨两头的操作和路面端头一样，悬停时显示截面（扁平的蓝色块）和当前拉法：直接拖 = 直线伸缩（坡顶往外拉接一段水平的）；Shift = 拐弯；Alt = 端头上下移动成坡；Shift+Alt = 螺旋（左下角对话框调方向、半径、每圈高度、圈数，边改边预览）。直线拉到另一条钢轨的端头或路边附近会吸过去，接上钢轨时合成一条。拖动中切换 Shift / Alt 立刻换拉法。Ctrl 手柄移动，按住 C 点击分隔（圆弧、螺旋上也行），右键切换双轨 / 单轨 / 单双转换、编辑螺旋、与相接的钢轨合并。接在路面端头上的钢轨会跟着路面伸缩、移动和升降 |
@@ -72,7 +94,24 @@ npm run dev
 ## 结构
 
 - `src/model`：路网数据模型（路块、接头、直道、平台、钢轨、盘点、物件）与编辑操作
-- `src/export/scene.ts`：导出场景描述；`src/export/nmo.ts`、`nmo-scene.ts`：网页端 NMO 导出；`scripts/blender/build_scene.py`：在 Blender 里用 BBP 生成地图；`scripts/blender/dump_nmo.py`：用 BMap 把 .nmo 读成 JSON
-- `src/geom/floor.ts`：按 2.5×2.5 四分之一格自动拼接边框贴图，生成路面网格
-- `src/editor.ts`：Three.js 视图与交互
-- `tests/run.ts`：场景测试（`npm test`）
+  - `ops.ts`：编辑操作和每次编辑后的整理（底座修复、断路修复、开放端点自动接上）
+  - `objects.ts`：机关 / 装饰的类型表（对准方块、断路方块对、假机关模型及其摆放修正）
+  - `bases.ts`：专属路面与嵌入凹槽的底座；`gaps.ts`：从中间断开的机关的断路与复原；`stoppers.ts`：挡块
+  - `platform.ts`、`rail.ts`、`rail-follow.ts`、`checkpoint.ts`、`outline.ts`：平台、钢轨、盘点、路面外沿（护栏用）
+- `src/geom`：网格生成——`floor.ts` 按 2.5×2.5 四分之一格自动拼接边框贴图；`rail.ts` 钢轨；`railing.ts` 护栏
+- `src/view`：素材加载（`assets.ts`、`materials.ts`）、吸附（`snap.ts`）、手柄、示意线、机关库预览图
+- `src/editor.ts`：Three.js 视图与交互；`src/main.ts`：工具栏、设置面板、机关库
+- `src/export`：`scene.ts` 场景描述；`nmo.ts`、`nmo-scene.ts`、`nmo-lib.ts` 网页端 NMO 导出
+- `scripts`：素材生成（`build-assets.mjs`、`dump-blend-assets.py`、`ph-models.mjs`）、NMO 素材库与对比（`build-nmo-lib.ts`、`nmo-check.ts`）、命令行导出；`scripts/blender/build_scene.py` 在 Blender 里用 BBP 生成地图，`dump_nmo.py` 用 BMap 把 .nmo 读成 JSON
+- `public/sw.js`：离线缓存
+- `tests`：场景测试（`npm test`）
+
+## 致谢
+
+- [Ballance](https://zh.wikipedia.org/wiki/Ballance)（Cyparade / Atari）：原版游戏。贴图、机关文件、关卡里的挡块等素材都来自原版，版权归原作者所有，本仓库只在编辑器里预览用。
+- [BallanceBlenderPlugin（BBP）](https://github.com/yyc12345/BallanceBlenderHelper)（yyc12345）：BME 路面材质、机关占位符、物体归组和命名规范都照它来，Blender 导出也靠它；网页端导出以它的结果为准逐项对比。
+- [libcmo21 / BMap](https://github.com/yyc12345/libcmo21)（yyc12345）：Virtools 文件格式的读写，网页端 NMO 写入器照搬了它的保存流程，素材库和导出对比也用它读 NMO。
+- Ballance 资产库（`BallanceAssets.blend`）：盘点路面、护栏、灯柱、柱子、假机关模型都取自这里。
+- [Ballance 制图手册](https://ghomist.github.io/ballance-mapping-manual/)：机关尺寸、对准方块等数值的依据。
+- [Ballance Wiki](https://ballance.jxpxxzj.cn/wiki/)：机关和装饰的名称、风扇 / 生命球 / 分数球 / Dome 的构造与样式参考。
+- [Three.js](https://threejs.org/)（含 TGALoader、Line2 等扩展）、[Vite](https://vite.dev/)、[TypeScript](https://www.typescriptlang.org/)、[tsx](https://github.com/privatenumber/tsx)、[Blender](https://www.blender.org/)。
