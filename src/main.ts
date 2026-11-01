@@ -47,19 +47,28 @@ const syncSnap = () => snapBtn.classList.toggle('active', editor.snapMode);
 snapBtn.addEventListener('click', () => { editor.setSnapMode(!editor.snapMode); snapBtn.blur(); });
 
 // 当前小节：新放的机关归到这个小节；眼睛：在机关上显示所属小节
-const sectorSel = document.getElementById('sector') as HTMLSelectElement;
+const sectorBtn = document.getElementById('sector') as HTMLButtonElement;
+const sectorMenu = document.getElementById('sector-menu')!;
 const sectorEye = document.getElementById('sector-eye') as HTMLButtonElement;
 const syncSector = () => {
   const n = sectorCount(editor.model);
-  if (editor.placeSector !== null && editor.placeSector > n) editor.placeSector = n;
-  const opts = ['auto', ...Array.from({ length: n }, (_, i) => String(i + 1))];
-  if (sectorSel.options.length !== opts.length) {
-    sectorSel.innerHTML = opts.map((v) => `<option value="${v}">${v === 'auto' ? '小节：自动' : `第 ${v} 小节`}</option>`).join('');
+  if (editor.placeSector > n) editor.placeSector = n;
+  document.getElementById('sector-label')!.textContent = `第 ${editor.placeSector} 小节`;
+  if (sectorMenu.childElementCount !== n) {
+    sectorMenu.innerHTML = Array.from({ length: n }, (_, i) =>
+      `<button data-s="${i + 1}"><span>第 ${i + 1} 小节</span><small>${i === 0 ? '从起点开始' : `从第 ${i} 个盘点开始`}</small></button>`).join('');
   }
-  sectorSel.value = editor.placeSector === null ? 'auto' : String(editor.placeSector);
+  sectorMenu.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === editor.placeSector));
   sectorEye.classList.toggle('active', editor.showSectors);
 };
-sectorSel.addEventListener('change', () => { editor.setPlaceSector(sectorSel.value === 'auto' ? null : Number(sectorSel.value)); sectorSel.blur(); });
+sectorBtn.addEventListener('click', (e) => { e.stopPropagation(); sectorMenu.classList.toggle('open'); sectorBtn.blur(); });
+sectorMenu.addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-s]');
+  if (!b) return;
+  editor.setPlaceSector(Number(b.dataset.s));
+  sectorMenu.classList.remove('open');
+});
+window.addEventListener('pointerdown', (e) => { if (!sectorMenu.contains(e.target as Node) && !sectorBtn.contains(e.target as Node)) sectorMenu.classList.remove('open'); });
 sectorEye.addEventListener('click', () => { editor.setShowSectors(!editor.showSectors); sectorEye.blur(); });
 
 // 机关库：侧边面板，按住卡片拖到视图里放下（右键 / Esc 取消，拖动中 R 旋转）

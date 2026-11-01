@@ -8,8 +8,10 @@ export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Ma
 interface AssetPartJSON {
   name: string | null; texture: string | null; color?: number[];
   alphaTest?: boolean; alphaBlend?: boolean;
-  /** 叠加混合（生命球的油膜） */
+  /** 叠加混合（生命球的油膜、风扇的烟、分数球的拖尾） */
   blend?: 'add';
+  /** 有贴图时乘上的颜色（叠加混合的烟用它调淡） */
+  tint?: number[];
   pos: number[]; uv: number[]; nrm: number[];
 }
 
@@ -90,7 +92,7 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
     g.setAttribute('uv', new THREE.Float32BufferAttribute(p.uv, 2));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(p.nrm, 3));
     const mat = new THREE.MeshLambertMaterial({
-      color: p.texture ? 0xffffff : new THREE.Color(...((p.color ?? [0.8, 0.8, 0.8]) as [number, number, number])),
+      color: p.texture ? (p.tint ? new THREE.Color(...(p.tint as [number, number, number])) : 0xffffff) : new THREE.Color(...((p.color ?? [0.8, 0.8, 0.8]) as [number, number, number])),
       map: p.texture ? texture(p.texture) : null,
       transparent: !!p.alphaBlend || p.blend === 'add', alphaTest: p.alphaTest ? 0.5 : 0, side: p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,
       ...(p.blend === 'add' ? { blending: THREE.AdditiveBlending, depthWrite: false } : {}),

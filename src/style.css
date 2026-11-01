@@ -272,4 +272,5 @@ body.placing, body.placing * { cursor: grabbing !important; }
 }
 .sec-label.auto { border-style: dashed; border-color: rgba(255, 170, 80, 0.5); }
 [data-theme='light'] .sec-label { background: rgba(255, 255, 255, 0.85); color: #b25a10; }
-#sector { height: 28px; }
+.dropdown-menu.left { right: auto; left: 0; min-width: 160px; }
+.dropdown-menu button.on span { color: var(--accent); font-weight: 600; }

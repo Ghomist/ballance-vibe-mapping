@@ -3,7 +3,7 @@
 // 原版里这些机关横跨在两段路之间，中间没有路面。放在一段直路中间时，自动把对准方块之间的那段路去掉，
 // 断开处是开放端点；端点上记着属于哪个机关（GapMark），机关挪走或删掉后两侧的路重新接回一整段。
 import { anchorBlocks, objType } from './objects';
-import { DX, DY, EndKey, FreeEnd, GapMark, Model, Seg, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp } from './types';
+import { DX, DY, EndKey, FreeEnd, GapMark, Model, Seg, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp, SINK_DEPTH } from './types';
 
 const EPS = 1e-6;
 /** 断开的长度太短（小于这个）就不断 */
@@ -33,6 +33,10 @@ export function gapsOf(o: { type: string; x: number; y: number; z: number; rot: 
   return out;
 }
 
+/** 对准方块落在这条路上：顶面与路面齐平，凹槽路是与下沉 0.7 的槽底齐平 */
+const atLevel = (roadZ: number, style: string, top: number) =>
+  Math.abs(roadZ - top) < 0.01 || (style === 'sink' && Math.abs(roadZ - SINK_DEPTH - top) < 0.01);
+
 const mark = (obj: number, len = 0, style?: FreeEnd['style']): GapMark => (style ? { obj, len, style } : { obj, len });
 
 /** 放好（或挪动后）的机关：把它跨着的那段直路去掉。返回断开了几段路 */
@@ -44,7 +48,7 @@ export function cutForObj(m: Model, id: number): number {
     // 缺口里（含两头）的截面接头先拆开成两个开放端点（坡道分界、分隔过的路都会有接头），之后照常截断；
     // 接回去时两侧的开放端点重新碰在一起，规范化会自动接上
     for (const j of Object.values(m.nodes)) {
-      if (j.kind !== 'joint' || j.axis !== g.axis || Math.abs(j.z - g.z) > 0.01) continue;
+      if (j.kind !== 'joint' || j.axis !== g.axis || !atLevel(j.z, j.style, g.z)) continue;
       const c = g.axis === 0 ? j.x : j.y, lat = g.axis === 0 ? j.y : j.x;
       if (c < g.lo - EPS || c > g.hi + EPS || !g.lats.some((l) => Math.abs(l - lat) < 2.5 - EPS)) continue;
       for (const p of nodePorts(m, j.id)) if (p) m.segs[p.seg][p.key] = { node: null, z: j.z, style: 'open' };
@@ -61,7 +65,7 @@ function cutLine(m: Model, id: number, g: ReturnType<typeof gapsOf>[number]): nu
   for (const s of Object.values(m.segs)) {
     if (axisOf(s.dir) !== g.axis) continue;
     const za = endZ(m, s, 'a');
-    if (Math.abs(za - g.z) > 0.01 || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;
+    if (!atLevel(za, s.style, g.z) || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;
     const lat = g.axis === 0 ? s.y : s.x;
     if (!g.lats.some((l) => Math.abs(l - lat) < 2.5 - EPS)) continue;
     // 缺口换算到这段路的 t 上

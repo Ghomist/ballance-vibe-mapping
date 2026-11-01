@@ -96,6 +96,8 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   { type: 'Latern', cat: 'deco', label: '灯塔' },
   { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）' },
+  // 柱子：对准方块是柱子顶上的那一格路面（顶面 = 路面），柱头顶在这一格路面的底下作为支撑
+  { type: 'LaternColumn', cat: 'deco', label: '柱子（支撑）', anchor: [0, 0, 98.51] },
 ];
 
 export const objType = (type: string) => OBJ_TYPES.find((t) => t.type === type);

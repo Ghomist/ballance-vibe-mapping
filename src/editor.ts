@@ -25,7 +25,7 @@ import { FAKE_FIX, addObj, anchorBlocks, autoSector, fakeModel, followSurfaces, 
 import { lerpModel } from './view/tween';
 import {
   CELL, DX, DY, Dir, EndKey, HALF, MNode, nodeRect, Model, Prefab, Seg, Style,
-  axisOf, cloneModel, emptyModel, endOutDir, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
+  axisOf, cloneModel, emptyModel, endOutDir, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt, SINK_DEPTH,
 } from './model/types';
 import {
   RAIL_RADIUS, RAIL_SPAN, Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
@@ -302,9 +302,9 @@ export class Editor {
   setGridMode(on: boolean) { this.gridMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
   setSnapMode(on: boolean) { this.snapMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
 
-  /** 新放的机关归到哪个小节（null：自动判断） */
-  placeSector: number | null = null;
-  setPlaceSector(v: number | null) { this.placeSector = v; this.onChange(); }
+  /** 新放的机关归到哪个小节（工具栏选单；放盘点时自动切到它的小节） */
+  placeSector = 1;
+  setPlaceSector(v: number) { this.placeSector = v; this.onChange(); }
 
   /** 在机关上显示所属小节的序号 */
   showSectors = false;
@@ -2572,7 +2572,7 @@ export class Editor {
       const cell = this.alignBlock(bl.x, bl.y, refZ, bl.hx, bl.hy);
       if (!cell) return;
       const d = Math.hypot(cell.x - bl.x, cell.y - bl.y);
-      if (!best || d < best.d) best = { x: ox + cell.x - bl.x, y: oy + cell.y - bl.y, z: cell.z - a[2] + lift, d };
+      if (!best || d < best.d) best = { x: ox + cell.x - bl.x, y: oy + cell.y - bl.y, z: blockTopZ(cell, type) - a[2] + lift, d };
     });
     if (best) { const b = best as { x: number; y: number; z: number }; return { x: b.x, y: b.y, z: b.z, rot }; }
     // 哪个方块下面都没有路：跟着鼠标，高度按主对准方块
@@ -2586,7 +2586,7 @@ export class Editor {
    *   2. 5×5 的方块落在格子上（格栅）或吸附（自动对齐）；
    * 横向：方块和路一样宽时落在路中线上。
    */
-  private alignBlock(x: number, y: number, z: number, hx: number, hy: number, model: Model = this.model): { x: number; y: number; z: number } | null {
+  private alignBlock(x: number, y: number, z: number, hx: number, hy: number, model: Model = this.model): { x: number; y: number; z: number; sink: boolean } | null {
     const sfs = surfacesAt(model, x, y).filter((sf) => Math.abs(sf.z - z) < 3);
     if (!sfs.length) return null;
     const sf = sfs.reduce((a, b) => (Math.abs(b.z - z) < Math.abs(a.z - z) ? b : a));
@@ -2610,15 +2610,17 @@ export class Editor {
       const mid = ax === 0 ? seg.y : seg.x;
       const latC = ax === 0 ? y : x;
       const lat = Math.abs(w - HALF) < 1e-6 ? mid : fit(latC, mid - HALF, mid + HALF, w, (1 - ax) as 0 | 1, [x, y, sf.z]);
-      return ax === 0 ? { x: along, y: lat, z: sf.z } : { x: lat, y: along, z: sf.z };
+      const sink = seg.style === 'sink';
+      return ax === 0 ? { x: along, y: lat, z: sf.z, sink } : { x: lat, y: along, z: sf.z, sink };
     }
     if (node && node.kind !== 'platform') {
       const r = nodeRect(node);
-      return { x: fit(x, r.x0, r.x1, hx, 0, [x, y, sf.z]), y: fit(y, r.y0, r.y1, hy, 1, [x, y, sf.z]), z: node.z };
+      return { x: fit(x, r.x0, r.x1, hx, 0, [x, y, sf.z]), y: fit(y, r.y0, r.y1, hy, 1, [x, y, sf.z]), z: node.z, sink: node.style === 'sink' };
     }
     // 平台：5×5 方块落在格子上，其余按格栅 / 吸附
-    if (this.gridMode && Math.abs(hx - HALF) < 1e-6 && Math.abs(hy - HALF) < 1e-6) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z };
-    return { x: this.snapEdge(x - hx, 0, [x, y, sf.z]) + hx, y: this.snapEdge(y - hy, 1, [x, y, sf.z]) + hy, z: sf.z };
+    const sink = node?.style === 'sink';
+    if (this.gridMode && Math.abs(hx - HALF) < 1e-6 && Math.abs(hy - HALF) < 1e-6) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z, sink };
+    return { x: this.snapEdge(x - hx, 0, [x, y, sf.z]) + hx, y: this.snapEdge(y - hy, 1, [x, y, sf.z]) + hy, z: sf.z, sink };
   }
 
   /**
@@ -2631,8 +2633,8 @@ export class Editor {
     if (!o || (!baseOf(o.type) && !split)) return;
     const b = anchorBlocks(o)[0];
     const cell = b ? this.alignBlock(b.x, b.y, b.top, b.hx, b.hy, m) : null;
-    const near = !!b && !!cell && Math.hypot(cell.x - b.x, cell.y - b.y) < 1.25 && Math.abs(cell.z - b.top) < 0.5;
-    if (near) { o.x += cell!.x - b!.x; o.y += cell!.y - b!.y; o.z += cell!.z - b!.top; }
+    const near = !!b && !!cell && Math.hypot(cell.x - b.x, cell.y - b.y) < 1.25 && Math.abs(blockTopZ(cell, o.type) - b.top) < 0.5;
+    if (near) { o.x += cell!.x - b!.x; o.y += cell!.y - b!.y; o.z += blockTopZ(cell!, o.type) - b!.top; }
     // 从中间断开的机关：落在直路中间就把跨着的那段路去掉
     if (split) { cutForObj(m, id); return; }
     if (near && placeBase(m, id) !== null) return;
@@ -2700,8 +2702,8 @@ export class Editor {
     const m = this.model;
     const id = addObj(m, type, at.x, at.y, at.z, at.rot);
     if (id === null) { this.flashStatus(`${objType(type)?.label ?? type}只能有一个`); return; }
-    // 工具栏选了小节：新放的机关归到这个小节
-    if (this.placeSector !== null && m.objs[id].cat === 'module') m.objs[id].sector = Math.min(this.placeSector, sectorCount(m));
+    // 新放的机关归到工具栏选的小节
+    if (m.objs[id].cat === 'module') m.objs[id].sector = Math.min(this.placeSector, sectorCount(m));
     rebaseObj(m, id);
     normalize(m);
     this.pushUndo(before);
@@ -2964,6 +2966,10 @@ export class Editor {
     this.display = this.model;
     this.syncMeshes();
     if (before) {
+      // 新放了盘点：工具栏的当前小节切到它激活的小节
+      for (const n of Object.values(this.model.nodes)) {
+        if (n.kind === 'checkpoint' && n.prefab === 'check' && !before.nodes[n.id] && n.sector) this.placeSector = n.sector;
+      }
       for (const id of [...Object.keys(this.model.segs), ...Object.keys(this.model.nodes), ...Object.keys(this.model.rails)].map(Number)) {
         if (before.segs[id] || before.nodes[id] || before.rails?.[id]) continue;
         this.fx.pop(this.outlineSegs(id), 0xffffff);
@@ -3214,4 +3220,12 @@ function boxSegs(x0: number, y0: number, z0: number, x1: number, y1: number, z1:
   for (const z of [z0, z1]) out.push(x0, y0, z, x1, y0, z, x1, y0, z, x1, y1, z, x1, y1, z, x0, y1, z, x0, y1, z, x0, y0, z);
   for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) out.push(x, y, z0, x, y, z1);
   return out;
+}
+
+/**
+ * 对准方块的顶面高度：凹槽路面、凹槽平台（含细边花纹平台）上对准下沉 0.7 的槽底，机关才能融进凹槽里；
+ * 要替换路面的机关（变球器、风扇、栅栏）仍对准路面标称高度（专属路面换掉的是整块）
+ */
+function blockTopZ(cell: { z: number; sink: boolean }, type: string) {
+  return cell.sink && !baseOf(type) ? cell.z - SINK_DEPTH : cell.z;
 }
