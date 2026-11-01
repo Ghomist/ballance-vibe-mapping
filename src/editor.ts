@@ -228,7 +228,7 @@ export class Editor {
     const el = this.renderer.domElement;
     // 捕获阶段先于 OrbitControls：有选中的东西时，中键环视由我们绕选中物体来转
     host.addEventListener('pointerdown', (e) => {
-      if (e.button === 1) this.controls.enableRotate = e.shiftKey || !this.focusBox();
+      if (e.button === 1) this.controls.enableRotate = e.shiftKey || !this.orbitPivot();
     }, true);
     el.addEventListener('pointerdown', (e) => this.onDown(e));
     el.addEventListener('wheel', (e) => {
@@ -1559,8 +1559,8 @@ export class Editor {
     this.syncMods(e);
     if (e.button === 1) {
       // 有选中的东西时绕着它转（只换环绕点，视图不挪）；没有时由 OrbitControls 绕视图中心转
-      const f = e.shiftKey ? null : this.focusBox(); // Shift+中键是平移
-      this.drag = { type: 'orbit', pivot: f?.getCenter(new THREE.Vector3()), lx: e.clientX, ly: e.clientY };
+      const pivot = e.shiftKey ? null : this.orbitPivot(); // Shift+中键是平移
+      this.drag = { type: 'orbit', pivot: pivot ?? undefined, lx: e.clientX, ly: e.clientY };
       return;
     }
     if (e.button !== 0) return;
@@ -1814,7 +1814,7 @@ export class Editor {
     if (d?.type === 'marquee') {
       const moved = this.marquee.classList.contains('open');
       this.marquee.classList.remove('open');
-      if (!moved && !d.add) { this.selection.clear(); this.select(null); }
+      if (!moved && !d.add) { this.orbitPivot(); this.selection.clear(); this.select(null); }
       this.updateStatus();
       return;
     }
@@ -1893,7 +1893,7 @@ export class Editor {
     if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
     if (k === 'escape' && this.placing) { this.cancelPlace(); return; }
     if (k === 'escape') {
-      if (!this.drag && this.selection.size) { this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
+      if (!this.drag && this.selection.size) { this.orbitPivot(); this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
       this.cancelDrag();
       this.hideMenu();
       this.marquee.classList.remove('open');
@@ -2418,6 +2418,16 @@ export class Editor {
     this.viewKey = s!;
   }
 
+  /** 上一次选中的东西的中心：取消选择后环视仍绕着它转 */
+  private lastPivot: THREE.Vector3 | null = null;
+
+  /** 环绕点：当前选中的东西；没有选中时沿用上一次的 */
+  private orbitPivot(): THREE.Vector3 | null {
+    const f = this.focusBox();
+    if (f) this.lastPivot = f.getCenter(new THREE.Vector3());
+    return this.lastPivot;
+  }
+
   /** F：视角对正选中的东西 */
   frameSelection() {
     const box = this.focusBox();
@@ -2436,6 +2446,8 @@ export class Editor {
   // ---------------- 状态与提交 ----------------
 
   private select(id: number | null) {
+    // 换掉 / 取消选择前记住它的中心，之后的环视还绕着它转
+    if (this.selected !== null || this.selection.size) this.orbitPivot();
     if (id !== null && !this.selection.has(id)) this.selection.clear();
     this.selected = id;
     this.overlayDirty = true;
