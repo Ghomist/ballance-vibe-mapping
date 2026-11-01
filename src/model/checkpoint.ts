@@ -101,6 +101,12 @@ export function rotateSpawn(m: Model, id: number, quarter: 1 | 2 | 3): boolean {
   return true;
 }
 
+/**
+ * 火焰占位符里锥桶的底部比原点高 1.25555：锥桶底部要贴住盘点路面顶面，所以占位符原点放在路面以下这么多。
+ * 重生点与火焰的相对位置保持 BBP 小节对的偏移（3.65 / 3.3258）。
+ */
+const FLAME_CONE = 1.25555;
+
 /** 重生点占位符的朝向：占位符的箭头指向本地 -X，所以要转半圈才朝向 spawn 方向 */
 const spawnDeg = (n: MNode) => ((n.spawn ?? n.rot!) * 90 + 180) % 360;
 
@@ -148,8 +154,8 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
   if (n.prefab === 'start') {
     parts.push({ name: ports[rot] ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', type: 'asset', pos: [n.x, n.y, floorZ], rotZ: deg(rot) });
     // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
-    parts.push({ name: 'PS_FourFlames', type: 'element', objName: 'PS_FourFlames_01', pos: [n.x, n.y, n.z], rotZ: deg(rot) + 90 });
-    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: 'PR_Resetpoint_01', pos: [n.x, n.y, n.z + 3.65], rotZ: spawnDeg(n) });
+    parts.push({ name: 'PS_FourFlames', type: 'element', objName: 'PS_FourFlames_01', pos: [n.x, n.y, n.z - FLAME_CONE], rotZ: deg(rot) + 90 });
+    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: 'PR_Resetpoint_01', pos: [n.x, n.y, n.z - FLAME_CONE + 3.65], rotZ: spawnDeg(n) });
   } else {
     const a = !!ports[rot], b = !!ports[opp(rot)];
     const [name, r] = a && b ? ['CheckPoint_DoubleExtended_OpenEdge', rot]
@@ -159,8 +165,8 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
     parts.push({ name, type: 'asset', pos: [n.x, n.y, floorZ], rotZ: deg(r as Dir) });
     const sec = n.sector ?? 2;
     const two = (v: number) => String(v).padStart(2, '0');
-    parts.push({ name: 'PC_TwoFlames', type: 'element', objName: `PC_TwoFlames_${two(sec - 1)}`, pos: [n.x, n.y, n.z], rotZ: deg(rot) });
-    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: `PR_Resetpoint_${two(sec)}`, pos: [n.x, n.y, n.z + 3.3258], rotZ: spawnDeg(n) });
+    parts.push({ name: 'PC_TwoFlames', type: 'element', objName: `PC_TwoFlames_${two(sec - 1)}`, pos: [n.x, n.y, n.z - FLAME_CONE], rotZ: deg(rot) });
+    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: `PR_Resetpoint_${two(sec)}`, pos: [n.x, n.y, n.z - FLAME_CONE + 3.3258], rotZ: spawnDeg(n) });
   }
   return parts;
 }

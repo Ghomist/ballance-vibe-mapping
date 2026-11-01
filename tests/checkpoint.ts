@@ -19,7 +19,8 @@ export function checkpointScenarios(emptyModel: () => Model, check: Check, scena
     const parts = prefabParts(m, n);
     check(parts[0].name === 'CheckPoint_DoubleExtended_OpenEdge', `两侧接路应选双延伸版本，实际 ${parts[0].name}`);
     check(parts[1].objName === 'PC_TwoFlames_01' && parts[2].objName === 'PR_Resetpoint_02', '第一个小节盘点：PC_01 + PR_02');
-    check(Math.abs(parts[2].pos[2] - (n.z + 3.3258)) < 1e-9, '重生点高度偏移 3.3258');
+    check(Math.abs(parts[2].pos[2] - (parts[1].pos[2] + 3.3258)) < 1e-9, '重生点比火焰高 3.3258');
+    check(Math.abs(parts[1].pos[2] + 1.25555 - n.z) < 1e-9, '火焰锥桶底部贴住盘点路面顶面');
   });
 
   scenario('盘点：只有一侧接路时选单延伸版本并转向那一侧', () => {
