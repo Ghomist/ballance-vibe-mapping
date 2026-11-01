@@ -27,6 +27,24 @@ export interface Obj {
   noStopper?: boolean;
 }
 
+/** 对准方块：本地中心 x、y，顶面 z（= 路面高度），以及大小（默认 5×5） */
+export type Anchor = [number, number, number] | [number, number, number, number, number];
+
+/** 机关的所有对准方块（世界坐标的中心、半宽、顶面相对原点的高度） */
+export function anchorBlocks(o: { type: string; x: number; y: number; z: number; rot: number }) {
+  const t = objType(o.type);
+  if (!t?.anchor) return [];
+  const r = (o.rot * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
+  const quarter = Math.abs(Math.round(o.rot / 90)) % 2 === 1;
+  return [t.anchor, ...(t.more ?? [])].map((a) => {
+    const sx = a[3] ?? 5, sy = a[4] ?? 5;
+    return {
+      x: o.x + a[0] * c - a[1] * s, y: o.y + a[0] * s + a[1] * c, top: o.z + a[2],
+      hx: (quarter ? sy : sx) / 2, hy: (quarter ? sx : sy) / 2,
+    };
+  });
+}
+
 export interface ObjType {
   type: string;
   cat: ObjCat;
@@ -36,9 +54,9 @@ export interface ObjType {
    * 放到路面上时，对准点落在那一格路面的中心、顶面与路面齐平。数据来自 BBP 占位符和原版关卡。
    * 装饰没有对准点，底部贴住路面。
    */
-  anchor?: [number, number, number];
+  anchor?: Anchor;
   /** 其余对准方块（有几个方块的机关，例如秋千、跷跷板）：放置时哪个方块离路面格子最近就用哪个吸附 */
-  more?: [number, number, number][];
+  more?: Anchor[];
   /** 道具（球、箱子、加分 / 加命球）：放的时候再抬高 settings.propLift，防止穿模 */
   prop?: boolean;
   /** 全图只能有一个 */
@@ -69,7 +87,7 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]] },
   { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]] },
   { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]] },
-  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [0, 0, 0] },
+  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   { type: 'Latern', cat: 'deco', label: '灯塔' },
   { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）' },

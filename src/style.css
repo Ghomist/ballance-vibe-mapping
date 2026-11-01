@@ -78,9 +78,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------------- 顶栏 ---------------- */
 #toolbar {
-  display: flex; align-items: center; gap: 8px; padding: 7px 12px; min-height: 44px;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 7px 12px; min-height: 44px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
+.tb-left, .tb-center, .tb-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tb-right { justify-content: flex-end; }
 .brand { display: flex; align-items: center; gap: 8px; margin-right: 6px; font-weight: 700; letter-spacing: 1.5px; color: #a9c4ff; }
 .brand .logo {
   width: 18px; height: 18px; border-radius: 50%;

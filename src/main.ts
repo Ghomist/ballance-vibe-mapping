@@ -195,6 +195,7 @@ ${String(e).slice(0, 1500)}`);
 const applyTheme = (t: 'dark' | 'light') => {
   document.documentElement.dataset.theme = t;
   editor.setTheme(t);
+  document.querySelector('#theme .theme-label')!.textContent = t === 'dark' ? '暗色' : '亮色';
   try { localStorage.setItem('bvm.theme', t); } catch { /* 存不了就算了 */ }
 };
 let savedTheme: string | null = null;

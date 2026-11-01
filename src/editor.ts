@@ -18,10 +18,10 @@ import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
 import { baseOf, placeBase, revertBase } from './model/bases';
 import { exportScene } from './export/scene';
-import { addObj, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
+import { addObj, anchorBlocks, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
-  CELL, DX, DY, Dir, EndKey, HALF, MNode, Model, Prefab, Seg, Style,
+  CELL, DX, DY, Dir, EndKey, HALF, MNode, nodeRect, Model, Prefab, Seg, Style,
   axisOf, cloneModel, emptyModel, endOutDir, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './model/types';
 import {
@@ -86,7 +86,7 @@ type Drag =
   | { type: 'objHeight'; snapshot: Model; id: number; plane: THREE.Plane; z0: number }
   | { type: 'marquee'; sx: number; sy: number; add: boolean }
   | { type: 'guard'; snapshot: Model; id: number | null; end: 'a' | 'b'; loop: number; s0: number; s: number; sx: number; sy: number; started: boolean }
-  | { type: 'orbit' };
+  | { type: 'orbit'; pivot?: THREE.Vector3; lx: number; ly: number };
 
 /** gizmo 作用对象：悬停元素所在的“一块”（两个折点之间的直路，或单个路块 / 平台）或一整条钢轨 */
 type GizmoTarget =
@@ -224,6 +224,10 @@ export class Editor {
     host.appendChild(this.menu);
 
     const el = this.renderer.domElement;
+    // 捕获阶段先于 OrbitControls：有选中的东西时，中键环视由我们绕选中物体来转
+    host.addEventListener('pointerdown', (e) => {
+      if (e.button === 1) this.controls.enableRotate = e.shiftKey || !this.focusBox();
+    }, true);
     el.addEventListener('pointerdown', (e) => this.onDown(e));
     window.addEventListener('pointermove', (e) => this.onMove(e));
     window.addEventListener('pointerup', (e) => this.onUp(e));
@@ -876,7 +880,9 @@ export class Editor {
   }
   /** 水平坐标吸附（截面、端点、边沿、路块中心——格栅模式下都是 2.5 的倍数） */
   private snapEdge(c: number, axis: 0 | 1, at?: [number, number, number], step?: number) {
-    const r = this.snap().axis(this.snapModel(), axis, c, undefined, step);
+    // 拖动中的物件不吸附到它自己原来的位置
+    const ex = this.drag?.type === 'obj' ? new Set([this.drag.id]) : undefined;
+    const r = this.snap().axis(this.snapModel(), axis, c, ex, step);
     this.noteGuide(r, axis, at);
     return r.v;
   }
@@ -1540,10 +1546,9 @@ export class Editor {
   private onDown(e: PointerEvent) {
     this.syncMods(e);
     if (e.button === 1) {
-      // 环视绕着正在操作 / 选中的东西转：先把视图中心平移过去
-      const f = e.shiftKey ? null : this.focusBox(); // Shift+中键是平移，不动
-      if (f) this.moveCamera(f.getCenter(new THREE.Vector3()), null);
-      this.drag = { type: 'orbit' };
+      // 有选中的东西时绕着它转（只换环绕点，视图不挪）；没有时由 OrbitControls 绕视图中心转
+      const f = e.shiftKey ? null : this.focusBox(); // Shift+中键是平移
+      this.drag = { type: 'orbit', pivot: f?.getCenter(new THREE.Vector3()), lx: e.clientX, ly: e.clientY };
       return;
     }
     if (e.button !== 0) return;
@@ -1657,7 +1662,11 @@ export class Editor {
       if (changed) this.updateStatus();
       return;
     }
-    if (d.type === 'orbit') return;
+    if (d.type === 'orbit') {
+      if (d.pivot) this.orbitAround(d.pivot, e.clientX - d.lx, e.clientY - d.ly);
+      d.lx = e.clientX; d.ly = e.clientY;
+      return;
+    }
     if (d.type === 'guard') {
       if (!d.started && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
       d.started = true;
@@ -1795,7 +1804,8 @@ export class Editor {
       this.updateStatus();
       return;
     }
-    if (!d || d.type === 'orbit') return;
+    if (d?.type === 'orbit') { this.controls.enableRotate = true; return; }
+    if (!d) return;
     const before = d.snapshot;
     const m = this.model;
     if (d.type === 'obj' || d.type === 'objHeight') {
@@ -2115,36 +2125,61 @@ export class Editor {
       const at: [number, number, number] = [ox, oy, refZ];
       return { x: this.snapEdge(ox, 0, at, 1.25), y: this.snapEdge(oy, 1, at, 1.25), z: refZ, rot };
     }
-    // 每个对准方块试着吸附到它下面的路面格子，取挪动最少的那个
+    // 每个对准方块试着贴到它下面的路面上，取挪动最少的那个
+    const blocks = anchorBlocks({ type, x: ox, y: oy, z: 0, rot });
     let best: { x: number; y: number; z: number; d: number } | null = null;
-    for (const a of anchors) {
-      const w = R(a);
-      const gx = ox + w[0], gy = oy + w[1];
-      const cell = this.cellUnder(gx, gy, refZ);
-      if (!cell) continue;
-      const d = Math.hypot(cell.x - gx, cell.y - gy);
-      if (!best || d < best.d) best = { x: cell.x - w[0], y: cell.y - w[1], z: cell.z - a[2] + lift, d };
-    }
-    if (best) return { x: best.x, y: best.y, z: best.z, rot };
+    blocks.forEach((bl, i) => {
+      const a = anchors[i];
+      const cell = this.alignBlock(bl.x, bl.y, refZ, bl.hx, bl.hy);
+      if (!cell) return;
+      const d = Math.hypot(cell.x - bl.x, cell.y - bl.y);
+      if (!best || d < best.d) best = { x: ox + cell.x - bl.x, y: oy + cell.y - bl.y, z: cell.z - a[2] + lift, d };
+    });
+    if (best) { const b = best as { x: number; y: number; z: number }; return { x: b.x, y: b.y, z: b.z, rot }; }
     // 哪个方块下面都没有路：跟着鼠标，高度按主对准方块
     const at: [number, number, number] = [ox, oy, refZ];
     return { x: this.snapEdge(ox, 0, at, 1.25), y: this.snapEdge(oy, 1, at, 1.25), z: refZ - t!.anchor![2] + lift, rot };
   }
 
-  /** (x,y) 处、高度接近 z 的路面格子：直道取路中线上（纵向按格栅 / 自动对齐），路块取中心，平台取 5×5 格中心 */
-  private cellUnder(x: number, y: number, z: number): { x: number; y: number; z: number } | null {
+  /**
+   * 对准方块落到 (x,y) 下面的路面上，返回方块中心。优先级：
+   *   1. 方块的面与路的两头（直道端面、截面接头、路块边沿）贴齐——不管格栅和自动对齐开没开；
+   *   2. 5×5 的方块落在格子上（格栅）或吸附（自动对齐）；
+   * 横向：方块和路一样宽时落在路中线上。
+   */
+  private alignBlock(x: number, y: number, z: number, hx: number, hy: number): { x: number; y: number; z: number } | null {
     const sfs = surfacesAt(this.model, x, y).filter((sf) => Math.abs(sf.z - z) < 3);
     if (!sfs.length) return null;
     const sf = sfs.reduce((a, b) => (Math.abs(b.z - z) < Math.abs(a.z - z) ? b : a));
     const seg = this.model.segs[sf.id], node = this.model.nodes[sf.id];
+    const tol = Math.max(2.5, this.snap().tol);
+    /** 一维：区间 [lo, hi] 内放半宽 h 的方块，优先贴两头 */
+    const fit = (c: number, lo: number, hi: number, h: number, axis: 0 | 1, at: [number, number, number]) => {
+      const cands = [lo + h, hi - h].filter((v) => v >= lo + h - 1e-6 && v <= hi - h + 1e-6);
+      const near = cands.filter((v) => Math.abs(v - c) < tol).sort((p, q) => Math.abs(p - c) - Math.abs(q - c))[0];
+      if (near !== undefined) return near;
+      const v = Math.abs(h - HALF) < 1e-6 ? this.snapEdge(c, axis, at) : this.snapEdge(c - h, axis, at) + h;
+      return Math.min(Math.max(v, lo + h), Math.max(hi - h, lo + h));
+    };
     if (seg) {
       const ax = axisOf(seg.dir);
-      const along = this.snapEdge(ax === 0 ? x : y, ax, [x, y, sf.z]);
-      return ax === 0 ? { x: along, y: seg.y, z: sf.z } : { x: seg.x, y: along, z: sf.z };
+      const [ex, ey] = endPos(seg, 'b');
+      const lo = Math.min(ax === 0 ? seg.x : seg.y, ax === 0 ? ex : ey), hi = Math.max(ax === 0 ? seg.x : seg.y, ax === 0 ? ex : ey);
+      const h = ax === 0 ? hx : hy, w = ax === 0 ? hy : hx;
+      const along = fit(ax === 0 ? x : y, lo, hi, h, ax, [x, y, sf.z]);
+      // 横向：和路一样宽就落在中线上，否则贴路边
+      const mid = ax === 0 ? seg.y : seg.x;
+      const latC = ax === 0 ? y : x;
+      const lat = Math.abs(w - HALF) < 1e-6 ? mid : fit(latC, mid - HALF, mid + HALF, w, (1 - ax) as 0 | 1, [x, y, sf.z]);
+      return ax === 0 ? { x: along, y: lat, z: sf.z } : { x: lat, y: along, z: sf.z };
     }
-    if (node && node.kind !== 'platform') return { x: node.x, y: node.y, z: node.z };
-    if (this.gridMode) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z };
-    return { x: this.snapEdge(x, 0, [x, y, sf.z]), y: this.snapEdge(y, 1, [x, y, sf.z]), z: sf.z };
+    if (node && node.kind !== 'platform') {
+      const r = nodeRect(node);
+      return { x: fit(x, r.x0, r.x1, hx, 0, [x, y, sf.z]), y: fit(y, r.y0, r.y1, hy, 1, [x, y, sf.z]), z: node.z };
+    }
+    // 平台：5×5 方块落在格子上，其余按格栅 / 吸附
+    if (this.gridMode && Math.abs(hx - HALF) < 1e-6 && Math.abs(hy - HALF) < 1e-6) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z };
+    return { x: this.snapEdge(x - hx, 0, [x, y, sf.z]) + hx, y: this.snapEdge(y - hy, 1, [x, y, sf.z]) + hy, z: sf.z };
   }
 
   /** 路面顶面高度（凹槽里点到的是槽底，取路面标称高度） */
@@ -2299,6 +2334,27 @@ export class Editor {
     this.controls.target.addScaledVector(a.dT, f);
     this.camera.position.addScaledVector(a.dP, f);
     if (k1 >= 1) this.camAnim = null;
+    this.overlayDirty = true;
+  }
+
+  /**
+   * 绕任意点 P 环视：相机和视图中心一起绕 P 转（水平绕世界 Z 轴、竖直绕相机右方向），
+   * 视线方向随之转动，P 在屏幕上的位置基本不变，不会把它拉到画面中间。
+   */
+  private orbitAround(p: THREE.Vector3, dx: number, dy: number) {
+    const h = this.renderer.domElement.clientHeight || 1;
+    const yaw = (-2 * Math.PI * dx) / h, pitch = (-2 * Math.PI * dy) / h;
+    const cam = this.camera.position, tgt = this.controls.target;
+    const rot = (q: THREE.Quaternion) => {
+      cam.sub(p).applyQuaternion(q).add(p);
+      tgt.sub(p).applyQuaternion(q).add(p);
+    };
+    rot(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), yaw));
+    const fwd = tgt.clone().sub(cam).normalize();
+    const right = fwd.clone().cross(new THREE.Vector3(0, 0, 1)).normalize();
+    // 竖直方向别转过头顶 / 脚底
+    const next = fwd.clone().applyAxisAngle(right, pitch);
+    if (Math.abs(next.z) < 0.995 && right.lengthSq() > 1e-6) rot(new THREE.Quaternion().setFromAxisAngle(right, pitch));
     this.overlayDirty = true;
   }
 

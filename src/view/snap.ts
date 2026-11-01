@@ -2,6 +2,7 @@
 import { DX, DY, HALF, Model, endPos, endZ, nodeHalf } from '../model/types';
 import { platformBBox } from '../model/platform';
 import { railEnd } from '../model/rail';
+import { anchorBlocks } from '../model/objects';
 
 export const GRID = 2.5;
 
@@ -25,13 +26,13 @@ export class Snapper {
   tol = 1;
   private cacheFor: Model | null = null;
   private cacheEx = '';
-  private feats: { p: P3; id: number }[] = [];
+  private feats: { p: P3; id: number; prio?: boolean }[] = [];
 
   /** 收集模型中可供对齐的特征点 */
   private features(m: Model, exclude: Set<number>) {
     const ex = [...exclude].sort().join(',');
     if (this.cacheFor === m && this.cacheEx === ex) return this.feats;
-    const f: { p: P3; id: number }[] = [];
+    const f: { p: P3; id: number; prio?: boolean }[] = [];
     for (const s of Object.values(m.segs)) {
       if (exclude.has(s.id)) continue;
       const P = [-DY[s.dir], DX[s.dir]];
@@ -53,6 +54,13 @@ export class Snapper {
       f.push({ p: [n.x, n.y, n.z], id: n.id });
       if (h > 0) f.push({ p: [n.x - h, n.y - h, n.z], id: n.id }, { p: [n.x + h, n.y + h, n.z], id: n.id });
     }
+    // 机关的对准方块：四个角（优先吸附）
+    for (const o of Object.values(m.objs ?? {})) {
+      if (exclude.has(o.id)) continue;
+      for (const b of anchorBlocks(o)) {
+        f.push({ p: [b.x - b.hx, b.y - b.hy, b.top], id: o.id, prio: true }, { p: [b.x + b.hx, b.y + b.hy, b.top], id: o.id, prio: true });
+      }
+    }
     for (const r of Object.values(m.rails)) {
       if (exclude.has(r.id)) continue;
       const e = railEnd(r);
@@ -70,6 +78,14 @@ export class Snapper {
 
   /** 水平坐标（axis 0 = x，1 = y）；step 为格栅步长 */
   axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set(), step = GRID): SnapResult {
+    // 机关的对准方块优先于格栅和自动对齐（即使自动对齐关着）
+    let pb: SnapResult | null = null, pd = this.tol;
+    for (const { p, prio } of this.features(m, exclude)) {
+      if (!prio) continue;
+      const d = Math.abs(p[axis] - raw);
+      if (d < pd) { pd = d; pb = { v: p[axis], from: p }; }
+    }
+    if (pb) return pb;
     if (this.snap) {
       let best: SnapResult | null = null, bd = this.reach();
       for (const { p } of this.features(m, exclude)) {
