@@ -203,7 +203,7 @@ export class Editor {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE };
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.18;
+    this.controls.dampingFactor = 0.1; // 环视 / 平移的惯性缓动
     this.controls.enableZoom = false; // 滚轮缩放自己做，带缓动
     this.controls.target.set(5, 5, 0);
 
@@ -1669,7 +1669,8 @@ export class Editor {
       return;
     }
     if (d.type === 'orbit') {
-      if (d.pivot) this.orbitAround(d.pivot, e.clientX - d.lx, e.clientY - d.ly);
+      // 绕选中物体环视：先攒着，每帧缓动地转过去（与 OrbitControls 的阻尼手感一致）
+      if (d.pivot) { this.orbitPending.p = d.pivot; this.orbitPending.dx += e.clientX - d.lx; this.orbitPending.dy += e.clientY - d.ly; }
       d.lx = e.clientX; d.ly = e.clientY;
       return;
     }
@@ -2305,6 +2306,8 @@ export class Editor {
   private camAnim: { dT: THREE.Vector3; dP: THREE.Vector3; k: number } | null = null;
   /** 滚轮缩放的目标距离（相机到视图中心），每帧缓动过去 */
   private zoomGoal: number | null = null;
+  /** 绕选中物体环视时还没转完的量（像素） */
+  private orbitPending: { p: THREE.Vector3 | null; dx: number; dy: number } = { p: null, dx: 0, dy: 0 };
 
   /** 正在操作 / 选中的东西的包围盒（多选、单选，或拖动中的那个） */
   private focusBox(): THREE.Box3 | null {
@@ -2334,6 +2337,13 @@ export class Editor {
 
   /** 每帧按增量推进（与用户同时进行的环视 / 平移叠加，不会互相打架） */
   private tickCamera(dt: number) {
+    const op = this.orbitPending;
+    if (op.p && (Math.abs(op.dx) > 0.01 || Math.abs(op.dy) > 0.01)) {
+      const k = 1 - Math.exp(-dt / 0.06);
+      const dx = op.dx * k, dy = op.dy * k;
+      op.dx -= dx; op.dy -= dy;
+      this.orbitAround(op.p, dx, dy);
+    }
     if (this.zoomGoal !== null) {
       const off = this.camera.position.clone().sub(this.controls.target);
       const cur = off.length();
