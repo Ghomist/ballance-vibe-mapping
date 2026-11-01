@@ -21,7 +21,7 @@ import { baseOf, placeBase, placeFreeBase, revertBase } from './model/bases';
 import { cutForObj, isSplitObj, uncutObj } from './model/gaps';
 import { exportScene } from './export/scene';
 import { exportNmo } from './export/nmo-scene';
-import { addObj, anchorBlocks, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
+import { FAKE_FIX, addObj, anchorBlocks, autoSector, fakeModel, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
   CELL, DX, DY, Dir, EndKey, HALF, MNode, nodeRect, Model, Prefab, Seg, Style,
@@ -459,7 +459,7 @@ export class Editor {
       }
       const obj = m.objs[id];
       if (obj) {
-        const okey = JSON.stringify(obj) + ':' + assetVersion;
+        const okey = JSON.stringify(obj) + ':' + assetVersion + ':' + this.moduleView;
         const oc = this.meshCache.get(id);
         if (oc && oc.key === okey) continue;
         if (oc) for (const mesh of oc.meshes) { if (!mesh.userData.shared) mesh.geometry.dispose(); this.floor.remove(mesh); }
@@ -548,13 +548,30 @@ export class Editor {
     }
   }
 
+  /** 机关显示成机关模型（资产库的假机关）还是 BBP 占位符；存在本地 */
+  moduleView: 'model' | 'placeholder' = (() => { try { return localStorage.getItem('bvm.moduleView') === 'placeholder' ? 'placeholder' : 'model'; } catch { return 'model'; } })();
+
+  setModuleView(v: 'model' | 'placeholder') {
+    if (v === this.moduleView) return;
+    this.moduleView = v;
+    try { localStorage.setItem('bvm.moduleView', v); } catch { /* 存不了就算了 */ }
+    this.ghostType = '';
+    this.syncMeshes();
+    this.overlayDirty = true;
+  }
+
   private objMeshes(o: { type: string; x: number; y: number; z: number; rot: number }, ghost = false): THREE.Mesh[] {
     const t = objType(o.type);
-    const pieces = getAsset(t?.cat === 'deco' ? 'asset' : 'element', o.type) ?? [];
+    // 机关模型只用来显示（加载完之前先显示占位符）；吸附、断路、导出都按占位符的对准方块
+    const fake = t?.cat === 'module' && this.moduleView === 'model' ? fakeModel(o.type) : null;
+    const fakePieces = fake ? getAsset('fake', fake) : null;
+    const pieces = fakePieces ?? getAsset(t?.cat === 'deco' ? 'asset' : 'element', o.type) ?? [];
+    const fix = (fakePieces && FAKE_FIX[fake!]) || {};
+    const rot = o.rot + (fix.rot ?? 0);
     const out = pieces.map((pc) => {
       const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
-      mesh.position.set(o.x, o.y, o.z);
-      mesh.rotation.z = (o.rot * Math.PI) / 180;
+      mesh.position.set(o.x, o.y, o.z + (fix.dz ?? 0));
+      mesh.rotation.z = (rot * Math.PI) / 180;
       mesh.updateMatrixWorld();
       return mesh;
     });

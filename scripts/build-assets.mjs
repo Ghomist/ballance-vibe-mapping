@@ -1,6 +1,7 @@
 // 生成编辑器预览所需的素材（均不入库）：
 //   public/elements/*.json  机关占位符网格（来自 BBP 的 meshes/*.ph）
 //   public/assets/*.json    资产库里的盘点路面、装饰等（用 Blender 从 BallanceAssets.blend 导出）
+//   public/fakes/*.json     资产库里的假机关（机关模型），编辑器里显示用
 //   public/textures/*       上述素材用到的贴图（来自 Ballance 安装目录）
 // 用法：npm run assets
 // 可用环境变量覆盖路径：BLENDER、BBP_DIR、BALLANCE_ASSETS（.blend）、BALLANCE_TEXTURES
@@ -8,7 +9,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSET_OBJECTS } from './asset-list.mjs';
+import { ASSET_OBJECTS, FAKE_MODULES } from './asset-list.mjs';
 import { ASSETS_BLEND, TEXTURES, findBlender } from './blender.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -66,8 +67,10 @@ if (bbp) {
 // ---------- 资产库物体 ----------
 const blend = ASSETS_BLEND;
 const assetsOut = join(pub, 'assets');
+const fakesOut = join(pub, 'fakes');
 if (existsSync(blend)) {
   execFileSync(findBlender(), ['-b', blend, '--python', join(root, 'scripts/dump-blend-assets.py'), '--', assetsOut, ...ASSET_OBJECTS], { stdio: ['ignore', 'inherit', 'inherit'] });
+  execFileSync(findBlender(), ['-b', blend, '--python', join(root, 'scripts/dump-blend-assets.py'), '--', fakesOut, ...FAKE_MODULES], { stdio: ['ignore', 'inherit', 'inherit'] });
 } else console.warn(`跳过资产库：找不到 ${blend}`);
 
 // ---------- 贴图 ----------
@@ -79,9 +82,10 @@ const tex = new Set([
   'Floor_Top_Profil.bmp', 'Floor_Top_ProfilFlat.bmp', 'Floor_Side.bmp',
   'Floor_Top_Checkpoint.bmp', 'Rail_Environment.bmp', 'E_Holzbeschlag.bmp',
 ]);
-if (existsSync(assetsOut)) {
-  for (const f of readdirSync(assetsOut)) {
-    for (const p of JSON.parse(readFileSync(join(assetsOut, f), 'utf8')).parts) if (p.texture) tex.add(p.texture);
+for (const dir of [assetsOut, fakesOut]) {
+  if (!existsSync(dir)) continue;
+  for (const f of readdirSync(dir)) {
+    for (const p of JSON.parse(readFileSync(join(dir, f), 'utf8')).parts) if (p.texture) tex.add(p.texture);
   }
 }
 for (const f of tex) {

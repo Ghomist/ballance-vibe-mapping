@@ -27,26 +27,35 @@ def mat_info(m):
     return info
 
 for name in names:
+    # 物体名，或集合名（集合里所有网格物体合成一个文件，例如假机关 Fake_Modul_08）
     o = bpy.data.objects.get(name)
-    if not o or o.type != 'MESH':
+    coll = None if o else bpy.data.collections.get(name)
+    objs = [o] if o and o.type == 'MESH' else [x for x in coll.all_objects if x.type == 'MESH'] if coll else []
+    if not objs:
         print('missing', name); continue
-    bm = bmesh.new()
-    bm.from_mesh(o.data)
-    bm.transform(o.matrix_world)
-    bmesh.ops.triangulate(bm, faces=bm.faces)
-    uv = bm.loops.layers.uv.active
     parts = {}
-    for f in bm.faces:
-        p = parts.setdefault(f.material_index, {'pos': [], 'uv': [], 'nrm': []})
-        for l in f.loops:
-            p['pos'] += [round(c, 5) for c in l.vert.co]
-            p['uv'] += [round(c, 5) for c in (l[uv].uv if uv else (0, 0))]
-            p['nrm'] += [round(c, 4) for c in (f.normal if not f.smooth else l.vert.normal)]
-    mats = o.data.materials
-    res = {'name': name, 'parts': [dict(mat_info(mats[i] if i < len(mats) else None), **p) for i, p in parts.items()]}
+    for ob in objs:
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        bm.transform(ob.matrix_world)
+        bmesh.ops.triangulate(bm, faces=bm.faces)
+        uv = bm.loops.layers.uv.active
+        mats = ob.data.materials
+        for f in bm.faces:
+            m = mats[f.material_index] if f.material_index < len(mats) else None
+            key = m.name if m else None
+            if key not in parts:
+                parts[key] = dict(mat_info(m), pos=[], uv=[], nrm=[])
+            p = parts[key]
+            for l in f.loops:
+                p['pos'] += [round(c, 5) for c in l.vert.co]
+                p['uv'] += [round(c, 5) for c in (l[uv].uv if uv else (0, 0))]
+                p['nrm'] += [round(c, 4) for c in (f.normal if not f.smooth else l.vert.normal)]
+        bm.free()
+    res = {'name': name, 'parts': list(parts.values())}
     groups = []
     try:
-        groups = [g.group_name for g in o.virtools_groups]
+        groups = [g.group_name for g in objs[0].virtools_groups]
     except Exception:
         pass
     res['groups'] = groups

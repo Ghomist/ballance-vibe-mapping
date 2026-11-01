@@ -1,6 +1,7 @@
-// 资产库模型（盘点路面、装饰）与 BBP 机关占位符的加载与缓存。
-// 文件由 `npm run assets` 生成到 public/assets 与 public/elements。
+// 资产库模型（盘点路面、装饰、假机关）与 BBP 机关占位符的加载与缓存。
+// 文件由 `npm run assets` 生成到 public/assets、public/fakes 与 public/elements。
 import * as THREE from 'three';
+import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
 
 export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Material }
 
@@ -12,6 +13,7 @@ interface AssetPartJSON {
 
 const cache = new Map<string, AssetPiece[] | 'loading' | 'missing'>();
 const texLoader = new THREE.TextureLoader();
+const tgaLoader = new TGALoader();
 const texCache = new Map<string, THREE.Texture>();
 const listeners: (() => void)[] = [];
 /** 每加载完一个模型就加一，作为网格缓存键的一部分 */
@@ -22,7 +24,8 @@ export function setAssetLoadedCallback(cb: () => void) { listeners.push(cb); }
 function texture(file: string) {
   let t = texCache.get(file);
   if (!t) {
-    t = texLoader.load(`${import.meta.env.BASE_URL}textures/${file}`);
+    const url = `${import.meta.env.BASE_URL}textures/${file}`;
+    t = /\.tga$/i.test(file) ? tgaLoader.load(url) : texLoader.load(url);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = 8;
@@ -55,8 +58,11 @@ function elementMaterial(name: string) {
   return m;
 }
 
-async function load(kind: 'asset' | 'element', name: string): Promise<AssetPiece[]> {
-  const url = `${import.meta.env.BASE_URL}${kind === 'asset' ? 'assets' : 'elements'}/${name}.json`;
+export type AssetKind = 'asset' | 'element' | 'fake';
+const DIRS: Record<AssetKind, string> = { asset: 'assets', element: 'elements', fake: 'fakes' };
+
+async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
+  const url = `${import.meta.env.BASE_URL}${DIRS[kind]}/${name}.json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(url);
   const data = await res.json();
@@ -81,7 +87,7 @@ async function load(kind: 'asset' | 'element', name: string): Promise<AssetPiece
 }
 
 /** 取模型；还没加载时发起加载并返回 null，加载完成后回调 */
-export function getAsset(kind: 'asset' | 'element', name: string): AssetPiece[] | null {
+export function getAsset(kind: AssetKind, name: string): AssetPiece[] | null {
   const key = `${kind}:${name}`;
   const c = cache.get(key);
   if (Array.isArray(c)) return c;

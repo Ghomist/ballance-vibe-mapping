@@ -255,10 +255,16 @@ const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; 
 ];
 const renderSettings = () => {
   panel.innerHTML = '<h3>全图设置</h3>' + FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${editor.settings[f.key]}"></label>`).join('')
+    + '<h3 class="sub">显示</h3>'
+    + `<label><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span><span class="seg-toggle" id="module-view">${(['model', 'placeholder'] as const).map((v) => `<button data-v="${v}" class="${editor.moduleView === v ? 'on' : ''}">${v === 'model' ? '机关模型' : '占位符'}</button>`).join('')}</span></label>`
     + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
   panel.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
     const v = Number(inp.value);
     if (Number.isFinite(v)) editor.setSettings({ [inp.dataset.key!]: v });
+  }));
+  panel.querySelectorAll<HTMLButtonElement>('#module-view button').forEach((btn) => btn.addEventListener('click', () => {
+    editor.setModuleView(btn.dataset.v as 'model' | 'placeholder');
+    renderSettings();
   }));
   panel.querySelector('#settings-reset')!.addEventListener('click', () => { editor.setSettings({ ...DEFAULT_SETTINGS }); renderSettings(); });
   panel.querySelector('#settings-close')!.addEventListener('click', () => { panel.hidden = true; });

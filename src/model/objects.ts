@@ -97,6 +97,23 @@ export const OBJ_TYPES: ObjType[] = [
 
 export const objType = (type: string) => OBJ_TYPES.find((t) => t.type === type);
 
+/** 资产库里有假机关（机关模型）的机关：编辑器里可以显示成机关模型，制图逻辑和导出仍按占位符 */
+const FAKES = new Set([
+  'Fake_Ball_Paper', 'Fake_Ball_Stone', 'Fake_Ball_Wood', 'Fake_Box', 'Fake_Balloon',
+  'Fake_Trafo_Paper', 'Fake_Trafo_Stone', 'Fake_Trafo_Wood',
+  'Fake_Modul_01', 'Fake_Modul_03', 'Fake_Modul_08', 'Fake_Modul_17', 'Fake_Modul_19', 'Fake_Modul_25',
+  'Fake_Modul_26', 'Fake_Modul_29', 'Fake_Modul_30', 'Fake_Modul_34', 'Fake_Modul_37', 'Fake_Modul_41',
+]);
+/**
+ * 和占位符对不上的机关模型，显示时再调整：绕 Z 转（度）、上下挪。
+ * 单摆的模型横着放；升降机的模型在升起的位置（底板比占位符高 9.1）。
+ */
+export const FAKE_FIX: Record<string, { rot?: number; dz?: number }> = { Fake_Modul_17: { rot: 90 }, Fake_Modul_03: { dz: -9.1 } };
+export function fakeModel(type: string): string | null {
+  const n = type === 'PE_Balloon' ? 'Fake_Balloon' : type.replace(/^P_/, 'Fake_');
+  return FAKES.has(n) ? n : null;
+}
+
 export function addObj(m: Model, type: string, x: number, y: number, z: number, rot = 0): number | null {
   const t = objType(type);
   if (!t) return null;

@@ -180,6 +180,8 @@ button.toggle.active { color: #cfe0ff; background: rgba(91, 141, 239, 0.18); bor
   width: 74px; height: 26px; padding: 0 6px; background: var(--field); border: 1px solid var(--line); border-radius: 5px; color: var(--text); font: inherit;
 }
 .settings-panel input:focus { outline: none; border-color: var(--accent); }
+.settings-panel h3.sub { margin: 14px 0 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.settings-panel .seg-toggle button { width: auto; }
 .settings-panel .row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 /* 螺旋对话框：左下角，不挡视图 */
 .spiral-dlg { top: auto; right: auto; left: 12px; bottom: 12px; width: 300px; }
