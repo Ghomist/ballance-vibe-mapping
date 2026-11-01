@@ -2,9 +2,14 @@ import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES } from './model/objects';
 import { thumbnail } from './view/thumbs';
 import { setAssetLoadedCallback, setTextureLoadedCallback } from './view/assets';
+import { floorTexturesReady } from './view/materials';
 import { DEFAULT_SETTINGS } from './model/types';
 
-const editor = new Editor(document.getElementById('viewport')!);
+const viewport = document.getElementById('viewport')!;
+// 路面贴图加载好之前先不显示视图（最多等 2 秒），免得先闪一下没贴图的路面；贴图有离线缓存，之后打开几乎不用等
+viewport.classList.add('loading');
+Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 2000))]).then(() => viewport.classList.remove('loading'));
+const editor = new Editor(viewport);
 const status = document.getElementById('status')!;
 editor.onStatus = (s) => { status.textContent = s; status.classList.toggle('warn', s.startsWith('⚠')); };
 
@@ -293,3 +298,14 @@ file.addEventListener('change', async () => {
 });
 
 if (import.meta.env.DEV) (window as unknown as { editor: Editor }).editor = editor;
+
+// 离线缓存素材（public/sw.js）：之后打开不用重新下载贴图和模型。开发模式下不用，免得改了素材看不到
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((e) => console.warn('素材缓存不可用', e));
+    // 第一次打开时素材在缓存生效前就下载了：稍后把已经用到的地址交给它补进缓存（多半直接命中浏览器缓存）
+    navigator.serviceWorker.ready.then((reg) => setTimeout(() => {
+      reg.active?.postMessage({ urls: performance.getEntriesByType('resource').map((e) => e.name) });
+    }, 3000));
+  });
+}

@@ -12,7 +12,7 @@ npm run assets     # 生成预览素材：贴图、资产库模型（盘点路�
 npm run dev
 ```
 
-`public/` 下的贴图、资产库模型和机关占位符已经提交在仓库里，直接 `npm run dev` 就能用；重新生成需要本机装有 Ballance、Blender 和 BBP（`npm run assets`）。路径默认是 `D:/Ballance/Textures`、`D:/BlenderLibrary/BallanceAssets/BallanceAssets.blend`、`D:/Blender/blender.exe`，可以用环境变量 `BALLANCE_TEXTURES`、`BALLANCE_ASSETS`、`BLENDER`、`BBP_DIR` 指定其它位置。
+网页版用 Service Worker（`public/sw.js`）把贴图、模型、占位符和 NMO 资源库缓存在本地：第一次打开后再打开不用重新下载，素材在后台更新、下次打开生效；视图会等路面贴图加载好再显示。`public/` 下的贴图、资产库模型和机关占位符已经提交在仓库里，直接 `npm run dev` 就能用；重新生成需要本机装有 Ballance、Blender 和 BBP（`npm run assets`）。路径默认是 `D:/Ballance/Textures`、`D:/BlenderLibrary/BallanceAssets/BallanceAssets.blend`、`D:/Blender/blender.exe`，可以用环境变量 `BALLANCE_TEXTURES`、`BALLANCE_ASSETS`、`BLENDER`、`BBP_DIR` 指定其它位置。
 
 ## 导出
 

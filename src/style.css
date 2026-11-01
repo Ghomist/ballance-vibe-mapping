@@ -259,3 +259,7 @@ body.placing, body.placing * { cursor: grabbing !important; }
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* 打开时等路面贴图加载好再显示视图 */
+#viewport canvas { transition: opacity 0.25s ease; }
+#viewport.loading canvas { opacity: 0; }

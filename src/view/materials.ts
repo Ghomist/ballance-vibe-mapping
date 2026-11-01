@@ -22,12 +22,21 @@ const FALLBACK_COLORS: Record<MatName, number> = {
 
 const cache = new Map<MatName, THREE.Material>();
 const loader = new THREE.TextureLoader();
+const pending = new Map<MatName, Promise<void>>();
+
+/** 路面贴图都加载完（或失败）时完成：打开编辑器时等它再显示视图，免得先闪一下没贴图的路面 */
+export function floorTexturesReady(): Promise<void> {
+  for (const n of Object.keys(TEXTURE_FILES) as MatName[]) getMaterial(n);
+  return Promise.all(pending.values()).then(() => {});
+}
 
 export function getMaterial(name: MatName): THREE.Material {
   let mat = cache.get(name);
   if (mat) return mat;
   // 构造路面一律平直着色（不做折痕平滑）
   const m = new THREE.MeshLambertMaterial({ color: FALLBACK_COLORS[name], flatShading: true });
+  let done!: () => void;
+  pending.set(name, new Promise<void>((r) => { done = r; }));
   loader.load(
     `${import.meta.env.BASE_URL}textures/${TEXTURE_FILES[name]}`,
     (tex) => {
@@ -38,9 +47,10 @@ export function getMaterial(name: MatName): THREE.Material {
       m.map = tex;
       m.color.set(0xffffff);
       m.needsUpdate = true;
+      done();
     },
     undefined,
-    () => console.warn(`缺少贴图 ${TEXTURE_FILES[name]}，使用纯色代替。运行 npm run textures 复制贴图。`),
+    () => { console.warn(`缺少贴图 ${TEXTURE_FILES[name]}，使用纯色代替。运行 npm run textures 复制贴图。`); done(); },
   );
   cache.set(name, m);
   return m;
