@@ -213,6 +213,20 @@ document.getElementById('theme')!.addEventListener('click', (e) => {
   (e.currentTarget as HTMLButtonElement).blur();
 });
 
+// 意见与反馈：点击时顺便复制群号，并轻提示一下（链接照常打开 QQ）
+const toast = (text: string) => {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = text;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 2200);
+};
+document.getElementById('feedback')!.addEventListener('click', async () => {
+  const id = '1005399899';
+  try { await navigator.clipboard.writeText(id); toast(`已复制群号 ${id}`); } catch { toast(`QQ 群号：${id}`); }
+});
+
 // 全图设置
 const panel = document.getElementById('settings-panel')!;
 const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; step: number }[] = [

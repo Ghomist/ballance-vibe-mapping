@@ -241,3 +241,12 @@ body.placing, body.placing * { cursor: grabbing !important; }
 #statusbar .links a:hover { background: var(--hover); color: var(--text); }
 #statusbar .links svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
 #statusbar .links svg.gh { fill: currentColor; stroke: none; }
+
+/* 轻提示 */
+.toast {
+  position: fixed; z-index: 50; left: 50%; bottom: 46px; transform: translate(-50%, 8px); opacity: 0;
+  padding: 7px 14px; border-radius: 8px; background: var(--menu); border: 1px solid var(--line-2);
+  color: var(--text); font-size: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
