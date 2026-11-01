@@ -9,15 +9,23 @@ export interface FaceSpec {
   z: number;
   /** 朝外方向 */
   dir: Dir;
+  /** 任意朝外方向（度，0 = +X，逆时针），给了就代替 dir（钢轨） */
+  ang?: number;
   /** 面宽（沿面横向） */
   w: number;
   /** 面高，默认为路面厚度 */
   h?: number;
-  /** 箭头：朝外（默认）或上下双向（调高度） */
-  arrow?: 'out' | 'updown';
+  /** 箭头：朝外（默认）、上下双向（调高度），或不画（调用方自己画） */
+  arrow?: 'out' | 'updown' | 'none';
 }
 
 const SLEEVE = 1;
+
+function outVec(f: FaceSpec): [number, number] {
+  if (f.ang === undefined) return [DX[f.dir], DY[f.dir]];
+  const a = (f.ang * Math.PI) / 180;
+  return [Math.cos(a), Math.sin(a)];
+}
 const ALPHA = 0.32;
 
 export class FaceFx {
@@ -57,7 +65,7 @@ export class FaceFx {
 
 function buildFace(f: FaceSpec, c: THREE.Color): THREE.BufferGeometry {
   const h = f.h ?? THICK;
-  const ox = DX[f.dir], oy = DY[f.dir];
+  const [ox, oy] = outVec(f);
   const px = -oy, py = ox;
   const hw = f.w / 2;
   // 面的四个角（略微往外偏一点，避免与路面侧面打架）
@@ -88,11 +96,12 @@ function buildFace(f: FaceSpec, c: THREE.Color): THREE.BufferGeometry {
 /** 截面的轮廓 + 从面中心伸出的箭头（相对面中心 (x,y,z)） */
 export function faceSegs(f: FaceSpec): number[] {
   const h = f.h ?? THICK;
-  const ox = DX[f.dir], oy = DY[f.dir];
+  const [ox, oy] = outVec(f);
   const px = -oy, py = ox;
   const hw = f.w / 2;
   const P = (s: number, z: number) => [px * hw * s, py * hw * s, z];
   const out = [...P(-1, 0), ...P(1, 0), ...P(1, 0), ...P(1, -h), ...P(1, -h), ...P(-1, -h), ...P(-1, -h), ...P(-1, 0)];
+  if (f.arrow === 'none') return out;
   if (f.arrow === 'updown') {
     // 上下双向箭头，立在截面中心上方
     const t = 4.5, b = -h - 1.5;

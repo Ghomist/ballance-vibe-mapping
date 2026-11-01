@@ -146,7 +146,7 @@ export function extendStart(r: Rail, len: number) {
   else r.pieces.unshift({ kind: first?.kind ?? 'double', len, radius: 0, angle: 0, dz: 0 });
 }
 
-/** 在弧长 s 处把钢轨切成两条（只在直线段上切），返回后半条 */
+/** 在弧长 s 处把钢轨切成两条（直线、圆弧都可以），返回后半条 */
 export function splitRail(r: Rail, s: number, newId: number): Rail | null {
   let acc = 0;
   let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
@@ -154,11 +154,10 @@ export function splitRail(r: Rail, s: number, newId: number): Rail | null {
     const p = r.pieces[i];
     const L = pieceLength(p);
     if (s > acc + 1e-6 && s < acc + L - 1e-6) {
-      if (p.angle !== 0) return null;
       const f = (s - acc) / L;
       const mid = advance(st, p, f);
-      const tail: RailPiece = { ...p, len: p.len * (1 - f), dz: p.dz * (1 - f) };
-      p.len *= f; p.dz *= f;
+      const [head, tail] = splitPiece(p, f);
+      r.pieces[i] = head;
       const rest = r.pieces.splice(i + 1);
       return { id: newId, ...mid, pieces: [tail, ...rest] };
     }
@@ -215,4 +214,29 @@ export function nearestPiece(r: Rail, x: number, y: number): number {
     st = advance(st, p);
   });
   return best;
+}
+
+/** 把钢轨倒过来走（起点换成原来的终点，朝向反过来；圆弧左右互换、高差取反） */
+export function reverseRail(r: Rail) {
+  const E = railEnd(r);
+  r.x = E.x; r.y = E.y; r.z = E.z; r.heading = E.heading + 180;
+  r.pieces = r.pieces.reverse().map((p) => ({ ...p, angle: -p.angle, dz: -p.dz }));
+}
+
+/** 在弧长 s 处切开一段（直线或圆弧都可以），返回切开后的两段 */
+export function splitPiece(p: RailPiece, f: number): [RailPiece, RailPiece] {
+  if (p.angle === 0) return [{ ...p, len: p.len * f, dz: p.dz * f }, { ...p, len: p.len * (1 - f), dz: p.dz * (1 - f) }];
+  return [{ ...p, angle: p.angle * f, dz: p.dz * f }, { ...p, angle: p.angle * (1 - f), dz: p.dz * (1 - f) }];
+}
+
+/** 钢轨 b 的起点正好接在 a 的终点上（位置、高度、朝向一致）时，把 b 接到 a 后面 */
+export function canAppend(a: Rail, b: Rail, eps = 0.02) {
+  const E = railEnd(a);
+  const dh = ((((b.heading - E.heading) % 360) + 540) % 360) - 180;
+  return Math.hypot(E.x - b.x, E.y - b.y) < eps && Math.abs(E.z - b.z) < eps && Math.abs(dh) < 0.5;
+}
+export function appendRail(a: Rail, b: Rail) {
+  const [first, ...rest] = b.pieces;
+  if (first) pushPiece(a, { ...first });
+  a.pieces.push(...rest.map((p) => ({ ...p })));
 }

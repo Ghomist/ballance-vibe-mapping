@@ -181,6 +181,11 @@ button.toggle.active { color: #cfe0ff; background: rgba(91, 141, 239, 0.18); bor
 }
 .settings-panel input:focus { outline: none; border-color: var(--accent); }
 .settings-panel .row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+/* 螺旋对话框：左下角，不挡视图 */
+.spiral-dlg { top: auto; right: auto; left: 12px; bottom: 12px; width: 300px; }
+.seg-toggle { display: inline-flex; padding: 2px; gap: 2px; background: var(--field); border: 1px solid var(--line); border-radius: 6px; }
+.seg-toggle button { height: 22px; padding: 0 12px; border: none; border-radius: 4px; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
+.seg-toggle button.on { background: var(--accent); color: #fff; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
 /* ---------------- 机关库（右侧） ---------------- */

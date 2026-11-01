@@ -97,12 +97,29 @@ export function placeBase(m: Model, objId: number): number | null {
   return null;
 }
 
+/** 不在路面上：在机关下面单独放一块专属底座（不接任何路） */
+export function placeFreeBase(m: Model, objId: number): number | null {
+  const o = m.objs[objId];
+  const spec = o && baseOf(o.type);
+  if (!o || !spec || o.base !== undefined) return null;
+  const [cx, cy] = anchorWorld(o);
+  const id = m.nextId++;
+  m.nodes[id] = {
+    id, kind: 'base', x: cx, y: cy, z: o.z + (objType(o.type)?.anchor?.[2] ?? 0), style: 'normal',
+    baseKind: spec.kind, baseMat: spec.mat, obj: objId, rot: objDir(o), free: true,
+  } as MNode;
+  o.base = id;
+  return id;
+}
+
 /** 专属路面变回普通路面 */
 export function revertBase(m: Model, nodeId: number) {
   const n = m.nodes[nodeId];
   if (!n || n.kind !== 'base') return;
   const o = n.obj !== undefined ? m.objs[n.obj] : undefined;
   if (o && o.base === nodeId) delete o.base;
+  // 单独的底座：没有替换过路面，直接去掉
+  if (n.free) { delete m.nodes[nodeId]; return; }
   if (n.baseKind === 'fence') {
     const pd = nodePorts(m, nodeId)[n.rot!];
     if (pd) {

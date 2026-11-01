@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { buildElem, computeChains, elemKey, type MatName } from './geom/floor';
 import { buildRail } from './geom/rail';
+import { followRails } from './model/rail-follow';
 import { getMaterial, getRailMaterial } from './view/materials';
 import { Gizmo, type GizmoHandle } from './view/gizmo';
 import { Snapper, type SnapResult } from './view/snap';
@@ -16,7 +17,7 @@ import {
 } from './model/checkpoint';
 import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
-import { baseOf, placeBase, revertBase } from './model/bases';
+import { baseOf, placeBase, placeFreeBase, revertBase } from './model/bases';
 import { exportScene } from './export/scene';
 import { exportNmo } from './export/nmo-scene';
 import { addObj, anchorBlocks, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
@@ -27,7 +28,7 @@ import {
 } from './model/types';
 import {
   RAIL_RADIUS, RAIL_SPAN, Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
-  pieceLength, pushPiece, railEnd, railTopOffset, splitRail, stateAt,
+  appendRail, canAppend, pieceLength, pushPiece, railEnd, railTopOffset, reverseRail, splitRail, stateAt,
 } from './model/rail';
 import {
   type MoveInfo, addBlock, addSegAtPort, applyConnection, blockToSeg, cutJoint, movePiece, pieceOf, cutSeg, deleteElem, extendFlat, extendTo,
@@ -74,9 +75,20 @@ interface Action {
   apply: (m: Model, coord: number) => GrowEnd;
   /** 操作的截面：画成半透明的面 + 从面中心伸出的箭头（替代 segs 线框） */
   face?: FaceSpec;
-  /** 需要完整平面坐标的动作（钢轨：直线 / 圆弧由鼠标位置决定） */
-  apply2?: (m: Model, x: number, y: number) => void;
+  /** 需要完整平面坐标的动作（钢轨：直线 / 圆弧由鼠标位置决定；坡道还要用到鼠标射线） */
+  apply2?: (m: Model, x: number, y: number, ray?: THREE.Ray) => void;
+  /** 钢轨端头的动作：拉法随按键实时切换 */
+  anchor?: RailAnchor;
 }
+
+/** 钢轨从哪儿接着长：端点（路径高度 = 双轨最顶端）、朝外的方向、轨型；已有钢轨的哪一头，新钢轨为 null */
+interface RailAnchor {
+  E: RailState; kind: RailKind; rail: number | null; end: 'a' | 'b';
+  /** Alt 竖直拖动：按下时鼠标所在的高度（拖动中记下） */
+  z0?: number;
+}
+/** 钢轨的拉法：直线伸缩、Shift 拐弯、Alt 坡道、Shift+Alt 螺旋 */
+type RailMode = 'line' | 'arc' | 'slope' | 'spiral';
 
 type Drag =
   | { type: 'action'; snapshot: Model; action: Action; sx: number; sy: number; started: boolean }
@@ -93,6 +105,7 @@ type Drag =
 type GizmoTarget =
   | { type: 'comp'; id: number }
   | { type: 'rail'; id: number }
+  | { type: 'obj'; id: number }
   | { type: 'multi'; ids: number[] };
 
 type HeightTarget = (m: Model) => number | { seg: number; key: EndKey } | null;
@@ -611,12 +624,14 @@ export class Editor {
     }
 
     // 动作示意（左键 / Shift）
-    this.action = h && this.tool !== 'cut' && !this.mods.alt && !this.mods.ctrl ? this.actionFor(h) : null;
+    const railCtx = !!h && (this.tool === 'rail' || h.kind === 'rail');
+    this.action = h && this.tool !== 'cut' && (!this.mods.alt || railCtx) && !this.mods.ctrl ? this.actionFor(h) : null;
     const a = this.action;
     if (a) {
       const color = a.valid ? a.color : C_INVALID;
       if (a.face) show(this.mods.shift ? 'act-extrude' : 'act', faceSegs(a.face), color, { width: 2, pos: [a.face.x, a.face.y, a.face.z] });
       else show(this.mods.shift ? 'act-extrude' : 'act', a.segs, color, { width: 2.5, pos: a.pos });
+      if (a.face?.arrow === 'none' && a.segs.length) show(`act-mode:${this.railMode()}`, a.segs, color, { width: 2.5, pos: a.pos });
     }
     this.faceFx.set(a?.face ?? null, a?.valid ? a.color : C_INVALID);
 
@@ -876,6 +891,7 @@ export class Editor {
   /** 拖动中按住 Alt：临时切换格栅 / 自由对齐（以 Alt 开始的调高度拖动除外） */
   get gridFlipped() {
     const d = this.drag;
+    if (d?.type === 'action' && d.action.anchor) return false;
     return !!d && this.mods.alt && !['orbit', 'height', 'railHeight', 'objHeight'].includes(d.type);
   }
   private snap(): Snapper {
@@ -896,7 +912,13 @@ export class Editor {
   /** 水平坐标吸附（截面、端点、边沿、路块中心——格栅模式下都是 2.5 的倍数） */
   private snapEdge(c: number, axis: 0 | 1, at?: [number, number, number], step?: number) {
     // 拖动中的物件不吸附到它自己原来的位置
-    const ex = this.drag?.type === 'obj' ? new Set([this.drag.id]) : undefined;
+    const d = this.drag;
+    let ex: Set<number> | undefined;
+    if (d?.type === 'obj') ex = new Set([d.id]);
+    else if (d?.type === 'gizmo' && d.target.type === 'obj') {
+      const o = d.snapshot.objs[d.target.id];
+      ex = new Set([d.target.id, ...(o?.base !== undefined ? [o.base] : [])]);
+    }
     const r = this.snap().axis(this.snapModel(), axis, c, ex, step);
     this.noteGuide(r, axis, at);
     return r.v;
@@ -1248,88 +1270,258 @@ export class Editor {
   }
 
   /** 从 (x,y) 处、顶面高度 topZ 朝 out 拖出一条新钢轨（双轨，最顶端与路面顶面对齐） */
-  private railStartAction(ex: number, ey: number, topZ: number, out: Dir): Action {
-    const z = topZ;
-    const E: RailState = { x: ex, y: ey, z: z - railTopOffset('double'), heading: out * 90 };
-    return {
-      valid: true, segs: arrowSegs(out, 0, 4), pos: [ex, ey, z + 0.3], color: C_RAIL, dir: out, z,
-      // 示意：钢轨的截面（两根轨道的宽度、轨道高度）
-      face: { x: ex, y: ey, z: z, dir: out, w: RAIL_SPAN + 2 * RAIL_RADIUS, h: 2 * RAIL_RADIUS },
-      apply: () => null,
-      apply2: (mm, x, y) => {
-        const p = this.railPieceTo(E, x, y, 'double', false);
-        if (!p || p.len <= 1e-6) return;
-        const id = mm.nextId++;
-        mm.rails[id] = { id, ...E, pieces: [p] };
-      },
-    };
+  private railStartAction(ex: number, ey: number, topZ: number, out: Dir, p?: Pick): Action {
+    return this.railAnchorAction({ E: { x: ex, y: ey, z: topZ - railTopOffset('double'), heading: out * 90 }, kind: 'double', rail: null, end: 'b' }, p);
   }
 
-  /** 钢轨端点：靠近端头 = 沿方向拉长 / 缩短（缩到 0 删除）；末端侧面 = 拐弯（圆弧）。中段不能开分叉。 */
+  /** 钢轨两头：悬停在端头附近就可以接着拉（和路面端头一样） */
   private railEndAction(p: Pick): Action | null {
     const r = this.model.rails[p.id];
     if (!r || !r.pieces.length) return null;
     const E = railEnd(r);
-    const S: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
-    const dE = Math.hypot(p.point.x - E.x, p.point.y - E.y), dS = Math.hypot(p.point.x - S.x, p.point.y - S.y);
+    const dE = Math.hypot(p.point.x - E.x, p.point.y - E.y), dS = Math.hypot(p.point.x - r.x, p.point.y - r.y);
     if (Math.min(dE, dS) > 6) return null;
     const atEnd = dE <= dS;
-    const P = atEnd ? E : S;
-    const h = (P.heading * Math.PI) / 180;
-    const outSign = atEnd ? 1 : -1;
-    // 相对端头：沿出口方向的距离、横向偏移
-    const rx = p.point.x - P.x, ry = p.point.y - P.y;
-    const back = -(rx * Math.cos(h) + ry * Math.sin(h)) * outSign;
-    const lat = -rx * Math.sin(h) + ry * Math.cos(h);
-    const turn = atEnd && back > 2;
-    const rot = (q: number[], ang: number) => { for (let i = 0; i < q.length; i += 3) { const x = q[i], y = q[i + 1]; q[i] = x * Math.cos(ang) - y * Math.sin(ang); q[i + 1] = x * Math.sin(ang) + y * Math.cos(ang); } return q; };
-    const dir = (((Math.round(P.heading / 90) % 4) + 4) % 4) as Dir;
-    const last = r.pieces[r.pieces.length - 1];
-    const kind: RailKind = last.kind === 'transition' ? 'mono' : last.kind;
-    if (turn) {
-      const sideAng = h + (lat >= 0 ? Math.PI / 2 : -Math.PI / 2);
-      return {
-        valid: true, segs: rot(arrowSegs(0, 0, 3.5), sideAng), pos: [E.x, E.y, E.z + 0.3], color: C_RAIL, dir, z: E.z,
-        apply: () => null,
-        apply2: (mm, x, y) => {
-          const piece = this.railPieceTo(E, x, y, kind, true);
-          if (piece) pushPiece(mm.rails[r.id], piece);
-        },
-      };
-    }
+    const piece = atEnd ? r.pieces[r.pieces.length - 1] : r.pieces[0];
+    const kind: RailKind = piece.kind === 'transition' ? (atEnd ? 'mono' : 'double') : piece.kind;
+    const A: RailAnchor = atEnd
+      ? { E, kind, rail: r.id, end: 'b' }
+      : { E: { x: r.x, y: r.y, z: r.z, heading: r.heading + 180 }, kind, rail: r.id, end: 'a' };
+    return this.railAnchorAction(A, p);
+  }
+
+  /** 当前按键对应的钢轨拉法：直线（伸缩）、Shift 拐弯、Alt 坡道、Shift+Alt 螺旋 */
+  private railMode(): RailMode {
+    const { shift, alt } = this.mods;
+    return shift && alt ? 'spiral' : shift ? 'arc' : alt ? 'slope' : 'line';
+  }
+
+  /** 钢轨端头的动作：截面（扁平的蓝色块）+ 当前拉法的示意箭头 */
+  private railAnchorAction(A: RailAnchor, p?: Pick): Action {
+    const { E, kind } = A;
+    const top = E.z + railTopOffset(kind);
+    const h = (E.heading * Math.PI) / 180, fx = Math.cos(h), fy = Math.sin(h);
+    const mode = this.railMode();
+    // 拐弯示意朝鼠标所在的一侧
+    const side = p ? (-(p.point.x - E.x) * fy + (p.point.y - E.y) * fx >= 0 ? 1 : -1) : 1;
+    const hh = RAIL_RADIUS * 2;
+    const local = railModeSegs(mode, side, -hh / 2);
+    const segs: number[] = [];
+    for (let i = 0; i < local.length; i += 3) segs.push(local[i] * fx - local[i + 1] * fy, local[i] * fy + local[i + 1] * fx, local[i + 2]);
+    const dir = (((Math.round(E.heading / 90) % 4) + 4) % 4) as Dir;
     return {
-      valid: true, segs: rot(arrowSegs(0, 0, 4), atEnd ? h : h + Math.PI), pos: [P.x, P.y, P.z + 0.3], color: C_RAIL, dir, z: P.z,
+      valid: true, segs, pos: [E.x, E.y, top], color: C_RAIL, dir, z: top,
+      face: { x: E.x, y: E.y, z: top, dir, ang: E.heading, w: kind === 'mono' ? hh : RAIL_SPAN + hh, h: hh, arrow: 'none' },
+      anchor: A,
       apply: () => null,
-      apply2: (mm, x, y) => {
-        const rr = mm.rails[r.id];
-        if (!atEnd) {
-          // 起点：沿反方向延伸 / 缩短
-          const piece = this.railPieceTo({ ...S, heading: S.heading + 180 }, x, y, kind, false);
-          if (piece) extendStart(rr, piece.len);
-          if (!rr.pieces.length) delete mm.rails[r.id];
-          return;
-        }
-        const piece = this.railPieceTo(E, x, y, kind, false);
-        if (!piece) return;
-        if (piece.len < 0) {
-          // 往回拖：缩短末段直线，缩到 0 就去掉这一段
-          let backLen = -piece.len;
-          while (backLen > 1e-6 && rr.pieces.length) {
-            const lp = rr.pieces[rr.pieces.length - 1];
-            if (lp.angle !== 0) break;
-            const cut = Math.min(backLen, lp.len);
-            lp.dz *= lp.len > 0 ? (lp.len - cut) / lp.len : 0;
-            lp.len -= cut;
-            backLen -= cut;
-            if (lp.len <= 1e-6) rr.pieces.pop();
-          }
-          if (!rr.pieces.length) delete mm.rails[r.id];
-          return;
-        }
-        if (piece.len > 1e-6) pushPiece(rr, piece);
-      },
+      apply2: (mm, x, y, ray) => this.railDrag(mm, A, x, y, ray),
     };
   }
+
+  /** 在模型 mm 里拿到要接着长的钢轨，末端朝外（起点那头先倒过来）；新钢轨先建一条空的 */
+  private railForAnchor(mm: Model, A: RailAnchor): Rail {
+    if (A.rail === null) {
+      const id = mm.nextId++;
+      return (mm.rails[id] = { id, ...A.E, pieces: [] });
+    }
+    const r = mm.rails[A.rail];
+    if (A.end === 'a') reverseRail(r);
+    return r;
+  }
+  private railAnchorDone(mm: Model, A: RailAnchor, r: Rail) {
+    if (!mm.rails[r.id]) return;
+    if (A.end === 'a') reverseRail(r);
+    if (!r.pieces.length) delete mm.rails[r.id];
+  }
+
+  /** 拖动钢轨端头：按当前按键决定拉法（拖动中切换按键会立刻换） */
+  private railDrag(mm: Model, A: RailAnchor, x: number, y: number, ray?: THREE.Ray) {
+    const mode = this.railMode();
+    if (mode === 'spiral') return; // 螺旋在按下时弹出对话框
+    const r = this.railForAnchor(mm, A);
+    const E = r.pieces.length ? railEnd(r) : A.E;
+    const last = r.pieces[r.pieces.length - 1];
+    const stretchable = !!last && last.angle === 0 && last.kind !== 'transition';
+    const MIN = 0.5;
+    let msg = '';
+    if (mode === 'line') {
+      const p = this.railPieceTo(E, x, y, A.kind, false);
+      if (p) {
+        if (stretchable && Math.abs(last.dz) > 1e-6 && p.len > 1e-6) {
+          // 坡顶往外拉：接一段水平的
+          r.pieces.push(p);
+        } else if (stretchable) {
+          // 和路面一样：末段直线直接伸缩（往回缩时坡度不变）
+          const nl = last.len + p.len;
+          if (nl >= MIN) { if (last.len > 0) last.dz *= nl / last.len; last.len = nl; }
+          else if (r.pieces.length > 1) r.pieces.pop();
+          else { if (last.len > 0) last.dz *= MIN / last.len; last.len = MIN; }
+        } else if (p.len > 1e-6) r.pieces.push(p);
+      }
+      const joined = this.railConnect(mm, r);
+      const L = r.pieces[r.pieces.length - 1];
+      msg = joined ?? (L ? `末段长 ${fmt(pieceLength(L))}` : '');
+    } else if (mode === 'arc') {
+      const p = this.railPieceTo(E, x, y, A.kind, true);
+      if (p) { r.pieces.push(p); msg = `拐弯 ${fmt(Math.abs(p.angle))}°，半径 ${fmt(p.radius)}`; }
+    } else if (mode === 'slope' && ray && last) {
+      // 已有钢轨：和路面一样，端头上下移动，末段变成坡（圆弧、螺旋也一样带上高差）
+      const o = new THREE.Vector3(E.x, E.y, E.z);
+      const n = new THREE.Vector3().subVectors(this.camera.position, o).setZ(0).normalize();
+      const hit = new THREE.Vector3();
+      if (ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n, o), hit)) {
+        A.z0 ??= hit.z;
+        const dz = this.snapZ(E.z + hit.z - A.z0) - E.z;
+        last.dz += dz;
+        msg = `端头高 ${fmt(E.z + dz)}（${dz >= 0 ? '+' : ''}${fmt(dz)}）`;
+      }
+    } else if (mode === 'slope' && ray) {
+      // 新钢轨：在过起点、沿钢轨方向的竖直面上取鼠标位置，拉出一段坡（这个面几乎侧对视线时改用正对相机的竖直面）
+      const h = (E.heading * Math.PI) / 180, fx = Math.cos(h), fy = Math.sin(h);
+      const o = new THREE.Vector3(E.x, E.y, E.z);
+      let n = new THREE.Vector3(-fy, fx, 0);
+      if (Math.abs(ray.direction.dot(n)) < 0.2) n = new THREE.Vector3().subVectors(this.camera.position, o).setZ(0).normalize();
+      const hit = new THREE.Vector3();
+      if (ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n, o), hit)) {
+        const fwd = (hit.x - E.x) * fx + (hit.y - E.y) * fy;
+        const p = this.railPieceTo(E, E.x + fx * fwd, E.y + fy * fwd, A.kind, false);
+        const dz = this.snapZ(hit.z) - E.z;
+        if (p && p.len >= MIN) { r.pieces.push({ ...p, dz }); msg = `坡道长 ${fmt(p.len)}，高差 ${dz >= 0 ? '+' : ''}${fmt(dz)}`; }
+        else if (stretchable) { last.dz += dz; msg = `末段高差 ${fmt(last.dz)}`; }
+      }
+    }
+    this.railAnchorDone(mm, A, r);
+    this.alignRailsToRoads(mm);
+    if (msg) this.onStatus(msg);
+  }
+
+  /**
+   * 直线拉到别的钢轨端头 / 路面边上附近时吸过去：
+   * 正对着另一条钢轨的端头（同一直线、同高）就连成一条；正对着路面外沿就刚好接到路边。
+   */
+  private railConnect(mm: Model, r: Rail): string | null {
+    const last = r.pieces[r.pieces.length - 1];
+    if (!last || last.angle !== 0) return null;
+    const E = railEnd(r);
+    const h = (E.heading * Math.PI) / 180, fx = Math.cos(h), fy = Math.sin(h);
+    const tol = Math.max(1.5, this.snap().tol);
+    const same = (a: number, b: number) => Math.abs(((((a - b) % 360) + 540) % 360) - 180) < 0.5;
+    for (const o of Object.values(mm.rails)) {
+      if (o.id === r.id || !o.pieces.length) continue;
+      const OE = railEnd(o);
+      for (const [S, rev] of [[{ x: o.x, y: o.y, z: o.z, heading: o.heading }, false], [{ ...OE, heading: OE.heading + 180 }, true]] as [RailState, boolean][]) {
+        if (!same(S.heading, E.heading)) continue;
+        const dx = S.x - E.x, dy = S.y - E.y;
+        const along = dx * fx + dy * fy, lat = -dx * fy + dy * fx;
+        if (Math.abs(lat) > 0.05 || Math.abs(along) > tol || last.len + along < 0.5) continue;
+        const slope = last.len > 0 ? last.dz / last.len : 0;
+        if (Math.abs(E.z + slope * along - S.z) > 0.05) continue;
+        last.dz += slope * along;
+        last.len += along;
+        if (rev) reverseRail(o);
+        appendRail(r, o);
+        delete mm.rails[o.id];
+        return '接上另一条钢轨';
+      }
+    }
+    // 路面外沿：朝着钢轨的那条边
+    for (const l of this.loops) {
+      for (let i = 0; i < l.outs.length; i++) {
+        const a = l.pts[i], b = l.pts[(i + 1) % l.pts.length], o = l.outs[i];
+        const d = o[0] * fx + o[1] * fy;
+        if (d > -0.999) continue;
+        const t = ((a[0] - E.x) * o[0] + (a[1] - E.y) * o[1]) / d;
+        if (Math.abs(t) > tol || last.len + t < 0.5) continue;
+        const px = E.x + fx * t, py = E.y + fy * t;
+        const ex = b[0] - a[0], ey = b[1] - a[1], L2 = ex * ex + ey * ey;
+        const u = ((px - a[0]) * ex + (py - a[1]) * ey) / L2;
+        if (u < 0 || u > 1) continue;
+        if (last.len > 0) last.dz *= (last.len + t) / last.len;
+        last.len += t;
+        return '接到路边';
+      }
+    }
+    return null;
+  }
+
+  /** Shift+Alt：螺旋对话框（方向、半径、每圈高度、圈数），边改边预览 */
+  private openSpiral(A: RailAnchor | null, edit?: { rail: number; index: number }) {
+    this.closeSpiral();
+    const snapshot = cloneModel(this.model);
+    const init = edit ? snapshot.rails[edit.rail]?.pieces[edit.index] : null;
+    if (!A && !init) return;
+    const v = {
+      sg: init ? Math.sign(init.angle) || 1 : 1,
+      radius: init?.radius ?? SPIRAL_RADIUS,
+      turns: init ? Math.abs(init.angle) / 360 : 1,
+      pitch: init ? init.dz / Math.max(Math.abs(init.angle) / 360, 1e-6) : -SPIRAL_SCREW,
+    };
+    const build = () => {
+      const mm = cloneModel(snapshot);
+      const piece: RailPiece = { kind: init?.kind ?? A?.kind ?? 'double', len: 0, radius: Math.max(v.radius, 1), angle: 360 * v.turns * v.sg, dz: v.pitch * v.turns };
+      if (edit) mm.rails[edit.rail].pieces[edit.index] = piece;
+      else if (A) {
+        const r = this.railForAnchor(mm, A);
+        r.pieces.push(piece);
+        this.railAnchorDone(mm, A, r);
+      }
+      this.alignRailsToRoads(mm);
+      return mm;
+    };
+    const el = document.createElement('div');
+    el.className = 'settings-panel spiral-dlg';
+    el.innerHTML = `<h3>${edit ? '编辑螺旋' : '接一段螺旋'}</h3>
+      <label><span>方向</span><span class="seg-toggle"><button data-sg="1">左旋</button><button data-sg="-1">右旋</button></span></label>
+      <label><span>半径<small>螺旋中线的半径（原版 5）</small></span><input data-k="radius" type="number" step="0.5" min="1"></label>
+      <label><span>每圈高度<small>正数上升、负数下降（原版 5）</small></span><input data-k="pitch" type="number" step="0.5"></label>
+      <label><span>圈数<small>可以是小数，如 0.5 圈</small></span><input data-k="turns" type="number" step="0.25" min="0.25"></label>
+      <div class="row"><button class="ghost" data-act="cancel">取消</button><button class="primary" data-act="ok">确定</button></div>`;
+    type K = 'radius' | 'pitch' | 'turns';
+    const inputs = el.querySelectorAll<HTMLInputElement>('input');
+    const sync = () => {
+      for (const i of inputs) i.value = String(Math.round(v[i.dataset.k as K] * 1000) / 1000);
+      for (const b of el.querySelectorAll<HTMLButtonElement>('[data-sg]')) b.classList.toggle('on', Number(b.dataset.sg) === v.sg);
+    };
+    const preview = () => this.setModel(build());
+    for (const i of inputs) i.addEventListener('input', () => {
+      const x = parseFloat(i.value);
+      if (!Number.isFinite(x)) return;
+      v[i.dataset.k as K] = i.dataset.k === 'turns' ? Math.max(0.05, x) : x;
+      preview();
+    });
+    for (const b of el.querySelectorAll<HTMLButtonElement>('[data-sg]')) b.addEventListener('click', () => { v.sg = Number(b.dataset.sg); sync(); preview(); });
+    const finish = (ok: boolean) => {
+      this.closeSpiral();
+      if (ok) {
+        this.model = build();
+        normalize(this.model);
+        this.pushUndo(snapshot);
+        this.commitView(snapshot);
+      } else {
+        this.model = snapshot;
+        this.commitView();
+      }
+    };
+    el.querySelector('[data-act="ok"]')!.addEventListener('click', () => finish(true));
+    el.querySelector('[data-act="cancel"]')!.addEventListener('click', () => finish(false));
+    el.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // 放在左下角，不挡视图
+    this.host.appendChild(el);
+    this.hover = null;
+    this.overlayDirty = true;
+    this.spiralEl = el;
+    sync();
+    preview();
+    inputs[0].focus();
+    inputs[0].select();
+  }
+  private spiralEl: HTMLElement | null = null;
+  private closeSpiral() { this.spiralEl?.remove(); this.spiralEl = null; }
 
   private railMenu(p: Pick): (MenuItem | null)[] {
     const r = this.model.rails[p.id];
@@ -1339,11 +1531,11 @@ export class Editor {
     const editRail = (fn: (rr: Rail) => void) => () => this.mutate((mm) => { const rr = mm.rails[r.id]; if (rr) fn(rr); if (rr && !rr.pieces.length) delete mm.rails[r.id]; });
     const last = r.pieces[r.pieces.length - 1];
     const endKind: RailKind = last?.kind === 'transition' ? 'mono' : last?.kind ?? 'double';
-    const spiral = (sg: number, up: number): MenuItem => ({
-      label: `末端接螺旋：${sg > 0 ? '左' : '右'}旋${up > 0 ? '上升' : '下降'}`, hint: `半径 ${SPIRAL_RADIUS}，每圈 ${SPIRAL_SCREW}`,
-      action: editRail((rr) => rr.pieces.push({ kind: endKind, len: 0, radius: SPIRAL_RADIUS, angle: 360 * sg, dz: SPIRAL_SCREW * up })),
-    });
-    const isSpiral = last && Math.abs(last.angle) >= 360;
+    const hp = r.pieces[piece];
+    const isSpiral = !!hp && hp.angle !== 0 && (Math.abs(hp.angle) >= 360 || Math.abs(hp.dz) > 1e-6);
+    const E = railEnd(r);
+    // 与另一条钢轨首尾相接（分隔后、或拉到一起）：可以合并成一条
+    const joinable = Object.values(this.model.rails).find((o) => o.id !== r.id && (canAppend(r, o) || canAppend(o, r) || canAppend(r, reversed(o)) || canAppend(reversed(o), r)));
     const kindItem = (k: RailKind): MenuItem => ({
       label: `这一段改为${names[k]}`, hint: cur === k ? '当前' : undefined, disabled: cur === k,
       action: editRail((rr) => { rr.pieces[piece].kind = k; }),
@@ -1353,10 +1545,11 @@ export class Editor {
       kindItem('double'), kindItem('mono'), kindItem('transition'),
       { label: '末端接单双转换', hint: `长 ${TRANSITION_LEN}`, action: editRail((rr) => rr.pieces.push({ kind: 'transition', len: TRANSITION_LEN, radius: 0, angle: 0, dz: 0 })) },
       null,
-      spiral(1, -1), spiral(-1, -1), spiral(1, 1), spiral(-1, 1),
-      { label: '螺旋加一圈', disabled: !isSpiral, action: editRail((rr) => { const q = rr.pieces[rr.pieces.length - 1]; const sg = Math.sign(q.angle); const per = q.dz / (Math.abs(q.angle) / 360); q.angle += 360 * sg; q.dz += per; }) },
+      { label: '末端接螺旋…', hint: 'Shift+Alt 拖端头', action: () => this.openSpiral({ E, kind: endKind, rail: r.id, end: 'b' }) },
+      { label: '编辑这段螺旋…', disabled: !isSpiral, action: () => this.openSpiral(null, { rail: r.id, index: piece }) },
       null,
-      { label: '在此分隔', action: () => this.cutRailAt(r.id, sAt) },
+      { label: '在此分隔', hint: 'C', action: () => this.cutRailAt(r.id, sAt) },
+      { label: '与相接的钢轨合并', disabled: !joinable, action: () => this.mutate((mm) => { if (joinable) joinRails(mm, r.id, joinable.id); }) },
       { label: '删除末段', action: editRail((rr) => { rr.pieces.pop(); }) },
       { label: '删除这条钢轨', hint: 'X / Del', action: () => this.mutate((mm) => { delete mm.rails[r.id]; }) },
     ];
@@ -1432,13 +1625,15 @@ export class Editor {
   // ---------------- gizmo ----------------
 
   private gizmoTargetFor(p: Pick): GizmoTarget | null {
-    if (p.kind === 'obj' || p.kind === 'guard') return null;
+    if (p.kind === 'guard') return null;
+    if (p.kind === 'obj') return { type: 'obj', id: p.id };
     return p.kind === 'rail' ? { type: 'rail', id: p.id } : { type: 'comp', id: p.id };
   }
 
   /** 手柄显示位置：悬停元素的中心 */
   private gizmoPos(m: Model, g: GizmoTarget): THREE.Vector3 | null {
     if (g.type === 'rail') { const r = m.rails[g.id]; return r ? new THREE.Vector3(r.x, r.y, r.z) : null; }
+    if (g.type === 'obj') { const o = m.objs[g.id]; return o ? new THREE.Vector3(o.x, o.y, o.z) : null; }
     if (g.type === 'multi') {
       // 多选：包围盒中心，高度取最高处
       const pts: [number, number, number][] = [];
@@ -1463,6 +1658,12 @@ export class Editor {
   /** 吸附参照点：网格对齐的特征（直道取 a 端、节点取中心），保证移动后边沿仍落在格栅上 */
   private gizmoAnchor(m: Model, g: GizmoTarget): THREE.Vector3 | null {
     if (g.type === 'comp' && m.segs[g.id]) { const s = m.segs[g.id]; return new THREE.Vector3(s.x, s.y, endZ(m, s, 'a')); }
+    if (g.type === 'obj' && m.objs[g.id]) {
+      // 有对准方块的机关按方块的边沿对齐（方块中心落在格点上时边沿也在格栅上）
+      const o = m.objs[g.id];
+      const b = anchorBlocks(o)[0];
+      return b ? new THREE.Vector3(b.x - b.hx, b.y - b.hy, b.top) : new THREE.Vector3(o.x, o.y, o.z);
+    }
     if (g.type === 'multi') {
       const sid = g.ids.find((id) => m.segs[id]);
       if (sid !== undefined) { const sg = m.segs[sid]; return new THREE.Vector3(sg.x, sg.y, endZ(m, sg, 'a')); }
@@ -1484,6 +1685,14 @@ export class Editor {
     const v = [0, 0, 0];
     v[axis] = d;
     if (g.type === 'rail') { const r = m.rails[g.id]; r.x += v[0]; r.y += v[1]; r.z += v[2]; return true; }
+    if (g.type === 'obj') {
+      const o = m.objs[g.id];
+      if (!o) return false;
+      if (o.base !== undefined) revertBase(m, o.base);
+      o.x += v[0]; o.y += v[1]; o.z += v[2];
+      this.settleObj(m, o.id);
+      return true;
+    }
     const piece = this.gizmoPieceIds(m, g);
     if (piece.size && !movePiece(m, piece, v[0], v[1], v[2], info)) return false;
     if (g.type === 'multi') {
@@ -1491,7 +1700,13 @@ export class Editor {
         const r = m.rails[id];
         if (r && !info?.moved.has(id)) { r.x += v[0]; r.y += v[1]; r.z += v[2]; }
         const o = m.objs[id];
-        if (o) { o.x += v[0]; o.y += v[1]; o.z += v[2]; }
+        if (o) {
+          // 底座不在一起移动的路面里：跟着机关走（离路面近就吸上去，否则单独放）
+          const baseMoves = o.base !== undefined && piece.has(o.base);
+          if (o.base !== undefined && !baseMoves) revertBase(m, o.base);
+          o.x += v[0]; o.y += v[1]; o.z += v[2];
+          if (!baseMoves) this.settleObj(m, o.id);
+        }
       }
     }
     return piece.size > 0 || g.type === 'multi';
@@ -1716,6 +1931,18 @@ export class Editor {
       if (p.kind === 'rail') { const r = this.model.rails[p.id]; this.cutRailAt(r.id, nearestS(r, p.point.x, p.point.y)); }
       return;
     }
+    // 钢轨端头（或钢轨工具从路边起轨）：直线 / Shift 拐弯 / Alt 坡道直接拖；Shift+Alt 弹出螺旋对话框
+    if (this.tool === 'rail' || p.kind === 'rail') {
+      const ra = this.actionFor(p);
+      if (ra?.anchor && ra.valid) {
+        this.select(p.id);
+        if (e.shiftKey && e.altKey) { this.openSpiral(ra.anchor); return; }
+        this.drag = { type: 'action', snapshot, action: ra, sx: e.clientX, sy: e.clientY, started: false };
+        this.overlayDirty = true;
+        return;
+      }
+      if (ra && !ra.valid) { if (ra.reason) this.flashStatus(ra.reason); return; }
+    }
     if (e.altKey && p.kind === 'rail') {
       const r = this.model.rails[p.id];
       const n = new THREE.Vector3().subVectors(this.camera.position, p.point).setZ(0).normalize();
@@ -1841,7 +2068,7 @@ export class Editor {
       const hit = this.rayOnPlaneZ(d.action.z);
       if (!hit) return;
       const m = cloneModel(d.snapshot);
-      if (d.action.apply2) d.action.apply2(m, hit.x, hit.y);
+      if (d.action.apply2) d.action.apply2(m, hit.x, hit.y, this.raycaster.ray);
       else {
         this.growEnd = d.action.apply(m, axisOf(d.action.dir) === 0 ? hit.x : hit.y);
         if (this.growEnd) this.pullToConnection(m, this.growEnd);
@@ -1921,6 +2148,7 @@ export class Editor {
     this.growEnd = null;
     this.guides = [];
     normalize(m);
+    if (!this.dragMovesRails(d)) followRails(before, m);
     this.alignRailsToRoads(m);
     followSurfaces(before, m);
     if (JSON.stringify(before) === JSON.stringify(m)) return;
@@ -1930,10 +2158,12 @@ export class Editor {
 
   private onKey(e: KeyboardEvent, down: boolean) {
     const flipped = this.gridFlipped;
+    const railMode = this.railMode();
     this.syncMods(e);
     if (e.key === 'Alt') e.preventDefault();
-    // 拖动中切换了临时对齐模式：按新模式重新计算一次
-    if (this.gridFlipped !== flipped && this.drag && this.lastMove) {
+    const railSwitch = this.drag?.type === 'action' && !!this.drag.action.anchor && this.railMode() !== railMode;
+    // 拖动中切换了临时对齐模式（或钢轨的拉法）：按新模式重新计算一次
+    if ((this.gridFlipped !== flipped || railSwitch) && this.drag && this.lastMove) {
       const lm = this.lastMove;
       this.onMove({ clientX: lm.clientX, clientY: lm.clientY, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey } as PointerEvent);
       this.onChange();
@@ -2246,12 +2476,12 @@ export class Editor {
    *   2. 5×5 的方块落在格子上（格栅）或吸附（自动对齐）；
    * 横向：方块和路一样宽时落在路中线上。
    */
-  private alignBlock(x: number, y: number, z: number, hx: number, hy: number): { x: number; y: number; z: number } | null {
-    const sfs = surfacesAt(this.model, x, y).filter((sf) => Math.abs(sf.z - z) < 3);
+  private alignBlock(x: number, y: number, z: number, hx: number, hy: number, model: Model = this.model): { x: number; y: number; z: number } | null {
+    const sfs = surfacesAt(model, x, y).filter((sf) => Math.abs(sf.z - z) < 3);
     if (!sfs.length) return null;
     const sf = sfs.reduce((a, b) => (Math.abs(b.z - z) < Math.abs(a.z - z) ? b : a));
-    const seg = this.model.segs[sf.id], node = this.model.nodes[sf.id];
-    const tol = Math.max(2.5, this.snap().tol);
+    const seg = model.segs[sf.id], node = model.nodes[sf.id];
+    const tol = Math.min(1.25, this.snap().tol);
     /** 一维：区间 [lo, hi] 内放半宽 h 的方块，优先贴两头 */
     const fit = (c: number, lo: number, hi: number, h: number, axis: 0 | 1, at: [number, number, number]) => {
       const cands = [lo + h, hi - h].filter((v) => v >= lo + h - 1e-6 && v <= hi - h + 1e-6);
@@ -2279,6 +2509,22 @@ export class Editor {
     // 平台：5×5 方块落在格子上，其余按格栅 / 吸附
     if (this.gridMode && Math.abs(hx - HALF) < 1e-6 && Math.abs(hy - HALF) < 1e-6) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z };
     return { x: this.snapEdge(x - hx, 0, [x, y, sf.z]) + hx, y: this.snapEdge(y - hy, 1, [x, y, sf.z]) + hy, z: sf.z };
+  }
+
+  /**
+   * 自由移动后的机关：对准方块离路面很近（水平 1.25、高度 0.5 以内）就吸到路上并替换路面，
+   * 否则需要专属底座的机关在原地单独放一块底座。
+   */
+  private settleObj(m: Model, id: number) {
+    const o = m.objs[id];
+    if (!o || !baseOf(o.type)) return;
+    const b = anchorBlocks(o)[0];
+    const cell = b ? this.alignBlock(b.x, b.y, b.top, b.hx, b.hy, m) : null;
+    if (b && cell && Math.hypot(cell.x - b.x, cell.y - b.y) < 1.25 && Math.abs(cell.z - b.top) < 0.5) {
+      o.x += cell.x - b.x; o.y += cell.y - b.y; o.z += cell.z - b.top;
+      if (placeBase(m, id) !== null) return;
+    }
+    placeFreeBase(m, id);
   }
 
   /** 路面顶面高度（凹槽里点到的是槽底，取路面标称高度） */
@@ -2540,14 +2786,24 @@ export class Editor {
   }
 
   private setModel(m: Model) {
+    // 拖动路面时，接在路面端头上的钢轨跟着伸缩 / 移动（拖钢轨本身时不跟）
+    const d = this.drag;
+    if (d && 'snapshot' in d && !this.dragMovesRails(d)) followRails(d.snapshot, m);
     this.model = m;
     this.overlayDirty = true;
+  }
+
+  /** 这次拖动改的是钢轨本身（钢轨端头、钢轨高度、用 gizmo 移动钢轨） */
+  private dragMovesRails(d: Drag) {
+    return (d.type === 'action' && !!d.action.anchor) || d.type === 'railHeight' || (d.type === 'gizmo' && d.target.type === 'rail');
   }
 
   private mutate(fn: (m: Model) => void) {
     const before = cloneModel(this.model);
     fn(this.model);
     normalize(this.model);
+    followRails(before, this.model);
+    this.alignRailsToRoads(this.model);
     followSurfaces(before, this.model);
     if (JSON.stringify(before) === JSON.stringify(this.model)) return;
     this.pushUndo(before);
@@ -2658,6 +2914,8 @@ export class Editor {
         hs = [H(['LMB'], '确认'), H(['Esc'], '取消')];
         if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], (this.gridMode !== this.gridFlipped ? '临时关格栅' : '临时开格栅') + ' · 允许连成坡'));
       }
+    } else if (this.tool === 'edit' && this.hover?.kind === 'rail' && this.action?.anchor) {
+      hs = [H(['LMB'], '直线伸缩'), H(['Shift', 'LMB'], '拐弯'), H(['Alt', 'LMB'], '坡道'), H(['Shift', 'Alt', 'LMB'], '螺旋'), H(['RMB'], '菜单')];
     } else if (this.tool === 'edit') {
       if (this.mods.shift) hs = [H(['Shift', 'LMB'], '侧面拉成平台 / 推平台边')];
       else if (this.mods.ctrl) hs = [H(['Ctrl', 'LMB'], this.selection.size ? `移动选中的 ${this.selection.size} 个` : '沿箭头移动这一块'), H([], '蓝框整体平移 · 黄虚线伸缩 / 成坡')];
@@ -2668,13 +2926,70 @@ export class Editor {
       ];
     } else if (this.tool === 'cut') hs = [H(['C', 'LMB'], '点截面分隔（路面 / 钢轨）'), H([], '松开 C 回到原来的工具'), H(['MMB'], '环视')];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];
-    else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
+    else hs = [
+      H(['LMB'], '从路边 / 钢轨端头拉：直线伸缩'), H(['Shift'], '拐弯'), H(['Alt'], '坡道'), H(['Shift', 'Alt'], '螺旋'),
+      H(['Ctrl'], '移动'), H(['C'], '按住分隔'), H(['RMB'], '单双轨 / 合并'), H(['X'], '删除'),
+    ];
     if (this.selection.size && !d) hs.push(H(['X'], '删除选中'), H(['Esc'], '取消选择'));
     const key = JSON.stringify(hs);
     if (key === this.hintsKey) return;
     this.hintsKey = key;
     this.onHints(hs);
   }
+}
+
+function reversed(r: Rail): Rail {
+  const c: Rail = JSON.parse(JSON.stringify(r));
+  reverseRail(c);
+  return c;
+}
+
+/** 把首尾相接的两条钢轨合并成一条（必要时倒过来接） */
+function joinRails(m: Model, aId: number, bId: number) {
+  const a = m.rails[aId], b = m.rails[bId];
+  if (!a || !b) return;
+  for (const [x, y] of [[a, b], [b, a]] as [Rail, Rail][]) {
+    for (const flipY of [false, true]) {
+      for (const flipX of [false, true]) {
+        const X: Rail = flipX ? reversed(x) : x, Y: Rail = flipY ? reversed(y) : y;
+        if (!canAppend(X, Y)) continue;
+        appendRail(X, Y);
+        X.id = aId;
+        m.rails[aId] = X;
+        delete m.rails[bId];
+        return;
+      }
+    }
+  }
+}
+
+/** 钢轨拉法的示意（本地坐标：x 沿钢轨朝外、y 朝左、z 朝上，zc 为截面中心高度） */
+function railModeSegs(mode: RailMode, side: number, zc: number): number[] {
+  const out: number[] = [];
+  const line = (a: number[], b: number[]) => out.push(...a, ...b);
+  /** 箭头头部：尖端 t，方向 d（单位向量），两翼沿 n 张开 */
+  const head = (t: number[], d: number[], n: number[]) => {
+    for (const s of [1, -1]) line(t, [t[0] - d[0] * 1.1 + n[0] * 0.8 * s, t[1] - d[1] * 1.1 + n[1] * 0.8 * s, t[2] - d[2] * 1.1 + n[2] * 0.8 * s]);
+  };
+  if (mode === 'line') {
+    line([0.4, 0, zc], [4, 0, zc]);
+    head([4, 0, zc], [1, 0, 0], [0, 1, 0]);
+  } else if (mode === 'arc') {
+    const R = 3.5, N = 12, th1 = (80 * Math.PI) / 180;
+    const P = (t: number) => [R * Math.sin(t), side * (R - R * Math.cos(t)), zc];
+    for (let i = 0; i < N; i++) line(P((th1 * i) / N), P((th1 * (i + 1)) / N));
+    head(P(th1), [Math.cos(th1), side * Math.sin(th1), 0], [-side * Math.sin(th1), Math.cos(th1), 0]);
+  } else if (mode === 'slope') {
+    const t = [3.6, 0, zc + 2.2], L = Math.hypot(3.2, 2.2), d = [3.2 / L, 0, 2.2 / L];
+    line([0.4, 0, zc], t);
+    head(t, d, [-d[2], 0, d[0]]);
+  } else {
+    // 螺旋：一圈半往上绕
+    const N = 36, R = 1.3, cx = 2.4, H = 2.6;
+    const P = (i: number) => { const t = (i / N) * Math.PI * 3; return [cx - R * Math.cos(t), R * Math.sin(t), zc + (H * i) / N]; };
+    for (let i = 0; i < N; i++) line(P(i), P(i + 1));
+  }
+  return out;
 }
 
 /** 从中心沿 dir 偏移 start 处开始、长 len 的箭头 */
@@ -2701,7 +3016,8 @@ function rebaseObj(m: Model, id: number) {
   const o = m.objs[id];
   if (!o || !baseOf(o.type)) return;
   if (o.base !== undefined) revertBase(m, o.base);
-  placeBase(m, id);
+  // 不在路面上（或放不下）：单独放一块底座
+  if (placeBase(m, id) === null) placeFreeBase(m, id);
 }
 
 /** 直道顶面的外框（随坡度） */
