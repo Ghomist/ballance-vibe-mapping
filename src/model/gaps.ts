@@ -3,7 +3,7 @@
 // 原版里这些机关横跨在两段路之间，中间没有路面。放在一段直路中间时，自动把对准方块之间的那段路去掉，
 // 断开处是开放端点；端点上记着属于哪个机关（GapMark），机关挪走或删掉后两侧的路重新接回一整段。
 import { anchorBlocks, objType } from './objects';
-import { DX, DY, EndKey, FreeEnd, GapMark, Model, Seg, axisOf, endOutDir, endPos, endZ, isFree, opp } from './types';
+import { DX, DY, EndKey, FreeEnd, GapMark, Model, Seg, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp } from './types';
 
 const EPS = 1e-6;
 /** 断开的长度太短（小于这个）就不断 */
@@ -40,7 +40,25 @@ export function cutForObj(m: Model, id: number): number {
   const o = m.objs[id];
   if (!o) return 0;
   let n = 0;
-  for (const g of gapsOf(o)) for (const s of Object.values(m.segs)) {
+  for (const g of gapsOf(o)) {
+    // 缺口里（含两头）的截面接头先拆开成两个开放端点（坡道分界、分隔过的路都会有接头），之后照常截断；
+    // 接回去时两侧的开放端点重新碰在一起，规范化会自动接上
+    for (const j of Object.values(m.nodes)) {
+      if (j.kind !== 'joint' || j.axis !== g.axis || Math.abs(j.z - g.z) > 0.01) continue;
+      const c = g.axis === 0 ? j.x : j.y, lat = g.axis === 0 ? j.y : j.x;
+      if (c < g.lo - EPS || c > g.hi + EPS || !g.lats.some((l) => Math.abs(l - lat) < 2.5 - EPS)) continue;
+      for (const p of nodePorts(m, j.id)) if (p) m.segs[p.seg][p.key] = { node: null, z: j.z, style: 'open' };
+      delete m.nodes[j.id];
+      if (m.root === j.id) m.root = Object.keys(m.segs).map(Number)[0] ?? null;
+    }
+    n += cutLine(m, id, g);
+  }
+  return n;
+}
+
+function cutLine(m: Model, id: number, g: ReturnType<typeof gapsOf>[number]): number {
+  let n = 0;
+  for (const s of Object.values(m.segs)) {
     if (axisOf(s.dir) !== g.axis) continue;
     const za = endZ(m, s, 'a');
     if (Math.abs(za - g.z) > 0.01 || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;

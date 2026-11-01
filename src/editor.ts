@@ -302,14 +302,23 @@ export class Editor {
   setGridMode(on: boolean) { this.gridMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
   setSnapMode(on: boolean) { this.snapMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
 
+  /** 新放的机关归到哪个小节（null：自动判断） */
+  placeSector: number | null = null;
+  setPlaceSector(v: number | null) { this.placeSector = v; this.onChange(); }
+
+  /** 在机关上显示所属小节的序号 */
+  showSectors = false;
+  setShowSectors(on: boolean) { this.showSectors = on; this.savePrefs(); this.syncSectorLabels(this.display); this.onChange(); }
+
   private savePrefs() {
-    try { localStorage.setItem('bvm.prefs', JSON.stringify({ grid: this.gridMode, snap: this.snapMode })); } catch { /* 存不了就算了 */ }
+    try { localStorage.setItem('bvm.prefs', JSON.stringify({ grid: this.gridMode, snap: this.snapMode, sectors: this.showSectors })); } catch { /* 存不了就算了 */ }
   }
   private loadPrefs() {
     try {
       const p = JSON.parse(localStorage.getItem('bvm.prefs') ?? '{}');
       if (typeof p.grid === 'boolean') this.gridMode = p.grid;
       if (typeof p.snap === 'boolean') this.snapMode = p.snap;
+      if (typeof p.sectors === 'boolean') this.showSectors = p.sectors;
     } catch { /* 用默认值 */ }
   }
 
@@ -527,6 +536,42 @@ export class Editor {
     }
     this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes);
     this.syncCheckpointLabels(m);
+    this.syncSectorLabels(m);
+  }
+
+  private secLabels = new Map<number, CSS2DObject>();
+  /** 机关头顶的小节序号（打开「显示小节」时）；手动指定的实线框，自动判断的虚线框 */
+  private syncSectorLabels(m: Model) {
+    const live = new Set<number>();
+    if (this.showSectors) {
+      for (const o of Object.values(m.objs)) {
+        if (o.cat !== 'module') continue;
+        live.add(o.id);
+        let l = this.secLabels.get(o.id);
+        if (!l) {
+          const div = document.createElement('div');
+          l = new CSS2DObject(div);
+          this.scene.add(l);
+          this.secLabels.set(o.id, l);
+        }
+        const text = String(objSector(m, o));
+        if (l.element.textContent !== text) l.element.textContent = text;
+        const cls = `sec-label${o.sector === undefined ? ' auto' : ''}`;
+        if (l.element.className !== cls) l.element.className = cls;
+        l.element.title = o.sector === undefined ? `第 ${text} 小节（自动判断）` : `第 ${text} 小节`;
+        // 放在模型顶上
+        const box = new THREE.Box3();
+        for (const mesh of this.meshCache.get(o.id)?.meshes ?? []) { mesh.updateMatrixWorld(); box.expandByObject(mesh); }
+        const top = box.isEmpty() ? o.z + 3 : box.max.z;
+        l.position.set(o.x, o.y, top + 1.5);
+      }
+    }
+    for (const [id, l] of this.secLabels) {
+      if (live.has(id)) continue;
+      this.scene.remove(l);
+      l.element.remove();
+      this.secLabels.delete(id);
+    }
   }
 
   /** 盘点路面：资产库模型 + 火焰 / 重生点占位符（模型未加载时先用盒子占位） */
@@ -2266,7 +2311,7 @@ export class Editor {
       const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
       // 机关工具里没指着已放的物件：转的是待放置的朝向
       if (this.placing) { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
-      if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; rebaseObj(m, id); });
+      if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (Math.round(m.objs[id].rot / 90) * 90 + (e.shiftKey ? 270 : 90)) % 360; rebaseObj(m, id); });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
     if (k === 'f') this.frameSelection();
@@ -2655,6 +2700,8 @@ export class Editor {
     const m = this.model;
     const id = addObj(m, type, at.x, at.y, at.z, at.rot);
     if (id === null) { this.flashStatus(`${objType(type)?.label ?? type}只能有一个`); return; }
+    // 工具栏选了小节：新放的机关归到这个小节
+    if (this.placeSector !== null && m.objs[id].cat === 'module') m.objs[id].sector = Math.min(this.placeSector, sectorCount(m));
     rebaseObj(m, id);
     normalize(m);
     this.pushUndo(before);

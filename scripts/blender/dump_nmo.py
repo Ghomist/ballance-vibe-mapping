@@ -77,7 +77,12 @@ def main():
                     'visible': o.get_visibility(),
                 })
             for g in r.get_groups():
-                res['groups'].append({'name': g.get_name(), 'objects': [o.get_name() for o in g.get_objects()]})
+                # 组里可能有 BMap 读不了的对象（例如机关文件里的脚本对象）：跳过这些
+                names = []
+                for o in g.get_objects():
+                    try: names.append(o.get_name())
+                    except Exception: pass
+                res['groups'].append({'name': g.get_name(), 'objects': names})
     with open(out, 'w', encoding='utf8') as f:
         json.dump(res, f, ensure_ascii=False)
     print('已导出', out)

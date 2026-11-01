@@ -109,7 +109,7 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo) {
   const topMat: MatName = sink ? 'FloorTopProfil' : 'FloorTopBorder';
   const closedA = isFree(s.a) && s.a.style === 'closed';
   const closedB = isFree(s.b) && s.b.style === 'closed';
-  // 封闭端各占 2.5；路段太短时按比例压缩
+  // 封闭端各占 2.5；路段太短时截断（保留最前端的花纹，和开放端一样），不压缩贴图
   const cap = closedA && closedB ? Math.min(HALF, s.len / 2) : Math.min(HALF, s.len);
   const t0 = closedA ? cap : 0;
   const t1 = closedB ? s.len - cap : s.len;
@@ -122,12 +122,26 @@ function buildSeg(mb: MeshBuilder, m: Model, s: Seg, chain: ChainInfo) {
         [[0, vAt(t0)], [0, vAt(t1)], [0.5, vAt(t1)], [0.5, vAt(t0)]], UP);
     }
   }
-  // 封闭端：两个外角
+  // 封闭端：两个外角。完整的外角是 2.5×2.5 的方块，沿对角线 C–O 分成两个三角形：
+  //   靠端面的一半 uv = (d/5, w/5)，靠里的一半 uv = (0.5 - w/5, 0.5 - d/5)（d：离端面的距离，w：离中线的距离）
+  // 不够 2.5 时在 d = cap 处截断，花纹大小不变
   const outerCorner = (tEnd: number, tIn: number) => {
+    const sg = Math.sign(tIn - tEnd);
     for (const side of [1, -1]) {
-      const C = pt(tEnd, side * HALF), A1 = pt(tEnd, 0), A2 = pt(tIn, side * HALF), O = pt(tIn, 0, -sink);
-      mb.tri(topMat, [C, A1, O], [[0, 0.5], [0, 0], [0.5, 0]], UP);
-      mb.tri(topMat, [C, O, A2], [[0, 0.5], [0.5, 0], [0, 0]], UP);
+      if (cap >= HALF - 1e-9) {
+        const C = pt(tEnd, side * HALF), A1 = pt(tEnd, 0), A2 = pt(tIn, side * HALF), O = pt(tIn, 0, -sink);
+        mb.tri(topMat, [C, A1, O], [[0, 0.5], [0, 0], [0.5, 0]], UP);
+        mb.tri(topMat, [C, O, A2], [[0, 0.5], [0.5, 0], [0, 0]], UP);
+        continue;
+      }
+      // 凹槽的下沉量也按完整外角的平面插值
+      const v = (d: number, w: number, inner: boolean): V3 =>
+        pt(tEnd + sg * d, side * w, inner ? -sink * (1 - w / HALF) : -sink * (d / HALF));
+      const c = cap;
+      const C = v(0, HALF, false), A1 = v(0, 0, false), R = v(c, 0, false), Q = v(c, HALF - c, false);
+      const S = v(c, HALF, true);
+      mb.quad(topMat, [A1, R, Q, C], [[0, 0], [c / 5, 0], [c / 5, (HALF - c) / 5], [0, 0.5]], UP);
+      mb.tri(topMat, [C, Q, S], [[0, 0.5], [c / 5, (HALF - c) / 5], [0, 0.5 - c / 5]], UP);
     }
   };
   if (closedA) outerCorner(0, cap);

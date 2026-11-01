@@ -106,6 +106,27 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
     check(Object.keys(m2.segs).length === 2, '删掉后两条路都接回去');
   });
 
+  scenario('缺口里有截面接头（坡道分界、分隔过的路）也能断开，删掉后接回原样', () => {
+    const m = emptyModel();
+    delete m.nodes[1]; m.root = 10;
+    m.nodes[30] = { id: 30, kind: 'joint', x: 3, y: 0, z: 0, style: 'normal', axis: 0 };
+    m.segs[10] = { id: 10, x: -30, y: 0, dir: 0, len: 33, style: 'normal', a: { node: null, z: 0, style: 'closed' }, b: { node: 30 } };
+    m.segs[11] = { id: 11, x: 3, y: 0, dir: 0, len: 27, style: 'normal', a: { node: 30 }, b: { node: null, z: 0, style: 'closed' } };
+    m.nextId = 40;
+    // 软木桥：缺口 -6.86..8.47（原点在 0）
+    const id = addObj(m, 'P_Modul_29', 0, 0, -0.17, 0)!;
+    check(cutForObj(m, id) === 2, '接头两侧各截一段');
+    normalize(m);
+    const ss = segs(m);
+    check(ss.length === 2 && near(span(ss[0])[1], -6.86, 1e-6) && near(span(ss[1])[0], 8.47, 1e-6) && !m.nodes[30], `缺口 -6.86..8.47，接头去掉（${JSON.stringify(ss.map(span))}）`);
+    delete m.objs[id];
+    normalize(m);
+    const back = segs(m);
+    // 接回成连续的路（-30..30，中间没有断开的自由端）
+    const free = back.flatMap((q) => [q.a, q.b]).filter((e) => isFree(e)).length;
+    check(near(span(back[0])[0], -30) && near(span(back[back.length - 1])[1], 30) && free === 2, `接回连续的路（${JSON.stringify(back.map(span))}）`);
+  });
+
   scenario('路已经断开时（机关跨在两段路之间）不再动路', () => {
     const m = road(emptyModel, 50);
     const id = addObj(m, 'P_Modul_08', 25, 0, -1.5, 0)!;

@@ -71,6 +71,8 @@ const fakesOut = join(pub, 'fakes');
 if (existsSync(blend)) {
   execFileSync(findBlender(), ['-b', blend, '--python', join(root, 'scripts/dump-blend-assets.py'), '--', assetsOut, ...ASSET_OBJECTS], { stdio: ['ignore', 'inherit', 'inherit'] });
   execFileSync(findBlender(), ['-b', blend, '--python', join(root, 'scripts/dump-blend-assets.py'), '--', fakesOut, ...FAKE_MODULES], { stdio: ['ignore', 'inherit', 'inherit'] });
+  // 资产库里没有的（风扇、生命球、分数球、Dome）：用原版机关文件补
+  execFileSync(process.execPath, [join(root, 'scripts/ph-models.mjs')], { stdio: ['ignore', 'inherit', 'inherit'] });
 } else console.warn(`跳过资产库：找不到 ${blend}`);
 
 // ---------- 贴图 ----------

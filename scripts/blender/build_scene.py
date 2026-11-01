@@ -92,7 +92,7 @@ def main():
                             @ mathutils.Matrix.Rotation(math.radians(rot_z), 4, 'Z')
                             @ mathutils.Matrix.Rotation(math.radians(pitch or 0.0), 4, 'Y'))
 
-    # 挡块材质：原版的木头贴图
+    # 挡块材质：原版的木头贴图（参数同资产库 / BBP 预设）
     _stopper = []
     def stopper_material():
         if _stopper: return _stopper[0]
@@ -105,6 +105,8 @@ def main():
         PROP_virtools_texture.set_raw_virtools_texture(tex, PROP_virtools_texture.get_ballance_texture_preset('E_Holzbeschlag.bmp'))
         raw.mTexture = tex
         PROP_virtools_material.set_raw_virtools_material(mtl, raw)
+        # 按 BBP 的贴图预设修正颜色（与资产库的 Floor_Stopper_Wood 一致：漫反射 186、自发光 65、无高光），否则偏暗
+        PROP_virtools_material.fix_material(mtl)
         PROP_virtools_material.apply_to_blender_material(mtl)
         _stopper.append(mtl)
         return mtl

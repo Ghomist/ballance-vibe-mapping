@@ -1,5 +1,5 @@
 import { Editor, type Hint, type Tool } from './editor';
-import { OBJ_TYPES } from './model/objects';
+import { OBJ_TYPES, sectorCount } from './model/objects';
 import { thumbnail } from './view/thumbs';
 import { setAssetLoadedCallback, setTextureLoadedCallback } from './view/assets';
 import { floorTexturesReady } from './view/materials';
@@ -45,6 +45,22 @@ grid.addEventListener('click', () => { editor.setGridMode(!editor.gridMode); gri
 const snapBtn = document.getElementById('snap') as HTMLButtonElement;
 const syncSnap = () => snapBtn.classList.toggle('active', editor.snapMode);
 snapBtn.addEventListener('click', () => { editor.setSnapMode(!editor.snapMode); snapBtn.blur(); });
+
+// 当前小节：新放的机关归到这个小节；眼睛：在机关上显示所属小节
+const sectorSel = document.getElementById('sector') as HTMLSelectElement;
+const sectorEye = document.getElementById('sector-eye') as HTMLButtonElement;
+const syncSector = () => {
+  const n = sectorCount(editor.model);
+  if (editor.placeSector !== null && editor.placeSector > n) editor.placeSector = n;
+  const opts = ['auto', ...Array.from({ length: n }, (_, i) => String(i + 1))];
+  if (sectorSel.options.length !== opts.length) {
+    sectorSel.innerHTML = opts.map((v) => `<option value="${v}">${v === 'auto' ? '小节：自动' : `第 ${v} 小节`}</option>`).join('');
+  }
+  sectorSel.value = editor.placeSector === null ? 'auto' : String(editor.placeSector);
+  sectorEye.classList.toggle('active', editor.showSectors);
+};
+sectorSel.addEventListener('change', () => { editor.setPlaceSector(sectorSel.value === 'auto' ? null : Number(sectorSel.value)); sectorSel.blur(); });
+sectorEye.addEventListener('click', () => { editor.setShowSectors(!editor.showSectors); sectorEye.blur(); });
 
 // 机关库：侧边面板，按住卡片拖到视图里放下（右键 / Esc 取消，拖动中 R 旋转）
 const palette = document.getElementById('palette')!;
@@ -143,10 +159,11 @@ function startPlace(type: string, e0: PointerEvent) {
   move(e0);
 }
 
-editor.onChange = () => { syncTools(); syncGrid(); syncSnap(); };
+editor.onChange = () => { syncTools(); syncGrid(); syncSnap(); syncSector(); };
 syncTools();
 syncGrid();
 syncSnap();
+syncSector();
 
 document.getElementById('undo')!.addEventListener('click', () => editor.undo());
 document.getElementById('redo')!.addEventListener('click', () => editor.redo());

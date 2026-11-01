@@ -8,6 +8,8 @@ export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Ma
 interface AssetPartJSON {
   name: string | null; texture: string | null; color?: number[];
   alphaTest?: boolean; alphaBlend?: boolean;
+  /** 叠加混合（生命球的油膜） */
+  blend?: 'add';
   pos: number[]; uv: number[]; nrm: number[];
 }
 
@@ -90,7 +92,8 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
     const mat = new THREE.MeshLambertMaterial({
       color: p.texture ? 0xffffff : new THREE.Color(...((p.color ?? [0.8, 0.8, 0.8]) as [number, number, number])),
       map: p.texture ? texture(p.texture) : null,
-      transparent: !!p.alphaBlend, alphaTest: p.alphaTest ? 0.5 : 0, side: p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,
+      transparent: !!p.alphaBlend || p.blend === 'add', alphaTest: p.alphaTest ? 0.5 : 0, side: p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,
+      ...(p.blend === 'add' ? { blending: THREE.AdditiveBlending, depthWrite: false } : {}),
     });
     return { geometry: g, material: mat };
   });

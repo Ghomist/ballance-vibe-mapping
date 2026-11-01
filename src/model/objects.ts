@@ -106,6 +106,8 @@ const FAKES = new Set([
   'Fake_Trafo_Paper', 'Fake_Trafo_Stone', 'Fake_Trafo_Wood',
   'Fake_Modul_01', 'Fake_Modul_03', 'Fake_Modul_08', 'Fake_Modul_17', 'Fake_Modul_19', 'Fake_Modul_25',
   'Fake_Modul_26', 'Fake_Modul_29', 'Fake_Modul_30', 'Fake_Modul_34', 'Fake_Modul_37', 'Fake_Modul_41',
+  // 资产库里没有，用原版机关文件补的（scripts/ph-models.mjs）
+  'Fake_Modul_18', 'Fake_Extra_Life', 'Fake_Extra_Point', 'Fake_Dome',
 ]);
 /**
  * 和占位符对不上的机关模型，显示时再调整：先绕本地 Y 轴（转轴）倾斜 pitch 度，再绕 Z 转 rot 度、上下挪 dz。
