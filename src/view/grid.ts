@@ -1,6 +1,5 @@
 // 场景网格：小格 5，坐标轴颜色与 Blender 一致，轴旁标注坐标。
 import * as THREE from 'three';
-import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
 const EXTENT = 300;
 const MINOR = 5;
@@ -43,10 +42,10 @@ export function createGrid(): THREE.Group {
 
   for (let v = -EXTENT + LABEL_STEP; v < EXTENT; v += LABEL_STEP) {
     if (v === 0) continue;
-    g.add(label(String(v), v, -0.8, AXIS_COLORS.x));
-    g.add(label(String(v), 0.8, v, AXIS_COLORS.y));
+    g.add(label(String(v), v, -1.4, AXIS_COLORS.x));
+    g.add(label(String(v), 2.2, v, AXIS_COLORS.y));
   }
-  g.add(label('0', 0.8, -0.8, 0x9aa4b8));
+  g.add(label('0', 1.2, -1.4, 0x9aa4b8));
   themeGrid(g, GRID_THEMES.dark);
   // 网格就在 z = 0：先于路面绘制、不写深度，路面画上去时直接盖住它（包括 0.7 深的凹槽里），不会穿出来
   return g;
@@ -62,12 +61,25 @@ function lineSegs(pts: number[], color: number | 'minor' | 'major', opacity: num
   return line;
 }
 
+/** 坐标数字：平躺在 z = 0 的地面上、字面朝正上方（像网格一样先画，被路面盖住） */
 function label(text: string, x: number, y: number, color: number) {
-  const el = document.createElement('div');
-  el.className = 'axis-label';
-  el.textContent = text;
-  el.style.color = `#${new THREE.Color(color).getHexString()}`;
-  const o = new CSS2DObject(el);
-  o.position.set(x, y, 0);
-  return o;
+  const fontPx = 64;
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d')!;
+  ctx.font = `600 ${fontPx}px ui-monospace, Consolas, monospace`;
+  const w = Math.ceil(ctx.measureText(text).width) + 8;
+  c.width = w; c.height = fontPx + 8;
+  ctx.font = `600 ${fontPx}px ui-monospace, Consolas, monospace`;
+  ctx.fillStyle = `#${new THREE.Color(color).getHexString()}`;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 4, c.height / 2);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const h = 1.6; // 字高（世界单位）
+  const geo = new THREE.PlaneGeometry((h * c.width) / c.height, h);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.8, depthWrite: false, depthTest: false }));
+  mesh.position.set(x, y, 0);
+  mesh.renderOrder = -9;
+  return mesh;
 }
