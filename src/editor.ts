@@ -2025,7 +2025,11 @@ export class Editor {
         const n = new THREE.Vector3().subVectors(this.camera.position, p.point).setZ(0).normalize();
         this.drag = { type: 'objHeight', snapshot, id: o.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, p.point), z0: p.point.z };
       } else {
-        this.drag = { type: 'obj', snapshot, id: o.id, ox: o.x - p.point.x, oy: o.y - p.point.y, moved: false, sx: e.clientX, sy: e.clientY };
+        // 抓取偏移按对准方块顶面（路面）所在的水平面算：拖动时鼠标也是落在路面上的，
+        // 直接用点中模型的那一点（例如风扇的风柱高处）会让机关偏到路外
+        const top = anchorBlocks(o)[0]?.top ?? o.z;
+        const g = this.rayOnPlaneZ(top) ?? p.point;
+        this.drag = { type: 'obj', snapshot, id: o.id, ox: o.x - g.x, oy: o.y - g.y, moved: false, sx: e.clientX, sy: e.clientY };
       }
       return;
     }
@@ -2133,9 +2137,13 @@ export class Editor {
     if (d.type === 'obj') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
       if (!d.moved) {
-        // 开始拖：先把它断开的路接回去，松手时在新位置重新断开
+        // 开始拖：先把它断开的路接回去、专属底座变回普通路面（否则路被底座打断，拖动时只能整格跳），
+        // 松手时在新位置重新断开 / 铺底座
         const m0 = cloneModel(this.model);
         uncutObj(m0, d.id);
+        const ob = m0.objs[d.id];
+        if (ob?.base !== undefined) revertBase(m0, ob.base);
+        normalize(m0);
         this.setModel(m0);
       }
       d.moved = true;
