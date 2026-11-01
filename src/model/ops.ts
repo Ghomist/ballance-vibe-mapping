@@ -577,11 +577,11 @@ export function fixStyles(m: Model): boolean {
       for (const l of nodeLinks(m, n.id)) {
         const s = m.segs[l.seg];
         if (s.len <= EPS) continue;
-        const kind = insetKind(n.style, s.style);
+        const kind = insetKind(n, s.style);
         if (!kind) continue;
         // 衔接块放在平台边框带内部；窄转换放不下时才从路面上切
-        if (makeInset(m, n.id, s.id, l.key, kind === 'ramp')) return true;
-        if (kind === 'ramp' || s.len < HALF - EPS) continue;
+        if (makeInset(m, n.id, s.id, l.key, kind)) return true;
+        if (kind !== 'narrow' || s.len < HALF - EPS) continue;
         insertTransition(m, s, l.key, { node: n.id, dir: l.dir }, true);
         return true;
       }
@@ -590,8 +590,8 @@ export function fixStyles(m: Model): boolean {
       // 嵌入平台的衔接块：平台没了、外侧没路了、或需要的衔接方式变了，就撤掉（之后按需重新放）
       const p = m.nodes[n.inPlatform];
       const road = nodeLinks(m, n.id).find((l) => m.segs[l.seg].len > EPS || isFree(m.segs[l.seg][l.key === 'a' ? 'b' : 'a']) || (m.segs[l.seg][l.key === 'a' ? 'b' : 'a'] as { node: number }).node !== n.inPlatform);
-      const want = p && road ? insetKind(p.style, m.segs[road.seg].style) : null;
-      if (!want || (want === 'ramp') !== !!n.ramp) { revertInset(m, n.id); return true; }
+      const want = p && road ? insetKind(p, m.segs[road.seg].style) : null;
+      if (!want || (want === 'ramp') !== !!n.ramp || (want === 'deep') !== !!n.flatDeep) { revertInset(m, n.id); return true; }
       continue;
     }
     if (n.kind === 'transition') {

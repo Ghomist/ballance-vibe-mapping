@@ -218,14 +218,16 @@ function buildTransition(mb: MeshBuilder, m: Model, n: MNode) {
       mb.quad('FloorTopBorder', [E0, E1, M1, M0], [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0]], UP);
     }
   } else {
-    const v0 = L(0, 0, 0), v1 = L(5, 0, 0), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, 0), v4 = L(0, 5, 0);
+    // flatDeep：平路一侧（lx=5，贴着细边花纹平台下沉的内部）的两个顶点也下沉 0.7
+    const fz = n.flatDeep ? -SINK_DEPTH : 0;
+    const v0 = L(0, 0, 0), v1 = L(5, 0, fz), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, fz), v4 = L(0, 5, 0);
     mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
     mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
     mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
   }
   // 两条侧边
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
-    const A = L(0, ly, cz), B = L(5, ly, 0);
+    const A = L(0, ly, cz), B = L(5, ly, n.flatDeep ? -SINK_DEPTH : 0);
     const out: V3 = [p[0] * sg, p[1] * sg, 0];
     const Ab: V3 = [A[0], A[1], A[2] - THICK], Bb: V3 = [B[0], B[1], B[2] - THICK];
     mb.quad('FloorSide', [A, B, Bb, Ab], [[0, 0], [0, sx], [1, sx], [1, 0]], out);

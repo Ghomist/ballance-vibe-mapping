@@ -1,7 +1,7 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
 import { buildFloorMeshes } from '../src/geom/floor';
-import { baseScenarios, guardScenarios, newMapScenarios, spawnScenarios, checkpointScenarios, objectScenarios, platformRepairScenarios, rippleScenarios } from './checkpoint';
+import { baseScenarios, guardScenarios, newMapScenarios, ribbonInsetScenarios, spawnScenarios, checkpointScenarios, objectScenarios, platformRepairScenarios, rippleScenarios } from './checkpoint';
 import {
   addSegAtPort, component, moveIds, blockToSeg, cutSeg, extendTo, insertJoint, makeBranch, makeCorner, normalize,
   setChainStyle, shiftDownstream, shiftFreeEnd, toggleEnd, tryConnect,
@@ -269,6 +269,7 @@ baseScenarios(emptyModel, check, scenario, validate);
 guardScenarios(emptyModel, check, scenario);
 newMapScenarios(check, scenario);
 spawnScenarios(check, scenario);
+ribbonInsetScenarios(emptyModel, check, scenario);
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
 console.log('\n全部通过');

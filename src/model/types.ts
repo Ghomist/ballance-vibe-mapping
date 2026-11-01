@@ -57,6 +57,8 @@ export interface MNode {
    * 用于普通路接凹槽平台。sinkDir 指向平台内侧。
    */
   ramp?: boolean;
+  /** transition（嵌入平台）：平路一侧的两个顶点也下沉 0.7（凹槽路接细边花纹平台，贴住平台下沉的内部） */
+  flatDeep?: boolean;
   /** base：专属路面的种类 */
   baseKind?: BaseKind;
   /** base（变球器）：材质 */

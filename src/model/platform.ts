@@ -240,19 +240,24 @@ export function insetCells(i: Inset): string[] {
   return rectCells(Math.min(i.ox, ex) - px * HALF, Math.min(i.oy, ey) - py * HALF, Math.max(i.ox, ex) + px * HALF, Math.max(i.oy, ey) + py * HALF);
 }
 
+export type InsetKind = 'ramp' | 'narrow' | 'deep';
+
 /**
  * 平台与路面衔接处需要的衔接块（嵌在平台边框带内）：
- *   普通路接凹槽平台 → 半块平路，平台内侧下沉；
- *   凹槽路接普通平台 → 窄平凹转换；
- *   样式相同 → 不需要衔接块，由两块 1/4 内角拼接（几何生成时处理）。
+ *   普通路接凹槽平台 → 半块平路，平台内侧下沉（ramp）；
+ *   凹槽路接普通平台 → 窄平凹转换（narrow）；
+ *   凹槽路接细边花纹平台 → 窄平凹转换，平台内侧的两个顶点再下沉 0.7（deep）；
+ *   其余样式相同 → 不需要衔接块，由两块 1/4 内角拼接（几何生成时处理）。
  */
-export function insetKind(platformStyle: string, roadStyle: string): 'ramp' | 'narrow' | null {
-  if (platformStyle === roadStyle) return null;
-  return platformStyle === 'sink' ? 'ramp' : 'narrow';
+export function insetKind(p: MNode, roadStyle: string): InsetKind | null {
+  if (p.style === 'sink' && p.ribbon && roadStyle === 'sink') return 'deep';
+  if (p.style === roadStyle) return null;
+  return p.style === 'sink' ? 'ramp' : 'narrow';
 }
 
 /** 在平台边框带内（开口处往里 2.5）放衔接块，路面长度不变。放不下返回 false */
-export function makeInset(m: Model, pid: number, segId: number, key: EndKey, ramp: boolean): boolean {
+export function makeInset(m: Model, pid: number, segId: number, key: EndKey, kind: InsetKind): boolean {
+  const ramp = kind === 'ramp';
   const p = m.nodes[pid];
   const s = m.segs[segId];
   const o = linkOpening(s, key);
@@ -266,6 +271,7 @@ export function makeInset(m: Model, pid: number, segId: number, key: EndKey, ram
     x: o.x + DX[inward] * HALF / 2, y: o.y + DY[inward] * HALF / 2,
     sinkDir: ramp || s.style !== 'sink' ? inward : o.out,
     ramp: ramp || undefined,
+    flatDeep: kind === 'deep' || undefined,
   };
   s[key] = { node: id };
   const lid = m.nextId++;

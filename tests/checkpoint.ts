@@ -359,3 +359,31 @@ export function spawnScenarios(check: Check, scenario: Scenario) {
     check(st.spawn === undefined && pr().rotZ === 180, '转回来后与路面朝向一致');
   });
 }
+
+import { setPlatformStyle } from '../src/model/ops';
+import { buildFloorMeshes } from '../src/geom/floor';
+
+export function ribbonInsetScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
+  scenario('凹槽路接细边花纹平台：窄平凹转换，平台内侧两个顶点下沉 0.7', () => {
+    const m = emptyModel();
+    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5, 17.5]，y ∈ [-2.5, 2.5]
+    setPlatformStyle(m, p, 'sink', true);
+    const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
+    extendTo(m, s, 'b', -20);
+    setSegStyle(m, s, 'sink');
+    normalize(m);
+    const tr = Object.values(m.nodes).find((n) => n.kind === 'transition');
+    check(!!tr && !!tr.narrow && !!tr.flatDeep && tr.inPlatform === p, '应在平台里嵌入平路侧下沉的窄转换');
+    // 转换块顶面：平台一侧（y 靠里，y=0）的两个角 z = -0.7，路一侧中点 z = -0.7、两角 z = 0
+    const em = buildFloorMeshes(m).find((e) => e.id === tr!.id)!;
+    const q = em.parts.FloorTopProfilFlat!.pos;
+    const vs: [number, number, number][] = [];
+    for (let i = 0; i < q.length; i += 3) vs.push([q[i], q[i + 1], q[i + 2]]);
+    const inner = vs.filter((v) => Math.abs(v[1] - 0) < 1e-6);
+    check(inner.length > 0 && inner.every((v) => Math.abs(v[2] + 0.7) < 1e-9), `平台内侧顶点应下沉 0.7，实际 ${JSON.stringify(inner)}`);
+    // 去掉细边花纹：变回普通的凹槽平台接凹槽路，不再需要衔接块
+    setPlatformStyle(m, p, 'sink', false);
+    normalize(m);
+    check(!Object.values(m.nodes).some((n) => n.kind === 'transition'), '凹槽平台接凹槽路不需要衔接块');
+  });
+}
