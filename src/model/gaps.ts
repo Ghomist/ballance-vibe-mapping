@@ -11,12 +11,6 @@ const MIN_GAP = 0.5;
 
 export const isSplitObj = (type: string) => !!objType(type)?.split;
 
-/** 缺口长度取整：接近 2.5 的倍数就取倍数（原版数据有零点几的误差），否则取 0.5 的倍数 */
-function roundGap(len: number) {
-  const k = Math.round(len / 2.5) * 2.5;
-  return Math.abs(k - len) < 0.45 ? k : Math.round(len * 2) / 2;
-}
-
 /**
  * 机关跨着的缺口：对准方块投影到某根坐标轴上，相邻方块之间最大的空当。
  * 返回轴、缺口两头的坐标、对准方块的顶面高度，以及方块的横向中心（路要从这些位置穿过）。
@@ -35,11 +29,7 @@ export function gapOf(o: { type: string; x: number; y: number; z: number; rot: n
     }
   }
   if (!best) return null;
-  // 放置时对齐到格子上的那个方块一侧（边沿离 2.5 的格线更近的一侧）保持不动，另一侧按取整后的长度
-  const off = (v: number) => Math.abs(v / 2.5 - Math.round(v / 2.5));
-  const len = roundGap(best.hi - best.lo);
-  if (off(best.lo) <= off(best.hi)) best.hi = best.lo + len;
-  else best.lo = best.hi - len;
+  // 缺口以对准方块为准，不取整（例如推板 10.06、软木桥 15.33、跷跷板 14.8，与原版实测一致）
   const p = blocks[0];
   const lats = blocks.map((b) => (best!.axis === 0 ? b.y : b.x));
   return { ...best, z: p.top, lats };

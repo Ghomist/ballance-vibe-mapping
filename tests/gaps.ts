@@ -43,7 +43,7 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
 
   scenario('机关挪走后路接回去，在新位置重新断开；转 90° 横在路上不断', () => {
     const m = road(emptyModel, 60);
-    const id = addObj(m, 'P_Modul_30', 20.1, 0, -0.5, 0)!; // 跷跷板 ±9.9 → 缺口 15
+    const id = addObj(m, 'P_Modul_30', 20.1, 0, -0.5, 0)!; // 跷跷板 ±9.9 → 缺口 14.8（以对准方块为准）
     cutForObj(m, id);
     normalize(m);
     check(segs(m).length === 2, '先断开');
@@ -52,7 +52,7 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
     cutForObj(m, id);
     normalize(m);
     const ss = segs(m);
-    check(ss.length === 2 && near(span(ss[0])[1], 32.5) && near(span(ss[1])[0], 47.5), `挪到新位置重新断开（${JSON.stringify(ss.map(span))}）`);
+    check(ss.length === 2 && near(span(ss[0])[1], 32.7) && near(span(ss[1])[0], 47.5), `挪到新位置重新断开（${JSON.stringify(ss.map(span))}）`);
     uncutObj(m, id);
     normalize(m);
     m.objs[id].rot = 90;
@@ -63,7 +63,7 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
     const m = road(emptyModel, 20);
     const s0 = segs(m)[0];
     const style0 = isFree(s0.b) ? s0.b.style : null;
-    // 推板：主方块中心 x=2.5（[0,5]），另一个在 -12.56；缺口取 10
+    // 推板：主方块中心 x=2.5（[0,5]），另一个在 -12.56；缺口 10.06
     const id = addObj(m, 'P_Modul_25', 15, 0, 0, 180)!; // 转 180°：主方块在 [10,15]，缺口 15..25
     cutForObj(m, id);
     normalize(m);
