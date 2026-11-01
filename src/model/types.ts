@@ -69,6 +69,8 @@ export interface MNode {
   prefab?: Prefab;
   /** checkpoint：朝向（模型本地 +X 对应的方向）。起点的路口在这一侧；小节盘点的路口在这一侧和对侧 */
   rot?: Dir;
+  /** checkpoint：重生时球朝向的方向（与路面朝向分开设置）；不填则与 rot 相同（朝着出口 / 顺着路往前） */
+  spawn?: Dir;
   /** checkpoint（小节盘点）：激活的小节号（≥2），对应 PC_TwoFlames_{sector-1} 与 PR_Resetpoint_{sector} */
   sector?: number;
 }

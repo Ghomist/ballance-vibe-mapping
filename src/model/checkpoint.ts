@@ -81,14 +81,28 @@ export function placeStartAtEnd(m: Model, segId: number, k: EndKey): number | nu
 }
 
 /** 没接路时可以转 90°；小节盘点接着路时只能掉头（重生点朝向反过来） */
-export function rotateCheckpoint(m: Model, id: number, quarter: 1 | 2): boolean {
+export function rotateCheckpoint(m: Model, id: number, quarter: 1 | 2 | 3): boolean {
   const n = m.nodes[id];
   if (!n || n.kind !== 'checkpoint') return false;
   const linked = nodePorts(m, id).some((p) => p);
   if (linked && (quarter !== 2 || n.prefab === 'start')) return false;
   n.rot = ((n.rot! + quarter) % 4) as Dir;
+  // 重生朝向跟着路面一起转（保持相对关系）
+  if (n.spawn !== undefined) n.spawn = ((n.spawn + quarter) % 4) as Dir;
   return true;
 }
+
+/** 只转重生朝向（路面不动） */
+export function rotateSpawn(m: Model, id: number, quarter: 1 | 2 | 3): boolean {
+  const n = m.nodes[id];
+  if (!n || n.kind !== 'checkpoint') return false;
+  const s = (((n.spawn ?? n.rot!) + quarter) % 4) as Dir;
+  if (s === n.rot) delete n.spawn; else n.spawn = s;
+  return true;
+}
+
+/** 重生点占位符的朝向：占位符的箭头指向本地 -X，所以要转半圈才朝向 spawn 方向 */
+const spawnDeg = (n: MNode) => ((n.spawn ?? n.rot!) * 90 + 180) % 360;
 
 /** 调整小节盘点的顺序（与相邻的交换） */
 export function moveSector(m: Model, id: number, delta: -1 | 1): boolean {
@@ -135,7 +149,7 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
     parts.push({ name: ports[rot] ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', type: 'asset', pos: [n.x, n.y, floorZ], rotZ: deg(rot) });
     // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
     parts.push({ name: 'PS_FourFlames', type: 'element', objName: 'PS_FourFlames_01', pos: [n.x, n.y, n.z], rotZ: deg(rot) + 90 });
-    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: 'PR_Resetpoint_01', pos: [n.x, n.y, n.z + 3.65], rotZ: deg(rot) });
+    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: 'PR_Resetpoint_01', pos: [n.x, n.y, n.z + 3.65], rotZ: spawnDeg(n) });
   } else {
     const a = !!ports[rot], b = !!ports[opp(rot)];
     const [name, r] = a && b ? ['CheckPoint_DoubleExtended_OpenEdge', rot]
@@ -146,7 +160,7 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
     const sec = n.sector ?? 2;
     const two = (v: number) => String(v).padStart(2, '0');
     parts.push({ name: 'PC_TwoFlames', type: 'element', objName: `PC_TwoFlames_${two(sec - 1)}`, pos: [n.x, n.y, n.z], rotZ: deg(rot) });
-    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: `PR_Resetpoint_${two(sec)}`, pos: [n.x, n.y, n.z + 3.3258], rotZ: deg(rot) });
+    parts.push({ name: 'PR_Resetpoint', type: 'element', objName: `PR_Resetpoint_${two(sec)}`, pos: [n.x, n.y, n.z + 3.3258], rotZ: spawnDeg(n) });
   }
   return parts;
 }

@@ -12,7 +12,7 @@ import { FaceFx, type FaceSpec, faceSegs } from './view/face';
 import { assetVersion, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from './view/assets';
 import { hasStopper, stopperMesh } from './model/stoppers';
 import {
-  addCheckpoint, checkpoints, findStart, newMapModel, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
+  addCheckpoint, checkpoints, findStart, newMapModel, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint, rotateSpawn,
 } from './model/checkpoint';
 import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
@@ -1824,6 +1824,9 @@ export class Editor {
     if (k === '3') this.setTool('rail');
     if (k === '4') this.setTool('guard');
     if (k === 'r') {
+      // 指着盘点：转重生朝向
+      const hn = this.hover?.kind === 'node' ? this.model.nodes[this.hover.id] : undefined;
+      if (!this.placing && hn?.kind === 'checkpoint') { const nid = hn.id; this.mutate((m) => { rotateSpawn(m, nid, e.shiftKey ? 3 : 1); }); return; }
       const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
       // 机关工具里没指着已放的物件：转的是待放置的朝向
       if (this.placing) { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
@@ -1982,10 +1985,11 @@ export class Editor {
       }
       if (n.kind === 'checkpoint') {
         const linked = nodeLinks(m, n.id).length > 0;
-        items.push({ label: '旋转 90°', hint: linked ? '接着路时不能转' : undefined, disabled: linked, action: () => this.mutate((mm) => { rotateCheckpoint(mm, n.id, 1); }) });
+        items.push({ label: '路面旋转 90°', hint: linked ? '接着路时不能转' : '重生朝向一起转', disabled: linked, action: () => this.mutate((mm) => { rotateCheckpoint(mm, n.id, 1); }) });
+        items.push({ label: '重生朝向转 90°', hint: 'R', action: () => this.mutate((mm) => { rotateSpawn(mm, n.id, 1); }) });
+        items.push({ label: '重生朝向掉头', action: () => this.mutate((mm) => { rotateSpawn(mm, n.id, 2); }) });
         if (n.prefab === 'check') {
           const list = checkpoints(m);
-          items.push({ label: '掉头', hint: '重生点朝向反过来', action: () => this.mutate((mm) => { rotateCheckpoint(mm, n.id, 2); }) });
           items.push(null);
           items.push({ label: '小节提前', hint: `当前第 ${n.sector} 小节`, disabled: n.sector === 2, action: () => this.mutate((mm) => { moveSector(mm, n.id, -1); }) });
           items.push({ label: '小节推后', disabled: n.sector === list.length + 1, action: () => this.mutate((mm) => { moveSector(mm, n.id, 1); }) });

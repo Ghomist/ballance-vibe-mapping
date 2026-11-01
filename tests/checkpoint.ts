@@ -324,3 +324,18 @@ export function newMapScenarios(check: Check, scenario: Scenario) {
     check(Math.abs(m.segs[s].x) < 1e-9 && Math.abs(m.segs[s].y - 2.5) < 1e-9, `路从 (0, 2.5) 开始，实际 (${m.segs[s].x}, ${m.segs[s].y})`);
   });
 }
+
+import { rotateSpawn } from '../src/model/checkpoint';
+
+export function spawnScenarios(check: Check, scenario: Scenario) {
+  scenario('重生点：默认朝着起点出口（占位符转 180°），可单独转向，路面旋转时一起转', () => {
+    const m = newMapModel();
+    const st = Object.values(m.nodes)[0];
+    const pr = () => prefabParts(m, st).find((p) => p.name === 'PR_Resetpoint')!;
+    check(pr().rotZ === 180, `路口朝 +X 时重生点占位符应转 180°，实际 ${pr().rotZ}`);
+    rotateSpawn(m, st.id, 1);
+    check(pr().rotZ === 270 && st.rot === 0, '只转重生朝向，路面不动');
+    rotateSpawn(m, st.id, 3);
+    check(st.spawn === undefined && pr().rotZ === 180, '转回来后与路面朝向一致');
+  });
+}
