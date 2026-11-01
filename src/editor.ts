@@ -206,6 +206,7 @@ export class Editor {
     this.controls.dampingFactor = 0.1; // 环视 / 平移的惯性缓动
     this.controls.enableZoom = false; // 滚轮缩放自己做，带缓动
     this.controls.target.set(5, 5, 0);
+    this.loadView();
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -358,6 +359,7 @@ export class Editor {
   private frame() {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.tickCamera(dt);
+    this.saveViewSoon(dt);
     if (this.display !== this.model) {
       const r = lerpModel(this.display, this.model, 1 - Math.exp(-dt / MOVE_TAU));
       this.display = r.done ? this.model : r.model;
@@ -826,7 +828,8 @@ export class Editor {
     for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
       if (mesh.userData.handle || mesh.userData.element) continue;
       const e = new THREE.EdgesGeometry(mesh.geometry, mesh.userData.kind === 'rail' ? 50 : 30);
-      if (mesh.userData.shared) e.applyMatrix4(mesh.matrixWorld);
+      mesh.updateMatrixWorld();
+      e.applyMatrix4(mesh.matrixWorld);
       out.push(...(e.getAttribute('position').array as Float32Array));
       e.dispose();
     }
@@ -2385,6 +2388,32 @@ export class Editor {
     this.overlayDirty = true;
   }
 
+  private viewSaveT = 0;
+  private viewKey = '';
+
+  /** 视角（相机位置与环绕点）记在本地，刷新后恢复；每半秒最多存一次 */
+  private saveViewSoon(dt: number) {
+    this.viewSaveT += dt;
+    if (this.viewSaveT < 0.5) return;
+    this.viewSaveT = 0;
+    const v = [...this.camera.position.toArray(), ...this.controls.target.toArray()].map((x) => Math.round(x * 100) / 100);
+    const key = v.join(',');
+    if (key === this.viewKey) return;
+    this.viewKey = key;
+    try { localStorage.setItem('bvm.view', key); } catch { /* 存不了就算了 */ }
+  }
+
+  private loadView() {
+    let s: string | null = null;
+    try { s = localStorage.getItem('bvm.view'); } catch { return; }
+    const v = s?.split(',').map(Number);
+    if (!v || v.length !== 6 || v.some((x) => !Number.isFinite(x))) return;
+    this.camera.position.set(v[0], v[1], v[2]);
+    this.controls.target.set(v[3], v[4], v[5]);
+    this.controls.update();
+    this.viewKey = s!;
+  }
+
   /** F：视角对正选中的东西 */
   frameSelection() {
     const box = this.focusBox();
@@ -2534,7 +2563,7 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['F'], '对正选中'), H(['G'], '格栅'), H(['S'], '自动对齐'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['F'], '对正选中'), H(['G'], '格栅对齐'), H(['S'], '自动对齐'),
       ];
     } else if (this.tool === 'cut') hs = [H(['C', 'LMB'], '点截面分隔（路面 / 钢轨）'), H([], '松开 C 回到原来的工具'), H(['MMB'], '环视')];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];

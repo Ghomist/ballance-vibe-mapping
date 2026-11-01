@@ -107,6 +107,24 @@ export function rotateSpawn(m: Model, id: number, quarter: 1 | 2 | 3): boolean {
  */
 const FLAME_CONE = 1.25555;
 
+/**
+ * 资产库里盘点路面的延伸段并不正好在中线上（原版模型本身的误差）：
+ * 单延伸段往 +Y 偏 0.042；双延伸段往 -Y 偏 0.036、两头 -9.9025 / +9.9456 不对称。
+ * 摆放时按资产本地坐标挪回来，让延伸段末端正好落在路口（±9.924、中线）上，和路面严丝合缝。
+ */
+const ASSET_FIX: Record<string, [number, number]> = {
+  CheckPoint_Extended_OpenEdge: [0, -0.042],
+  CheckPoint_DoubleExtended_OpenEdge: [-0.02155, 0.036],
+};
+
+/** 资产本地坐标的修正量转到世界坐标 */
+function fixed(name: string, x: number, y: number, rotZ: number): [number, number] {
+  const f = ASSET_FIX[name];
+  if (!f) return [x, y];
+  const r = (rotZ * Math.PI) / 180;
+  return [x + f[0] * Math.cos(r) - f[1] * Math.sin(r), y + f[0] * Math.sin(r) + f[1] * Math.cos(r)];
+}
+
 /** 重生点占位符的朝向：占位符的箭头指向本地 -X，所以要转半圈才朝向 spawn 方向 */
 const spawnDeg = (n: MNode) => ((n.spawn ?? n.rot!) * 90 + 180) % 360;
 
@@ -162,7 +180,8 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
       : a ? ['CheckPoint_Extended_OpenEdge', rot]
         : b ? ['CheckPoint_Extended_OpenEdge', opp(rot)]
           : ['CheckPoint_NoExtended', rot];
-    parts.push({ name, type: 'asset', pos: [n.x, n.y, floorZ], rotZ: deg(r as Dir) });
+    const [fx, fy] = fixed(name, n.x, n.y, deg(r as Dir));
+    parts.push({ name, type: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir) });
     const sec = n.sector ?? 2;
     const two = (v: number) => String(v).padStart(2, '0');
     parts.push({ name: 'PC_TwoFlames', type: 'element', objName: `PC_TwoFlames_${two(sec - 1)}`, pos: [n.x, n.y, n.z - FLAME_CONE], rotZ: deg(rot) });
