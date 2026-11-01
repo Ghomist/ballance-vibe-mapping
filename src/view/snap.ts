@@ -18,8 +18,10 @@ const round = (v: number, s: number) => Math.round(v / s) * s;
 const tidy = (v: number) => Math.round(v * 100) / 100;
 
 export class Snapper {
-  /** 格栅：对齐到 2.5 的倍数 */
+  /** 格栅：对齐到 step 的倍数 */
   grid = true;
+  /** 格栅间距（设置里可调，默认 2.5） */
+  step = GRID;
   /** 自动对齐：靠近其它元素的边界、端点、高度时对齐过去（与格栅相互独立，可同时开） */
   snap = true;
   /** 自由模式吸附距离（世界单位） */
@@ -71,13 +73,13 @@ export class Snapper {
   }
 
   /** 吸附到特征的距离：同时开着格栅时不超过半格，免得挡住相邻的格点 */
-  private reach() { return this.grid ? Math.min(this.tol, GRID * 0.4) : this.tol; }
+  private reach() { return this.grid ? Math.min(this.tol, this.step * 0.4) : this.tol; }
 
   /** 没吸附到特征时：格栅模式取格点，否则保持原值 */
-  private fallback(raw: number, step = GRID): SnapResult { return { v: this.grid ? round(raw, step) : tidy(raw) }; }
+  private fallback(raw: number, step = this.step): SnapResult { return { v: this.grid ? round(raw, step) : tidy(raw) }; }
 
   /** 水平坐标（axis 0 = x，1 = y）；step 为格栅步长 */
-  axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set(), step = GRID): SnapResult {
+  axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set(), step = this.step): SnapResult {
     if (this.snap) {
       // 机关的对准方块优先于格栅和其它特征（自动对齐关着时不吸附）
       let pb: SnapResult | null = null, pd = this.tol;
@@ -129,7 +131,7 @@ export class Snapper {
 
   /** 无方向的长度 / 半径 */
   length(raw: number): number {
-    return this.grid ? round(raw, GRID) : tidy(raw);
+    return this.grid ? round(raw, this.step) : tidy(raw);
   }
 
   /** 圆弧角度步进（度） */

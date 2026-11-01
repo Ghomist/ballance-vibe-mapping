@@ -289,10 +289,16 @@ const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; 
 ];
 const renderSettings = () => {
   panel.innerHTML = '<h3>全图设置</h3>' + FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${editor.settings[f.key]}"></label>`).join('')
+    + '<h3 class="sub">编辑</h3>'
+    + `<label><span>格栅间距<small>打开格栅对齐时的步长（默认 2.5，只存在本机）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${editor.gridStep}"></label>`
     + '<h3 class="sub">显示</h3>'
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span><span class="seg-toggle" id="module-view">${(['model', 'placeholder'] as const).map((v) => `<button data-v="${v}" class="${editor.moduleView === v ? 'on' : ''}">${v === 'model' ? '机关模型' : '占位符'}</button>`).join('')}</span></label>`
     + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
-  panel.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
+  panel.querySelector<HTMLInputElement>('#grid-step')!.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v) && v > 0) editor.setGridStep(v); else (e.target as HTMLInputElement).value = String(editor.gridStep);
+  });
+  panel.querySelectorAll<HTMLInputElement>('input[data-key]').forEach((inp) => inp.addEventListener('change', () => {
     const v = Number(inp.value);
     if (Number.isFinite(v)) editor.setSettings({ [inp.dataset.key!]: v });
   }));
@@ -300,7 +306,7 @@ const renderSettings = () => {
     editor.setModuleView(btn.dataset.v as 'model' | 'placeholder');
     renderSettings();
   }));
-  panel.querySelector('#settings-reset')!.addEventListener('click', () => { editor.setSettings({ ...DEFAULT_SETTINGS }); renderSettings(); });
+  panel.querySelector('#settings-reset')!.addEventListener('click', () => { editor.setSettings({ ...DEFAULT_SETTINGS }); editor.setGridStep(2.5); renderSettings(); });
   panel.querySelector('#settings-close')!.addEventListener('click', () => { panel.hidden = true; });
 };
 // 点设置面板外面（设置按钮除外）就收起

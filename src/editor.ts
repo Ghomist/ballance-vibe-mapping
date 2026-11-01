@@ -21,7 +21,7 @@ import { baseOf, placeBase, placeFreeBase, revertBase } from './model/bases';
 import { cutForObj, isSplitObj, uncutObj } from './model/gaps';
 import { exportScene } from './export/scene';
 import { exportNmo } from './export/nmo-scene';
-import { FAKE_FIX, addObj, anchorBlocks, autoSector, fakeModel, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
+import { FAKE_EXTRA, FAKE_FIX, addObj, anchorBlocks, autoSector, fakeModel, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
   CELL, DX, DY, Dir, EndKey, HALF, MNode, nodeRect, Model, Prefab, Seg, Style,
@@ -302,6 +302,17 @@ export class Editor {
   setGridMode(on: boolean) { this.gridMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
   setSnapMode(on: boolean) { this.snapMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
 
+  /** 格栅间距（设置里可调，默认 2.5；存在本地） */
+  gridStep = 2.5;
+  setGridStep(v: number) {
+    if (!(v > 0)) return;
+    this.gridStep = v;
+    this.savePrefs();
+    this.moveInfoCache.key = '';
+    this.overlayDirty = true;
+    this.onChange();
+  }
+
   /** 新放的机关归到哪个小节（工具栏选单；放盘点时自动切到它的小节） */
   placeSector = 1;
   setPlaceSector(v: number) { this.placeSector = v; this.onChange(); }
@@ -311,7 +322,7 @@ export class Editor {
   setShowSectors(on: boolean) { this.showSectors = on; this.savePrefs(); this.syncSectorLabels(this.display); this.onChange(); }
 
   private savePrefs() {
-    try { localStorage.setItem('bvm.prefs', JSON.stringify({ grid: this.gridMode, snap: this.snapMode, sectors: this.showSectors })); } catch { /* 存不了就算了 */ }
+    try { localStorage.setItem('bvm.prefs', JSON.stringify({ grid: this.gridMode, snap: this.snapMode, sectors: this.showSectors, step: this.gridStep })); } catch { /* 存不了就算了 */ }
   }
   private loadPrefs() {
     try {
@@ -319,6 +330,7 @@ export class Editor {
       if (typeof p.grid === 'boolean') this.gridMode = p.grid;
       if (typeof p.snap === 'boolean') this.snapMode = p.snap;
       if (typeof p.sectors === 'boolean') this.showSectors = p.sectors;
+      if (typeof p.step === 'number' && p.step > 0) this.gridStep = p.step;
     } catch { /* 用默认值 */ }
   }
 
@@ -477,7 +489,13 @@ export class Editor {
         if (oc && oc.key === okey) continue;
         if (oc) for (const mesh of oc.meshes) { if (!mesh.userData.shared) mesh.geometry.dispose(); this.floor.remove(mesh); }
         const meshes = this.objMeshes(obj);
-        for (const mesh of meshes) { mesh.userData = { id, kind: 'obj', shared: !mesh.userData.ownGeo }; this.floor.add(mesh); }
+        const top = Math.max(...anchorBlocks(obj).map((b) => b.top), -Infinity);
+        for (const mesh of meshes) {
+          mesh.updateMatrixWorld();
+          const deep = Number.isFinite(top) && new THREE.Box3().setFromObject(mesh).max.z < top - 40;
+          mesh.userData = { id, kind: 'obj', shared: !mesh.userData.ownGeo, deep };
+          this.floor.add(mesh);
+        }
         this.meshCache.set(id, { key: okey, meshes });
         continue;
       }
@@ -534,7 +552,8 @@ export class Editor {
       if (off) for (const mesh of meshes) mesh.position.set(...off);
       this.meshCache.set(id, { key, meshes });
     }
-    this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes);
+    // 很长的机关 / 装饰伸到路面下很深的那一截（柱子的下半截）不参与点选
+    this.pickables = [...this.meshCache.values()].flatMap((c) => c.meshes).filter((mesh) => !mesh.userData.deep);
     this.syncCheckpointLabels(m);
     this.syncSectorLabels(m);
   }
@@ -618,6 +637,20 @@ export class Editor {
     const pieces = fakePieces ?? getAsset(t?.cat === 'deco' ? 'asset' : 'element', o.type) ?? [];
     const fix = (fakePieces && FAKE_FIX[fake!]) || {};
     const rot = o.rot + (fix.rot ?? 0);
+    // 一起显示的附加模型（例如飞船前面的软木桥）：只显示
+    const extras: THREE.Mesh<THREE.BufferGeometry, THREE.Material>[] = [];
+    if (fakePieces) {
+      const r = (o.rot * Math.PI) / 180;
+      for (const ex of FAKE_EXTRA[fake!] ?? []) {
+        for (const pc of getAsset('fake', ex.name) ?? []) {
+          const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
+          mesh.position.set(o.x + ex.dx * Math.cos(r) - ex.dy * Math.sin(r), o.y + ex.dx * Math.sin(r) + ex.dy * Math.cos(r), o.z + ex.dz);
+          mesh.rotation.z = r;
+          mesh.updateMatrixWorld();
+          extras.push(mesh);
+        }
+      }
+    }
     const out = pieces.map((pc) => {
       const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
       const r = (o.rot * Math.PI) / 180, fx = fix.dx ?? 0, fy = fix.dy ?? 0;
@@ -629,6 +662,7 @@ export class Editor {
       mesh.updateMatrixWorld();
       return mesh;
     });
+    out.push(...extras);
     // 挡块
     const st = stopperMesh({ id: 0, cat: 'module', ...o, x: ghost ? 0 : o.x, y: ghost ? 0 : o.y, z: ghost ? 0 : o.z });
     if (st) {
@@ -993,6 +1027,7 @@ export class Editor {
   private snap(): Snapper {
     this.snapper.grid = this.gridMode !== this.gridFlipped;
     this.snapper.snap = this.snapMode;
+    this.snapper.step = this.gridStep;
     const dist = this.camera.position.distanceTo(this.controls.target);
     this.snapper.tol = THREE.MathUtils.clamp(dist * 0.015, 0.3, 2.5);
     return this.snapper;
@@ -1709,12 +1744,8 @@ export class Editor {
       const n = m.nodes[id];
       if (n && (n.kind === 'joint' || n.inPlatform !== undefined)) continue;
       if (!n && !m.segs[id] && !m.rails[id] && !m.objs[id] && !m.guards[id]) continue;
-      box.makeEmpty();
-      for (const mesh of c.meshes) {
-        if (mesh.userData.handle) continue;
-        mesh.updateMatrixWorld();
-        box.expandByObject(mesh);
-      }
+      if (!c.meshes.length) continue;
+      this.elemBox(id, box);
       if (box.isEmpty()) continue;
       let hit = inside(box.getCenter(v));
       // 机关：对准方块（脚下那一格路面）在框内也算
@@ -2582,7 +2613,8 @@ export class Editor {
     const lift = t?.prop ? this.model.settings.propLift : 0;
     if (!anchors.length) {
       const at: [number, number, number] = [ox, oy, refZ];
-      return { x: this.snapEdge(ox, 0, at, 1.25), y: this.snapEdge(oy, 1, at, 1.25), z: refZ, rot };
+      const st = Math.min(1.25, this.gridStep);
+      return { x: this.snapEdge(ox, 0, at, st), y: this.snapEdge(oy, 1, at, st), z: refZ, rot };
     }
     // 每个对准方块试着贴到它下面的路面上，取挪动最少的那个
     const blocks = anchorBlocks({ type, x: ox, y: oy, z: 0, rot });
@@ -2594,10 +2626,13 @@ export class Editor {
       const d = Math.hypot(cell.x - bl.x, cell.y - bl.y);
       if (!best || d < best.d) best = { x: ox + cell.x - bl.x, y: oy + cell.y - bl.y, z: blockTopZ(cell, type) - a[2] + lift, d };
     });
-    if (best) { const b = best as { x: number; y: number; z: number }; return { x: b.x, y: b.y, z: b.z, rot }; }
+    // 去掉旋转换算带来的浮点尾巴（-18.000000000000004）
+    const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+    if (best) { const b = best as { x: number; y: number; z: number }; return { x: r6(b.x), y: r6(b.y), z: r6(b.z), rot }; }
     // 哪个方块下面都没有路：跟着鼠标，高度按主对准方块
     const at: [number, number, number] = [ox, oy, refZ];
-    return { x: this.snapEdge(ox, 0, at, 1.25), y: this.snapEdge(oy, 1, at, 1.25), z: refZ - t!.anchor![2] + lift, rot };
+    const st = Math.min(1.25, this.gridStep);
+    return { x: this.snapEdge(ox, 0, at, st), y: this.snapEdge(oy, 1, at, st), z: refZ - t!.anchor![2] + lift, rot };
   }
 
   /**
@@ -2787,24 +2822,28 @@ export class Editor {
   private focusBox(): THREE.Box3 | null {
     const ids = this.selection.size ? [...this.selection] : this.selected !== null ? [this.selected] : [];
     const box = new THREE.Box3(), one = new THREE.Box3();
-    for (const id of ids) {
-      one.makeEmpty();
-      for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
-        if (mesh.userData.handle) continue;
-        mesh.updateMatrixWorld();
-        one.expandByObject(mesh);
-      }
-      // 很高的机关 / 装饰（例如柱子长三百多）：只看对准方块附近，免得视图中心跑到地下很远的地方
-      const o = this.model.objs[id];
-      const blocks = o ? anchorBlocks(o) : [];
-      if (blocks.length && !one.isEmpty() && one.max.z - one.min.z > 40) {
-        const top = Math.max(...blocks.map((b) => b.top));
-        one.min.z = Math.max(one.min.z, Math.min(...blocks.map((b) => b.top)) - 10);
-        one.max.z = Math.min(one.max.z, top + 20);
-      }
-      box.union(one);
-    }
+    for (const id of ids) box.union(this.elemBox(id, one));
     return box.isEmpty() ? null : box;
+  }
+
+  /**
+   * 元素画出来的包围盒（选中、框选、F、环视都按它算）。很长的机关 / 装饰（例如柱子三百多长）只算对准方块附近，
+   * 下半截不参与，免得视图被拉到地下很远的地方
+   */
+  private elemBox(id: number, out = new THREE.Box3()): THREE.Box3 {
+    out.makeEmpty();
+    for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
+      if (mesh.userData.handle) continue;
+      mesh.updateMatrixWorld();
+      out.expandByObject(mesh);
+    }
+    const o = this.model.objs[id];
+    const blocks = o ? anchorBlocks(o) : [];
+    if (blocks.length && !out.isEmpty() && out.max.z - out.min.z > 40) {
+      out.min.z = Math.max(out.min.z, Math.min(...blocks.map((b) => b.top)) - 10);
+      out.max.z = Math.min(out.max.z, Math.max(...blocks.map((b) => b.top)) + 20);
+    }
+    return out;
   }
 
   /** 平滑地把视图中心移到 center；dist 不为空时同时调整到这个观察距离（视线方向不变） */

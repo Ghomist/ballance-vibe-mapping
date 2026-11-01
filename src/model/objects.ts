@@ -125,6 +125,15 @@ export const FAKE_FIX: Record<string, { rot?: number; dx?: number; dy?: number; 
   Fake_Modul_30: { pitch: -10, dz: 2.55 },
   Fake_Modul_19: { dx: -2.92, dy: -2.5, dz: -0.1 },
 };
+/**
+ * 机关模型之外再一起显示的模型（只影响编辑器里的显示，不导出）：
+ *   终点飞船前面的软木桥：飞船平台边沿 x≈8.6，路口那一格从 x=22.07 开始；软木桥模型两头的缺口是 -6.86～8.47，
+ *   挪 13.6 让桥的路面一头接上那一格，另一头搭在平台上（高度：飞船对准方块顶面 +0.01，软木桥 +0.17）
+ */
+export const FAKE_EXTRA: Record<string, { name: string; dx: number; dy: number; dz: number }[]> = {
+  Fake_Balloon: [{ name: 'Fake_Modul_29', dx: 13.6, dy: 0.17, dz: -0.16 }],
+};
+
 export function fakeModel(type: string): string | null {
   const n = type === 'PE_Balloon' ? 'Fake_Balloon' : type.replace(/^P_/, 'Fake_');
   return FAKES.has(n) ? n : null;

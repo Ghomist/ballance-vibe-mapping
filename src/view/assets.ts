@@ -41,7 +41,8 @@ function texture(file: string) {
   if (!t) {
     const url = `${import.meta.env.BASE_URL}textures/${file}`;
     const done = (tex: THREE.Texture) => { texDone.add(tex); for (const f of texListeners) f(); };
-    t = /\.tga$/i.test(file) ? tgaLoader.load(url, done) : texLoader.load(url, done);
+    // TGALoader 解出来的行序与图片相反：翻过来才和 .bmp（以及 Blender 的 UV）一致
+    t = /\.tga$/i.test(file) ? tgaLoader.load(url, (tex) => { tex.flipY = !tex.flipY; tex.needsUpdate = true; done(tex); }) : texLoader.load(url, done);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = 8;
