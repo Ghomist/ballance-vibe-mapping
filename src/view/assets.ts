@@ -21,11 +21,21 @@ export let assetVersion = 0;
 
 export function setAssetLoadedCallback(cb: () => void) { listeners.push(cb); }
 
+const texListeners: (() => void)[] = [];
+/** 贴图加载完的回调（机关库预览要等贴图加载完再渲染） */
+export function setTextureLoadedCallback(cb: () => void) { texListeners.push(cb); }
+const texDone = new Set<THREE.Texture>();
+/** 这些模型用到的贴图都加载完了 */
+export function texturesReady(pieces: AssetPiece[]) {
+  return pieces.every((p) => { const map = (p.material as THREE.MeshLambertMaterial).map; return !map || texDone.has(map); });
+}
+
 function texture(file: string) {
   let t = texCache.get(file);
   if (!t) {
     const url = `${import.meta.env.BASE_URL}textures/${file}`;
-    t = /\.tga$/i.test(file) ? tgaLoader.load(url) : texLoader.load(url);
+    const done = (tex: THREE.Texture) => { texDone.add(tex); for (const f of texListeners) f(); };
+    t = /\.tga$/i.test(file) ? tgaLoader.load(url, done) : texLoader.load(url, done);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = 8;

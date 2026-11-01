@@ -127,6 +127,8 @@ const C_CONNECT = 0x7dff9a;
 const C_JOINT = 0x55ccff;
 const C_ROOT = 0xffd76a;
 const C_RAIL = 0x9be7ff;
+/** 机关的对准方块 */
+const C_ANCHOR = 0x5cf2d6;
 const RAIL_HANDLE_GEO = new THREE.BoxGeometry(5, 5, 1.6).translate(-1.5, 0, 0);
 const RAIL_HANDLE_MAT = new THREE.MeshBasicMaterial({ visible: false });
 const GHOST_MAT = new THREE.MeshBasicMaterial({ color: 0x9fd2ff, transparent: true, opacity: 0.35, depthWrite: false });
@@ -157,6 +159,8 @@ export class Editor {
   /** 机关工具：跟随鼠标的半透明预览 */
   private ghost = new THREE.Group();
   private ghostType = '';
+  /** 拖放中的机关放在哪（显示对准方块用） */
+  private ghostAt: { type: string; x: number; y: number; z: number; rot: number } | null = null;
   /** 机关工具：放置时在顺路方向的基础上再转的角度（R） */
   private placeRot = 0;
   private lastRotBase = 0;
@@ -558,6 +562,7 @@ export class Editor {
     this.ghostType = '';
     this.syncMeshes();
     this.overlayDirty = true;
+    window.dispatchEvent(new Event('bvm-moduleview'));
   }
 
   private objMeshes(o: { type: string; x: number; y: number; z: number; rot: number }, ghost = false): THREE.Mesh[] {
@@ -571,6 +576,9 @@ export class Editor {
     const out = pieces.map((pc) => {
       const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
       mesh.position.set(o.x, o.y, o.z + (fix.dz ?? 0));
+      // 先绕本地 Y 倾斜，再绕 Z 转
+      mesh.rotation.order = 'ZYX';
+      mesh.rotation.y = ((fix.pitch ?? 0) * Math.PI) / 180;
       mesh.rotation.z = (rot * Math.PI) / 180;
       mesh.updateMatrixWorld();
       return mesh;
@@ -651,6 +659,19 @@ export class Editor {
       for (const id of this.selection) segs.push(...this.outlineSegs(id));
       show('multi', segs, C_SELECT, { width: 2, opacity: 0.9, gradient: true });
     }
+
+    // 机关的对准方块：悬停、选中、拖动、拖放中的机关（制图逻辑按这些方块吸附 / 断路）
+    const anchorOf: { type: string; x: number; y: number; z: number; rot: number }[] = [];
+    const objAt = (id: number | null | undefined) => { const o = id != null ? m.objs[id] : undefined; if (o && !anchorOf.includes(o)) anchorOf.push(o); };
+    if (h?.kind === 'obj') objAt(h.id);
+    objAt(this.selected);
+    const dg = this.drag;
+    if (dg?.type === 'obj' || dg?.type === 'objHeight') objAt(dg.id);
+    if (dg?.type === 'gizmo' && dg.target.type === 'obj') objAt(dg.target.id);
+    if (this.placing && this.ghost.visible && this.ghostAt) anchorOf.push(this.ghostAt);
+    const anc: number[] = [];
+    for (const o of anchorOf) for (const b of anchorBlocks(o)) anc.push(...boxSegs(b.x - b.hx, b.y - b.hy, b.top - 5, b.x + b.hx, b.y + b.hy, b.top + 0.03));
+    if (anc.length) show('anchors', anc, C_ANCHOR, { width: 1.5, opacity: 0.9, dashed: true });
 
     // 动作示意（左键 / Shift）
     const railCtx = !!h && (this.tool === 'rail' || h.kind === 'rail');
@@ -2591,6 +2612,7 @@ export class Editor {
       this.ghostType = this.ghost.children.length ? type! : '';
     }
     this.ghost.position.set(at.x, at.y, at.z);
+    this.ghostAt = { type: type!, ...at };
     this.ghost.rotation.z = (at.rot * Math.PI) / 180;
     this.ghost.visible = true;
   }
@@ -3138,3 +3160,11 @@ function hatchSegs(P: number[]): number[] {
 }
 
 const fmt = (v: number) => (Math.round(v * 1000) / 1000).toString();
+
+/** 长方体的 12 条棱 */
+function boxSegs(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): number[] {
+  const out: number[] = [];
+  for (const z of [z0, z1]) out.push(x0, y0, z, x1, y0, z, x1, y0, z, x1, y1, z, x1, y1, z, x0, y1, z, x0, y1, z, x0, y0, z);
+  for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) out.push(x, y, z0, x, y, z1);
+  return out;
+}

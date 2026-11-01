@@ -61,8 +61,11 @@ export interface ObjType {
   prop?: boolean;
   /** 全图只能有一个 */
   unique?: boolean;
-  /** 从中间断开的机关（秋千、跷跷板等）：放在直路中间时，对准方块之间的那段路去掉，断开处是开放端点 */
-  split?: boolean;
+  /**
+   * 从中间断开的机关（秋千、跷跷板等）：放在直路中间时，每对对准方块（下标，0 = anchor，1… = more）之间的那段路去掉，
+   * 断开处是开放端点。T 型板是两个侧边方块之间（两个挡块中间）；双向挡板是两条平行的路各断一段。
+   */
+  split?: [number, number][];
 }
 
 /** 名称取自 Ballance Wiki「机关」词条 */
@@ -79,17 +82,17 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Dome', cat: 'module', label: '半球型钢罩', anchor: [0, 0, 0] },
   { type: 'P_Modul_01', cat: 'module', label: '活式木栅栏', anchor: [2.5, 0.65, 0] },
   { type: 'P_Modul_03', cat: 'module', label: '升降机', anchor: [13.37, 0.04, -10.76] },
-  { type: 'P_Modul_08', cat: 'module', label: '秋千', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]], split: true },
+  { type: 'P_Modul_08', cat: 'module', label: '秋千', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]], split: [[0, 1]] },
   { type: 'P_Modul_17', cat: 'module', label: '单摆（杠杆靶）', anchor: [0, 0, -5] },
   { type: 'P_Modul_18', cat: 'module', label: '风扇', anchor: [0, 0, 0.34] },
-  { type: 'P_Modul_19', cat: 'module', label: '双向挡板（双翼桥）', anchor: [0, 5, 0], more: [[-11.63, 5, 0], [-5.84, -10, 0], [5.81, -10, 0]], split: true },
-  { type: 'P_Modul_25', cat: 'module', label: '推板', anchor: [2.5, 0, 0], more: [[-12.56, 0, 0]], split: true },
+  { type: 'P_Modul_19', cat: 'module', label: '双向挡板（双翼桥）', anchor: [0, 5, 0], more: [[-11.63, 5, 0], [-5.84, -10, 0], [5.81, -10, 0]], split: [[0, 1], [2, 3]] },
+  { type: 'P_Modul_25', cat: 'module', label: '推板', anchor: [2.5, 0, 0], more: [[-12.56, 0, 0]], split: [[0, 1]] },
   { type: 'P_Modul_26', cat: 'module', label: '沙袋', anchor: [0.23, -0.22, -2.68] },
-  { type: 'P_Modul_29', cat: 'module', label: '软木桥', anchor: [10.97, 0, 0.17], more: [[-9.36, 0, 0.17]], split: true },
-  { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]], split: true },
-  { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]], split: true },
-  { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: true },
-  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: true },
+  { type: 'P_Modul_29', cat: 'module', label: '软木桥', anchor: [10.97, 0, 0.17], more: [[-9.36, 0, 0.17]], split: [[0, 1]] },
+  { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]], split: [[0, 1]] },
+  { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]], split: [[0, 1]] },
+  { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: [[1, 2]] },
+  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   { type: 'Latern', cat: 'deco', label: '灯塔' },
   { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）' },
@@ -105,10 +108,16 @@ const FAKES = new Set([
   'Fake_Modul_26', 'Fake_Modul_29', 'Fake_Modul_30', 'Fake_Modul_34', 'Fake_Modul_37', 'Fake_Modul_41',
 ]);
 /**
- * 和占位符对不上的机关模型，显示时再调整：绕 Z 转（度）、上下挪。
- * 单摆的模型横着放；升降机的模型在升起的位置（底板比占位符高 9.1）。
+ * 和占位符对不上的机关模型，显示时再调整：先绕本地 Y 轴（转轴）倾斜 pitch 度，再绕 Z 转 rot 度、上下挪 dz。
+ *   单摆：模型横着放；升降机：模型在升起的位置（底板比占位符高 9.1）；浮板：顶部和占位符顶部（路面）齐平；
+ *   跷跷板：模型是平的，按占位符的初始姿态倾斜约 10°（-X 一端落下、+X 一端抬起），转轴抬到占位符转轴的高度。
  */
-export const FAKE_FIX: Record<string, { rot?: number; dz?: number }> = { Fake_Modul_17: { rot: 90 }, Fake_Modul_03: { dz: -9.1 } };
+export const FAKE_FIX: Record<string, { rot?: number; dz?: number; pitch?: number }> = {
+  Fake_Modul_17: { rot: 90 },
+  Fake_Modul_03: { dz: -9.1 },
+  Fake_Modul_41: { dz: -1.35 },
+  Fake_Modul_30: { pitch: -10, dz: 2.55 },
+};
 export function fakeModel(type: string): string | null {
   const n = type === 'PE_Balloon' ? 'Fake_Balloon' : type.replace(/^P_/, 'Fake_');
   return FAKES.has(n) ? n : null;

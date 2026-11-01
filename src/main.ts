@@ -1,7 +1,7 @@
 import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES } from './model/objects';
 import { thumbnail } from './view/thumbs';
-import { setAssetLoadedCallback } from './view/assets';
+import { setAssetLoadedCallback, setTextureLoadedCallback } from './view/assets';
 import { DEFAULT_SETTINGS } from './model/types';
 
 const editor = new Editor(document.getElementById('viewport')!);
@@ -99,13 +99,16 @@ palette.querySelector<HTMLInputElement>('.lib-search input')!.addEventListener('
 const fillThumbs = () => {
   for (const c of cards) {
     const box = c.el.querySelector<HTMLDivElement>('.thumb')!;
-    if (box.dataset.done) continue;
-    const url = thumbnail(c.type);
-    if (url) { box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); box.dataset.done = '1'; }
+    if (box.dataset.done === editor.moduleView) continue;
+    const url = thumbnail(c.type, editor.moduleView);
+    if (url) { box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); box.dataset.done = editor.moduleView; }
   }
 };
 fillThumbs();
 setAssetLoadedCallback(fillThumbs);
+setTextureLoadedCallback(fillThumbs);
+// 机关显示切换后，机关库的预览也换成对应的样子
+window.addEventListener('bvm-moduleview', fillThumbs);
 palette.querySelector('#lib-fold')!.addEventListener('click', () => palette.classList.toggle('folded'));
 
 function startPlace(type: string, e0: PointerEvent) {
@@ -256,7 +259,7 @@ const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; 
 const renderSettings = () => {
   panel.innerHTML = '<h3>全图设置</h3>' + FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${editor.settings[f.key]}"></label>`).join('')
     + '<h3 class="sub">显示</h3>'
-    + `<label><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span><span class="seg-toggle" id="module-view">${(['model', 'placeholder'] as const).map((v) => `<button data-v="${v}" class="${editor.moduleView === v ? 'on' : ''}">${v === 'model' ? '机关模型' : '占位符'}</button>`).join('')}</span></label>`
+    + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span><span class="seg-toggle" id="module-view">${(['model', 'placeholder'] as const).map((v) => `<button data-v="${v}" class="${editor.moduleView === v ? 'on' : ''}">${v === 'model' ? '机关模型' : '占位符'}</button>`).join('')}</span></label>`
     + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
   panel.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
     const v = Number(inp.value);
@@ -269,6 +272,11 @@ const renderSettings = () => {
   panel.querySelector('#settings-reset')!.addEventListener('click', () => { editor.setSettings({ ...DEFAULT_SETTINGS }); renderSettings(); });
   panel.querySelector('#settings-close')!.addEventListener('click', () => { panel.hidden = true; });
 };
+// 点设置面板外面（设置按钮除外）就收起
+window.addEventListener('pointerdown', (e) => {
+  const t = e.target as Element;
+  if (!panel.hidden && !panel.contains(t) && !t.closest?.('#settings')) panel.hidden = true;
+});
 document.getElementById('settings')!.addEventListener('click', (e) => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) renderSettings();

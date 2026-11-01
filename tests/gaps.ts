@@ -75,6 +75,37 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
     check(ss.length === 1 && near(span(ss[0])[1], 20) && isFree(ss[0].b) && ss[0].b.style === style0 && !ss[0].b.gap, `补回到 20、端点样式还原（${JSON.stringify(ss.map(span))}）`);
   });
 
+  scenario('T 型板在两个侧边方块（两个挡块）中间断开；双向挡板两条平行的路各断一段', () => {
+    // T 型板侧边方块在本地 (-13.77, ±7.23)：路沿 Y 穿过，缺口 y ∈ [-4.74, 4.73]
+    const m = emptyModel();
+    delete m.nodes[1]; m.root = null;
+    m.segs[10] = { id: 10, x: 0, y: -30, dir: 1, len: 60, style: 'normal', a: { node: null, z: 0, style: 'closed' }, b: { node: null, z: 0, style: 'closed' } };
+    m.nextId = 20;
+    const id = addObj(m, 'P_Modul_37', 13.77, 0, 0, 0)!;
+    check(cutForObj(m, id) === 1, 'T 型板断开一段');
+    normalize(m);
+    const ys = Object.values(m.segs).map((q) => [endPos(q, 'a')[1], endPos(q, 'b')[1]].map((v) => +v.toFixed(2))).sort((p, q) => p[0] - q[0]);
+    check(ys.length === 2 && near(ys[0][1], -4.74, 1e-6) && near(ys[1][0], 4.73, 1e-6), `缺口在两个侧边方块之间（${JSON.stringify(ys)}）`);
+
+    // 双向挡板：y=5 的路缺口 x ∈ [-9.13, -2.5]，y=-10 的路缺口 x ∈ [-3.34, 3.31]
+    const m2 = emptyModel();
+    delete m2.nodes[1]; m2.root = null;
+    for (const [id2, y] of [[10, 5], [11, -10]] as const) {
+      m2.segs[id2] = { id: id2, x: -30, y, dir: 0, len: 60, style: 'normal', a: { node: null, z: 0, style: 'closed' }, b: { node: null, z: 0, style: 'closed' } };
+    }
+    m2.nextId = 20;
+    const fid = addObj(m2, 'P_Modul_19', 0, 0, 0, 0)!;
+    check(cutForObj(m2, fid) === 2, '双向挡板断开两段');
+    normalize(m2);
+    const at = (y: number) => Object.values(m2.segs).filter((q) => near(q.y, y)).map(span).sort((p, q) => p[0] - q[0]);
+    const r5 = at(5), r10 = at(-10);
+    check(r5.length === 2 && near(r5[0][1], -9.13, 1e-6) && near(r5[1][0], -2.5, 1e-6), `y=5 缺口 -9.13..-2.5（${JSON.stringify(r5)}）`);
+    check(r10.length === 2 && near(r10[0][1], -3.34, 1e-6) && near(r10[1][0], 3.31, 1e-6), `y=-10 缺口 -3.34..3.31（${JSON.stringify(r10)}）`);
+    delete m2.objs[fid];
+    normalize(m2);
+    check(Object.keys(m2.segs).length === 2, '删掉后两条路都接回去');
+  });
+
   scenario('路已经断开时（机关跨在两段路之间）不再动路', () => {
     const m = road(emptyModel, 50);
     const id = addObj(m, 'P_Modul_08', 25, 0, -1.5, 0)!;

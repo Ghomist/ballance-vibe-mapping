@@ -12,27 +12,25 @@ const MIN_GAP = 0.5;
 export const isSplitObj = (type: string) => !!objType(type)?.split;
 
 /**
- * 机关跨着的缺口：对准方块投影到某根坐标轴上，相邻方块之间最大的空当。
- * 返回轴、缺口两头的坐标、对准方块的顶面高度，以及方块的横向中心（路要从这些位置穿过）。
+ * 机关跨着的缺口（每对对准方块一个）：两个方块中心连线方向上相隔更远的那根轴，缺口是两个方块相对的两个面之间。
+ * 缺口以对准方块为准，不取整（例如推板 10.06、软木桥 15.33、跷跷板 14.8，与原版实测一致）。
+ * 返回轴、缺口两头的坐标、方块顶面高度，以及两个方块的横向中心（路要从这里穿过）。
  */
-export function gapOf(o: { type: string; x: number; y: number; z: number; rot: number }) {
-  if (!isSplitObj(o.type)) return null;
+export function gapsOf(o: { type: string; x: number; y: number; z: number; rot: number }) {
+  const pairs = objType(o.type)?.split;
+  if (!pairs) return [];
   const blocks = anchorBlocks(o);
-  if (blocks.length < 2) return null;
-  let best: { axis: 0 | 1; lo: number; hi: number } | null = null;
-  for (const axis of [0, 1] as const) {
-    const iv = blocks.map((b) => (axis === 0 ? [b.x - b.hx, b.x + b.hx] : [b.y - b.hy, b.y + b.hy])).sort((p, q) => p[0] - q[0]);
-    let end = iv[0][1];
-    for (const [lo, hi] of iv.slice(1)) {
-      if (lo - end > (best ? best.hi - best.lo : MIN_GAP)) best = { axis, lo: end, hi: lo };
-      end = Math.max(end, hi);
-    }
+  const out: { axis: 0 | 1; lo: number; hi: number; z: number; lats: number[] }[] = [];
+  for (const [i, j] of pairs) {
+    const a = blocks[i], b = blocks[j];
+    if (!a || !b) continue;
+    const axis: 0 | 1 = Math.abs(a.x - b.x) >= Math.abs(a.y - b.y) ? 0 : 1;
+    const [p, q] = (axis === 0 ? a.x < b.x : a.y < b.y) ? [a, b] : [b, a];
+    const lo = axis === 0 ? p.x + p.hx : p.y + p.hy, hi = axis === 0 ? q.x - q.hx : q.y - q.hy;
+    if (hi - lo < MIN_GAP) continue;
+    out.push({ axis, lo, hi, z: a.top, lats: axis === 0 ? [a.y, b.y] : [a.x, b.x] });
   }
-  if (!best) return null;
-  // 缺口以对准方块为准，不取整（例如推板 10.06、软木桥 15.33、跷跷板 14.8，与原版实测一致）
-  const p = blocks[0];
-  const lats = blocks.map((b) => (best!.axis === 0 ? b.y : b.x));
-  return { ...best, z: p.top, lats };
+  return out;
 }
 
 const mark = (obj: number, len = 0, style?: FreeEnd['style']): GapMark => (style ? { obj, len, style } : { obj, len });
@@ -40,10 +38,9 @@ const mark = (obj: number, len = 0, style?: FreeEnd['style']): GapMark => (style
 /** 放好（或挪动后）的机关：把它跨着的那段直路去掉。返回断开了几段路 */
 export function cutForObj(m: Model, id: number): number {
   const o = m.objs[id];
-  const g = o && gapOf(o);
-  if (!g) return 0;
+  if (!o) return 0;
   let n = 0;
-  for (const s of Object.values(m.segs)) {
+  for (const g of gapsOf(o)) for (const s of Object.values(m.segs)) {
     if (axisOf(s.dir) !== g.axis) continue;
     const za = endZ(m, s, 'a');
     if (Math.abs(za - g.z) > 0.01 || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;
