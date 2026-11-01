@@ -155,12 +155,11 @@ document.getElementById('save')!.addEventListener('click', () => {
 
 // 导出
 const exportBtn = document.getElementById('export')!;
-// 线上版本（GitHub Pages）没有本机 Blender，只能导出场景描述
+// .blend 要靠本机的 Blender 生成：线上版本（GitHub Pages）没有
 if (!import.meta.env.DEV) {
-  for (const b of document.querySelectorAll<HTMLButtonElement>('#export-menu button[data-format="nmo"], #export-menu button[data-format="blend"]')) {
-    b.disabled = true;
-    b.querySelector('small')!.textContent = '需要在本地用 npm run dev 运行编辑器';
-  }
+  const b = document.querySelector<HTMLButtonElement>('#export-menu button[data-format="blend"]')!;
+  b.disabled = true;
+  b.querySelector('small')!.textContent = '需要在本地用 npm run dev 运行编辑器，并安装 Blender + BBP';
 }
 const exportMenu = document.getElementById('export-menu')!;
 exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.toggle('open'); });
@@ -179,6 +178,23 @@ exportMenu.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.addEve
   if (desc.warnings.length && !confirm(`${desc.warnings.join('\n')}\n\n仍然导出？`)) return;
   const body = JSON.stringify(desc);
   if (format === 'json') { download(new Blob([body], { type: 'application/json' }), 'map.scene.json'); return; }
+  if (format === 'nmo') {
+    // 浏览器里直接生成（纯前端，不需要 Blender）
+    status.textContent = '正在生成 .nmo…';
+    exportBtn.setAttribute('disabled', '');
+    try {
+      const { data } = await editor.exportNmo();
+      download(new Blob([data as BlobPart], { type: 'application/octet-stream' }), 'map.nmo');
+      status.textContent = '已导出 map.nmo';
+    } catch (e) {
+      console.error(e);
+      alert(`导出失败：${String(e).slice(0, 1500)}`);
+      status.textContent = '导出失败';
+    } finally {
+      exportBtn.removeAttribute('disabled');
+    }
+    return;
+  }
   status.textContent = `正在用 Blender 生成 .${format}…`;
   exportBtn.setAttribute('disabled', '');
   try {
@@ -188,7 +204,7 @@ exportMenu.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.addEve
     status.textContent = `已导出 map.${format}`;
   } catch (e) {
     console.error(e);
-    alert(`导出失败。需要在本机用 npm run dev 启动编辑器，并安装 Blender 与 BBP。
+    alert(`导出失败。.blend 需要在本机用 npm run dev 启动编辑器，并安装 Blender 与 BBP。
 也可以先“导出场景描述”，再在 Blender 里运行 scripts/blender/build_scene.py。
 
 ${String(e).slice(0, 1500)}`);

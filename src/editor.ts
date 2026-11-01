@@ -18,6 +18,7 @@ import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
 import { baseOf, placeBase, revertBase } from './model/bases';
 import { exportScene } from './export/scene';
+import { exportNmo } from './export/nmo-scene';
 import { addObj, anchorBlocks, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
 import { lerpModel } from './view/tween';
 import {
@@ -331,6 +332,8 @@ export class Editor {
 
   /** 导出用的场景描述（交给 Blender + BBP 生成地图） */
   exportScene() { return exportScene(this.model); }
+  /** 直接生成 .nmo（浏览器里，不需要 Blender） */
+  exportNmo() { return exportNmo(this.model); }
 
   importJSON(text: string) {
     const data = JSON.parse(text);

@@ -2,7 +2,7 @@
 
 一个只关心赛道走向与结构的 Ballance 制图器：路面材质的衔接、UV、平凹转换都由程序自动处理。
 
-在线版本：https://ghomist.github.io/ballance-vibe-mapping/（推到 master 后由 GitHub Actions 自动发布；线上版本只能导出场景描述，导出 NMO / .blend 需要本地运行）
+在线版本：https://ghomist.github.io/ballance-vibe-mapping/（推到 master 后由 GitHub Actions 自动发布；线上版本可以直接导出 NMO，只有 .blend 需要本地运行）
 
 ## 运行
 
@@ -18,10 +18,17 @@ npm run dev
 
 工具栏「导出」：
 
-- **导出 NMO / 导出 Blender 文件**：开发服务器调用本机 Blender + BBP 生成。路面按连通块合并成 `A_Floor_*`，钢轨为 `A_Rail_*`，都使用 BME 材质和 BBP 的归组；盘点路面、护栏、装饰从资产库追加；机关用 BBP 占位符并按规范命名、归入各自小节；小节数写入地图信息，导出时补齐 `Sector_01…N`。
+- **导出 NMO**：直接在浏览器里生成（纯前端，不需要 Blender），放进 Ballance 的关卡目录就能玩。内容与 Blender + BBP 导出的一致：路面按连通块合并成 `A_Floor_*`，钢轨为 `A_Rail_*`，都使用 BME 材质和 BBP 的归组；盘点路面、护栏、装饰取自资产库；机关用 BBP 占位符并按规范命名（`P_Box_01_01`…）、归入各自小节；补齐 `Sector_01…N`。贴图只存文件名，游戏从自己的 Textures 目录读取。
+- **导出 Blender 文件**：开发服务器调用本机 Blender + BBP 生成 .blend，可以继续手工修改（线上版本不可用）。
 - **导出场景描述**：JSON 文件，可在 Blender 里运行 `scripts/blender/build_scene.py` 自行生成。
 
-命令行：`npm run export -- map.bvm [--nmo out.nmo] [--blend out.blend] [--json out.json]`。
+命令行：`npm run export -- map.bvm [--nmo out.nmo] [--blend out.blend] [--json out.json] [--blender]`。.nmo 默认用内置写入器生成，加 `--blender` 改用 Blender + BBP。
+
+### NMO 写入器
+
+`src/export/nmo.ts` 是 Virtools 文件格式的写入器，照搬 [libcmo21](https://github.com/yyc12345/libcmo21)（BBP 背后的 BMap）的保存流程，只实现地图需要的组、3D 物体、网格、材质、贴图（外部文件名），整体 zlib 压缩（浏览器自带的 `CompressionStream`）。`src/export/nmo-scene.ts` 把场景描述组装成 Virtools 文档，处理方式与 Blender 一致（合并重合顶点、路面平直法线、钢轨平滑法线与 BBP 的反射 UV、坐标与绕序转换）。
+
+资产库物体、机关占位符的网格和所有材质、贴图参数来自素材库 `public/nmo-lib.json`：`npm run nmo-lib` 让 Blender + BBP 导出一个包含全部资产、机关和材质的“目录”关卡，再用 BMap 读回来生成（只在资产库或 BBP 更新时需要重跑）。`npm run nmo-check [map.bvm]` 把同一张地图分别用网页端和 Blender + BBP 导出，用 BMap 读回来逐项对比（物体、矩阵、组、逐面几何、材质、贴图）。
 
 ## 操作
 
@@ -64,7 +71,7 @@ npm run dev
 ## 结构
 
 - `src/model`：路网数据模型（路块、接头、直道、平台、钢轨、盘点、物件）与编辑操作
-- `src/export/scene.ts`：导出场景描述；`scripts/blender/build_scene.py`：在 Blender 里用 BBP 生成地图
+- `src/export/scene.ts`：导出场景描述；`src/export/nmo.ts`、`nmo-scene.ts`：网页端 NMO 导出；`scripts/blender/build_scene.py`：在 Blender 里用 BBP 生成地图；`scripts/blender/dump_nmo.py`：用 BMap 把 .nmo 读成 JSON
 - `src/geom/floor.ts`：按 2.5×2.5 四分之一格自动拼接边框贴图，生成路面网格
 - `src/editor.ts`：Three.js 视图与交互
 - `tests/run.ts`：场景测试（`npm test`）

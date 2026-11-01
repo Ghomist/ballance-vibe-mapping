@@ -8,7 +8,9 @@
     "assets": "node scripts/build-assets.mjs",
     "test": "tsx tests/run.ts",
     "export": "tsx scripts/export.ts",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "nmo-lib": "tsx scripts/build-nmo-lib.ts",
+    "nmo-check": "tsx scripts/nmo-check.ts"
   },
   "keywords": [],
   "author": "",

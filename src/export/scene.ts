@@ -49,10 +49,23 @@ export interface SceneDesc {
 
 const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
 
+/** BBP 的所有机关占位符类型 */
+export const ELEMENT_TYPES = [
+  'P_Extra_Life', 'P_Extra_Point', 'P_Trafo_Paper', 'P_Trafo_Stone', 'P_Trafo_Wood', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood',
+  'P_Box', 'P_Dome', 'P_Modul_01', 'P_Modul_03', 'P_Modul_08', 'P_Modul_17', 'P_Modul_18', 'P_Modul_19', 'P_Modul_25',
+  'P_Modul_26', 'P_Modul_29', 'P_Modul_30', 'P_Modul_34', 'P_Modul_37', 'P_Modul_41',
+  'PC_TwoFlames', 'PE_Balloon', 'PR_Resetpoint', 'PS_FourFlames',
+];
+/** 路面可用的 BME 材质 */
+export const FLOOR_MATERIALS = [
+  'FloorSide', 'LightingFloorTopBorder', 'LightingFloorTopBorderless', 'FloorTopBorder', 'FloorTopBorderless',
+  'FloorTopFlat', 'FloorTopProfil', 'FloorTopProfilFlat',
+];
+
 const ASSET_KIND: Record<string, SceneAsset['kind']> = {
   BarrierRail_1Edge: 'rail', BarrierRail_3Edge: 'rail', BarrierRail_3Edge_N: 'rail', BarrierRail_3Edge_S: 'rail', RailTip: 'rail',
 };
-const assetKind = (name: string): SceneAsset['kind'] =>
+export const assetKind = (name: string): SceneAsset['kind'] =>
   ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider)/.test(name) ? 'floor' : 'deco');
 
 export function exportScene(m: Model): SceneDesc {
