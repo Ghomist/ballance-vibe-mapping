@@ -30,14 +30,20 @@ export function createGrid(): THREE.Group {
     g.add(label(String(v), 0.8, v, AXIS_COLORS.y));
   }
   g.add(label('0', 0.8, -0.8, 0x9aa4b8));
-  g.position.z = -0.75; // 放在 z=0 路面（含 0.7 深的凹槽）之下，避免穿出路面
+  // 网格就在 z = 0：先于路面绘制、不写深度，路面画上去时直接盖住它（包括 0.7 深的凹槽里），不会穿出来
   return g;
 }
+
+const BG = new THREE.Color(0x1d2330); // 与场景背景色一致
 
 function lineSegs(pts: number[], color: number, opacity: number) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity }));
+  // 不透明（与背景色预先混合），这样和路面一起在不透明阶段、按 renderOrder 先画
+  const c = new THREE.Color(color).lerp(BG, 1 - opacity);
+  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: c, depthWrite: false, depthTest: false }));
+  line.renderOrder = -10;
+  return line;
 }
 
 function label(text: string, x: number, y: number, color: number) {
