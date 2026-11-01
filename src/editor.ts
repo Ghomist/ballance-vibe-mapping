@@ -1695,25 +1695,36 @@ export class Editor {
   }
 
   /** 屏幕矩形内的元素：直道看中点或两端，节点看中心（接头不算），钢轨看起点 / 终点 / 中点 */
+  /**
+   * 框选：按每个元素实际画出来的包围盒判断——包围盒中心在框内，或整个包围盒都在框内。
+   * （平台的 x、y 不是中心，机关的原点也可能离模型很远，例如柱子、秋千，所以不能只看坐标点）
+   */
   private idsInRect(x0: number, y0: number, x1: number, y1: number): number[] {
     const m = this.model;
-    const inside = (p: [number, number, number]) => { const c = this.projectToClient(...p); return c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1; };
+    const inside = (v: THREE.Vector3) => { const c = this.projectToClient(v.x, v.y, v.z); return c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1; };
     const out: number[] = [];
-    for (const s of Object.values(m.segs)) {
-      if (s.len <= 1e-6) continue;
-      const [ax, ay] = endPos(s, 'a'), [bx, by] = endPos(s, 'b');
-      const t = s.len / 2;
-      if (inside([s.x + DX[s.dir] * t, s.y + DY[s.dir] * t, zAt(m, s, t)]) || (inside([ax, ay, endZ(m, s, 'a')]) && inside([bx, by, endZ(m, s, 'b')]))) out.push(s.id);
+    const box = new THREE.Box3(), v = new THREE.Vector3();
+    for (const [id, c] of this.meshCache) {
+      const n = m.nodes[id];
+      if (n && (n.kind === 'joint' || n.inPlatform !== undefined)) continue;
+      if (!n && !m.segs[id] && !m.rails[id] && !m.objs[id] && !m.guards[id]) continue;
+      box.makeEmpty();
+      for (const mesh of c.meshes) {
+        if (mesh.userData.handle) continue;
+        mesh.updateMatrixWorld();
+        box.expandByObject(mesh);
+      }
+      if (box.isEmpty()) continue;
+      let hit = inside(box.getCenter(v));
+      // 机关：对准方块（脚下那一格路面）在框内也算
+      const o = m.objs[id];
+      if (!hit && o) hit = anchorBlocks(o).some((b) => inside(v.set(b.x, b.y, b.top)));
+      if (!hit) {
+        hit = true;
+        for (let k = 0; k < 8 && hit; k++) hit = inside(v.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z));
+      }
+      if (hit) out.push(id);
     }
-    for (const n of Object.values(m.nodes)) {
-      if (n.kind === 'joint' || n.inPlatform !== undefined) continue;
-      if (inside([n.x, n.y, n.z])) out.push(n.id);
-    }
-    for (const r of Object.values(m.rails)) {
-      const E = railEnd(r);
-      if (inside([r.x, r.y, r.z]) || inside([E.x, E.y, E.z])) out.push(r.id);
-    }
-    for (const o of Object.values(m.objs)) if (inside([o.x, o.y, o.z])) out.push(o.id);
     return out;
   }
 
