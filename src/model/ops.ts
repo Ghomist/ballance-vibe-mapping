@@ -670,6 +670,7 @@ function normalizeOnce(m: Model): boolean {
   }
   if (repairBases(m)) return true;
   if (repairPlatforms(m)) return true;
+  if (platformsToRoads(m)) return true;
   if (mergePlatforms(m)) return true;
   if (joinOpenEnds(m)) return true;
   for (const n of Object.values(m.nodes)) {
@@ -870,4 +871,92 @@ export function movePiece(m: Model, piece: Set<number>, dx: number, dy: number, 
     }
   }
   return true;
+}
+
+
+// ---------------- 平台变回路面 ----------------
+
+/**
+ * 只有 5 宽的平台（细边花纹平台除外）变回普通路面：5×5 变成 1×1 路块，5×L 变成一段直道（两头封闭）。
+ * 两个短边上的路接在直道两端，长边上的路在那里开 T 字路口。
+ * 短边上的路没对正中线、或长边上两条路离得太近（放不下各自的路口）时保持平台。
+ */
+function platformsToRoads(m: Model): boolean {
+  for (const p of Object.values(m.nodes)) {
+    if (p.kind !== 'platform' || p.ribbon) continue;
+    const cells = cellSet(p);
+    const xs = [...cells].map((k) => Number(k.split(',')[0])), ys = [...cells].map((k) => Number(k.split(',')[1]));
+    const i0 = Math.min(...xs), i1 = Math.max(...xs) + 1, j0 = Math.min(...ys), j1 = Math.max(...ys) + 1;
+    if (cells.size !== (i1 - i0) * (j1 - j0)) continue; // 不是矩形
+    const x0 = i0 * CELL, x1 = i1 * CELL, y0 = j0 * CELL, y1 = j1 * CELL;
+    const wx = x1 - x0, wy = y1 - y0;
+    if (Math.abs(Math.min(wx, wy) - BLOCK) > EPS) continue;
+    // 长轴方向：a 端在 lo，b 端在 hi
+    const ax: 0 | 1 = wx >= wy ? 0 : 1;
+    const dir: Dir = ax === 0 ? 0 : 1;
+    const lo = ax === 0 ? x0 : y0, hi = ax === 0 ? x1 : y1;
+    const mid = ax === 0 ? (y0 + y1) / 2 : (x0 + x1) / 2;
+    // 嵌着的衔接块先撤掉，路直接接回平台
+    for (const t of Object.values(m.nodes)) if (t.inPlatform === p.id) revertInset(m, t.id);
+    const links = nodeLinks(m, p.id).map((l) => ({ l, o: linkOpening(m.segs[l.seg], l.key) }));
+    // 检查每个开口能否落到路块 / 直道上
+    const ends: { l: typeof links[number]['l']; atLo: boolean }[] = [];
+    const sides: { l: typeof links[number]['l']; t: number }[] = [];
+    let ok = true;
+    for (const { l, o } of links) {
+      const along = ax === 0 ? o.x : o.y, lat = ax === 0 ? o.y : o.x;
+      if (axisOf(o.out) === ax) {
+        if (Math.abs(lat - mid) > EPS) { ok = false; break; }
+        ends.push({ l, atLo: Math.abs(along - lo) < EPS });
+      } else sides.push({ l, t: along - lo });
+    }
+    const L = hi - lo;
+    if (ok && L > BLOCK + EPS) {
+      sides.sort((a, b) => a.t - b.t);
+      for (let i = 0; i < sides.length; i++) {
+        if (sides[i].t < HALF - EPS || sides[i].t > L - HALF + EPS) ok = false;
+        if (i > 0 && sides[i].t - sides[i - 1].t < BLOCK - EPS) ok = false;
+      }
+    }
+    if (!ok) continue;
+    const z = p.z, style = p.style;
+    if (L <= BLOCK + EPS) {
+      // 5×5：1×1 路块，四边的路口照常接上
+      const blk = addNode(m, { kind: 'block', x: (x0 + x1) / 2, y: (y0 + y1) / 2, z, style });
+      for (const { l, o } of links) {
+        const along = axisOf(o.out) === 0 ? o.y : o.x;
+        const c = axisOf(o.out) === 0 ? blk.y : blk.x;
+        if (Math.abs(along - c) > EPS) { ok = false; break; }
+      }
+      if (!ok) { delete m.nodes[blk.id]; continue; }
+      for (const { l } of links) m.segs[l.seg][l.key] = { node: blk.id };
+      delete m.nodes[p.id];
+      replaceRoot(m, p.id, blk.id);
+      return true;
+    }
+    // 5×L：一段直道，两头封闭
+    const sg = addSeg(m, {
+      x: ax === 0 ? lo : mid, y: ax === 0 ? mid : lo, dir, len: L, style,
+      a: freeEnd(z, 'closed'), b: freeEnd(z, 'closed'),
+    });
+    // 短边上的路：通过接头接在两头
+    for (const { l, atLo } of ends) {
+      const k: EndKey = atLo ? 'a' : 'b';
+      const [x, y] = endPos(sg, k);
+      const j = addNode(m, { kind: 'joint', x, y, z, style, axis: ax });
+      sg[k] = { node: j.id };
+      m.segs[l.seg][l.key] = { node: j.id };
+    }
+    // 长边上的路：在那里挖出路块，开成 T 字路口（从远到近，前面的直道不受影响）
+    for (const { l, t } of [...sides].reverse()) {
+      // 从远到近插：sg 始终是从 lo 开始的那一段，t 仍然有效
+      const blk = insertBlockAt(m, sg.id, t);
+      if (blk === null) { m.segs[l.seg][l.key] = { node: null, z, style: 'closed' }; continue; }
+      m.segs[l.seg][l.key] = { node: blk };
+    }
+    delete m.nodes[p.id];
+    replaceRoot(m, p.id, sg.id);
+    return true;
+  }
+  return false;
 }

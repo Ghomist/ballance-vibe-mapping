@@ -1,6 +1,6 @@
 import { addCheckpoint, checkpoints, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabParts, rotateCheckpoint } from '../src/model/checkpoint';
 import { addSegAtPort, blockToSeg, deleteElem, extendTo, normalize, setSegStyle, shiftDownstream, tryConnect } from '../src/model/ops';
-import { Model, PREFAB_PORT, endPos, endZ, nodeLinks } from '../src/model/types';
+import { Model, PREFAB_PORT, endPos, endZ, isFree, nodeLinks } from '../src/model/types';
 
 type Check = (c: boolean, msg: string) => void;
 type Scenario = (n: string, f: () => void) => void;
@@ -140,14 +140,14 @@ export function platformRepairScenarios(emptyModel: () => Model, check: Check, s
 
   scenario('平台推断：拆成两个独立平台，路口归到各自那块', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 20)!; // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 2.5]
+    const p = widePlatform(m, 20); // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 2.5]
     const right = addSegAtPlatform(m, p, 17.5, -2.5, 3)!;
     extendTo(m, right, 'b', -15);
     const left = addSegAtPlatform(m, p, 0, -2.5, 3)!;
     extendTo(m, left, 'b', -15);
     normalize(m);
     // 中间挖掉一列（x ∈ [5, 10]）
-    extrudePlatform(m, p, { out: 3, line: -2.5, from: 5, to: 10 }, -5);
+    extrudePlatform(m, p, { out: 3, line: -2.5, from: 5, to: 10 }, -10); // 平台现在 10 宽：整列挖穿
     normalize(m);
     validate(m, 'split');
     const ps = platforms(m);
@@ -159,12 +159,12 @@ export function platformRepairScenarios(emptyModel: () => Model, check: Check, s
 
   scenario('平台推空：删除平台，接着的路变成封闭端点', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 10)!;
-    const s = addSegAtPlatform(m, p, 2.5, 2.5, 1)!;
+    const p = widePlatform(m, 10); // y ∈ [-2.5, 7.5]
+    const s = addSegAtPlatform(m, p, 2.5, 7.5, 1)!;
     extendTo(m, s, 'b', 20);
     normalize(m);
-    const run = edgeRunAt(m.nodes[p], 2.5, 2.5)!; // 上边
-    extrudePlatform(m, p, run, -5);
+    const run = edgeRunAt(m.nodes[p], 2.5, 7.5)!; // 上边
+    extrudePlatform(m, p, run, -10);
     normalize(m);
     validate(m, 'empty');
     check(platforms(m).length === 0, '平台应被删除');
@@ -174,12 +174,13 @@ export function platformRepairScenarios(emptyModel: () => Model, check: Check, s
 
   scenario('两个平台连成一个后再推回去：重新分开', () => {
     const m = emptyModel();
-    const a = blockToPlatform(m, 1, 0, 10)!; // x ∈ [-2.5, 12.5]，y ∈ [-2.5, 2.5]
+    const a = blockToPlatform(m, 1, 0, 10)!; // x ∈ [-2.5, 12.5]，y ∈ [-2.5, 2.5]（还没规范化）
+    extrudePlatform(m, a, { out: 3, line: -2.5, from: -2.5, to: 12.5 }, 2.5); // 往 -Y 再宽 2.5：拆开后不是 5 宽，仍是平台
     const bid = m.nextId++;
     m.nodes[bid] = { id: bid, kind: 'platform', x: 0, y: 0, z: 0, style: 'normal', cells: [] };
     extrudePlatform(m, bid, { out: 1, line: 10, from: -2.5, to: 12.5 }, 0); // 占位
     m.nodes[bid].cells = [];
-    for (let i = -2; i < 10; i++) for (let j = 8; j < 12; j++) m.nodes[bid].cells!.push(`${i},${j}`); // y ∈ [10, 15]
+    for (let i = -2; i < 10; i++) for (let j = 8; j < 14; j++) m.nodes[bid].cells!.push(`${i},${j}`); // y ∈ [10, 17.5]
     const top = edgeRunAt(m.nodes[a], 5, 2.5)!;
     extrudePlatform(m, a, top, 7.5); // 顶边拉到 y=10，与 B 相接
     normalize(m);
@@ -198,9 +199,9 @@ import { makeCorner, movePiece, pieceOf, shiftFreeEnd } from '../src/model/ops';
 export function rippleScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
   scenario('Ctrl 移动：接在平台边上的路沿边移动时只滑动路口，平台不动', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 20)!; // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 2.5]
-    const s = addSegAtPlatform(m, p, 7.5, 2.5, 1)!;
-    extendTo(m, s, 'b', 20);
+    const p = widePlatform(m, 20); // x ∈ [-2.5, 22.5]，y ∈ [-2.5, 7.5]
+    const s = addSegAtPlatform(m, p, 7.5, 7.5, 1)!;
+    extendTo(m, s, 'b', 25);
     normalize(m);
     const cells = JSON.stringify(m.nodes[p].cells);
     const info = { moved: new Set<number>(), stretched: new Set<number>() };
@@ -366,7 +367,7 @@ import { buildFloorMeshes } from '../src/geom/floor';
 export function ribbonInsetScenarios(emptyModel: () => Model, check: Check, scenario: Scenario) {
   scenario('凹槽路接细边花纹平台：窄平凹转换，平台内侧两个顶点下沉 0.7', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5, 17.5]，y ∈ [-2.5, 2.5]
+    const p = widePlatform(m, 15); // x ∈ [-2.5, 17.5]，y ∈ [-2.5, 2.5]
     setPlatformStyle(m, p, 'sink', true);
     const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
     extendTo(m, s, 'b', -20);
@@ -385,5 +386,53 @@ export function ribbonInsetScenarios(emptyModel: () => Model, check: Check, scen
     setPlatformStyle(m, p, 'sink', false);
     normalize(m);
     check(!Object.values(m.nodes).some((n) => n.kind === 'transition'), '凹槽平台接凹槽路不需要衔接块');
+  });
+}
+
+
+/** 测试用平台：1×1 往 +X 拉 len，再往 +Y 拉 5（10 宽；只有 5 宽的平台会自动变回路面） */
+function widePlatform(m: Model, len: number): number {
+  const p = blockToPlatform(m, 1, 0, len)!;
+  extrudePlatform(m, p, edgeRunAt(m.nodes[p], 5, 2.5)!, 5);
+  return p;
+}
+
+export function platformToRoadScenarios(emptyModel: () => Model, check: Check, scenario: Scenario, validate: (m: Model, l: string) => void) {
+  const platforms = (m: Model) => Object.values(m.nodes).filter((n) => n.kind === 'platform');
+  scenario('平台推回 5 宽：变回直道，短边的路接在两头、长边的路成 T 字路口', () => {
+    const m = emptyModel();
+    const p = widePlatform(m, 15); // x ∈ [-2.5, 17.5]，y ∈ [-2.5, 7.5]
+    const end = addSegAtPlatform(m, p, 17.5, 0, 0)!;   // 右边（推完后的短边，路中线 y=0）
+    extendTo(m, end, 'b', 30);
+    const side = addSegAtPlatform(m, p, 7.5, -2.5, 3)!; // 下边（长边）
+    extendTo(m, side, 'b', -15);
+    normalize(m);
+    check(platforms(m).length === 1, '先还是平台');
+    extrudePlatform(m, p, edgeRunAt(m.nodes[p], 5, 7.5)!, -5); // 上边推回去：只剩 5 宽
+    normalize(m);
+    validate(m, 'platform-to-road');
+    check(platforms(m).length === 0, '5 宽的平台应变回路面');
+    const blk = Object.values(m.nodes).find((n) => n.kind === 'block');
+    check(!!blk && Math.abs(blk.x - 7.5) < 1e-9 && Math.abs(blk.y) < 1e-9, '长边上的路处应开出 T 字路口');
+    check(m.segs[side].a.node === blk?.id, '下面那条路接在路口上');
+    check(!isFree(m.segs[end].a), '右边那条路接在直道末端');
+  });
+
+  scenario('5×5 平台变回 1×1；细边花纹平台不变，改成别的样式后才变回路面', () => {
+    const m = emptyModel();
+    const p = widePlatform(m, 5); // 10 × 10：x ∈ [-2.5, 7.5]，y ∈ [-2.5, 7.5]
+    extrudePlatform(m, p, edgeRunAt(m.nodes[p], 2.5, 7.5)!, -5); // 上边推回 5
+    extrudePlatform(m, p, edgeRunAt(m.nodes[p], 7.5, 0)!, -5);   // 右边推回 5 → 5×5
+    normalize(m);
+    check(platforms(m).length === 0 && Object.values(m.nodes).some((n) => n.kind === 'block'), '5×5 平台变回 1×1 路块');
+    const m2 = emptyModel();
+    const p2 = widePlatform(m2, 15);
+    setPlatformStyle(m2, p2, 'sink', true);
+    extrudePlatform(m2, p2, edgeRunAt(m2.nodes[p2], 5, 7.5)!, -5);
+    normalize(m2);
+    check(platforms(m2).length === 1, '细边花纹平台 5 宽也保持平台');
+    setPlatformStyle(m2, p2, 'sink', false);
+    normalize(m2);
+    check(platforms(m2).length === 0, '改成凹槽平台后 5 宽就变回凹槽路');
   });
 }

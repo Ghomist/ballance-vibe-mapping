@@ -27,7 +27,7 @@ export function platformScenarios(emptyModel: () => Model, check: (c: boolean, m
 
   scenario('平台拉边 / 合并 / 接路', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!; // 20 × 5，x ∈ [-2.5, 17.5]
+    const p = blockToPlatform(m, 1, 0, 15)!; // 20 × 5，x ∈ [-2.5, 17.5]（还没规范化，先往 +Y 拉宽）
     const run = edgeRunAt(m.nodes[p], 5, 2.5)!;
     check(run.out === 1, '应选中 +Y 的边');
     extrudePlatform(m, p, run, 10);
@@ -52,7 +52,7 @@ export function platformScenarios(emptyModel: () => Model, check: (c: boolean, m
 
   scenario('路端点拉到平台边上自动接上', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!;
+    const p = widePlatform(m, 15);
     const id = m.nextId++;
     m.segs[id] = { id, x: 7.5, y: -20, dir: 1, len: 10, style: 'normal', a: { node: null, z: 0, style: 'closed' }, b: { node: null, z: 0, style: 'closed' } };
     extendTo(m, id, 'b', -2.5);
@@ -122,7 +122,7 @@ import { extendStart, splitRail } from '../src/model/rail';
 export function moreScenarios(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
   scenario('平台接凹槽路：窄平凹转换嵌在平台内部', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
+    const p = widePlatform(m, 15); // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
     const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
     extendTo(m, s, 'b', -20);
     m.segs[s].style = 'sink';
@@ -138,7 +138,7 @@ export function moreScenarios(emptyModel: () => Model, check: (c: boolean, msg: 
       const q = part.pos;
       for (let i = 0; i < q.length; i += 9) a += Math.abs((q[i + 3] - q[i]) * (q[i + 7] - q[i + 1]) - (q[i + 4] - q[i + 1]) * (q[i + 6] - q[i])) / 2;
     }
-    check(Math.abs(a - (100 - 12.5)) < 1e-6, `平台顶面应扣掉 12.5，实际 ${a}`);
+    check(Math.abs(a - (200 - 12.5)) < 1e-6, `平台顶面应扣掉 12.5，实际 ${a}`);
     // 改回普通路：转换块撤掉，路直接接回平台
     m.segs[s].style = 'normal';
     normalize(m);
@@ -215,7 +215,7 @@ export function visualJoinScenarios(emptyModel: () => Model, check: (c: boolean,
 export function deepTransitionScenario(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
   const setup = (platformStyle: 'normal' | 'sink', roadStyle: 'normal' | 'sink') => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
+    const p = widePlatform(m, 15); // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
     m.nodes[p].style = platformStyle;
     const s = addSegAtPlatform(m, p, 7.5, -2.5, 3)!;
     extendTo(m, s, 'b', -20);
@@ -250,7 +250,7 @@ export function deepTransitionScenario(emptyModel: () => Model, check: (c: boole
         const q = part.pos;
         for (let i = 0; i < q.length; i += 9) area += Math.abs((q[i + 3] - q[i]) * (q[i + 7] - q[i + 1]) - (q[i + 4] - q[i + 1]) * (q[i + 6] - q[i])) / 2;
       }
-      check(Math.abs(area - 100) < 1e-6, `${st}：平台顶面面积应为 100，实际 ${area}`);
+      check(Math.abs(area - 200) < 1e-6, `${st}：平台顶面面积应为 200，实际 ${area}`);
       // 开口外沿：两角在 0，中点在 -sink
       const outer = zsAt(m, p, st === 'sink' ? 'FloorTopProfil' : 'FloorTopBorder', -2.5).filter((v) => v.x > 4 && v.x < 11);
       const mid = outer.filter((v) => Math.abs(v.x - 7.5) < 1e-6), corner = outer.filter((v) => Math.abs(Math.abs(v.x - 7.5) - 2.5) < 1e-6);
@@ -321,7 +321,7 @@ export function pieceScenarios(emptyModel: () => Model, check: (c: boolean, msg:
 export function flushOpeningScenario(emptyModel: () => Model, check: (c: boolean, msg: string) => void, scenario: (n: string, f: () => void) => void) {
   scenario('开口紧贴平台侧边：那一侧边框顺着侧边延续（不拐内角）', () => {
     const m = emptyModel();
-    const p = blockToPlatform(m, 1, 0, 15)!; // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
+    const p = widePlatform(m, 15); // x ∈ [-2.5,17.5], y ∈ [-2.5,2.5]
     // 开口贴着平台左侧边：路中心 x=0，左边沿 x=-2.5 与平台左侧边共线
     const s = addSegAtPlatform(m, p, 0, -2.5, 3)!;
     extendTo(m, s, 'b', -20);
@@ -335,4 +335,12 @@ export function flushOpeningScenario(emptyModel: () => Model, check: (c: boolean
     }
     check(n > 0 && ok, '左侧边上的开口带顶点应全部 u=0');
   });
+}
+
+
+/** 测试用平台：1×1 往 +X 拉 len，再往 +Y 拉 5（10 宽；只有 5 宽的平台会自动变回路面） */
+function widePlatform(m: Model, len: number): number {
+  const p = blockToPlatform(m, 1, 0, len)!;
+  extrudePlatform(m, p, edgeRunAt(m.nodes[p], 5, 2.5)!, 5);
+  return p;
 }
