@@ -3,7 +3,7 @@
 // 机关的小节默认自动判断：从机关脚下的路面出发沿路网扩散，遇到盘点就停下；
 // 碰到的盘点中小节号最小的那个就是它所在的小节（两个盘点之间的路属于前一个盘点激活的小节）。
 // 也可以手动指定。
-import { CELL, HALF, MNode, Model, PREFAB_PORT, isFree, nodeHalf, nodeLinks, zAt } from './types';
+import { CELL, HALF, MNode, Model, PREFAB_PORT, isFree, nodeLinks, nodeRect, zAt } from './types';
 import { checkpoints, findStart } from './checkpoint';
 import { cellSet } from './platform';
 
@@ -117,8 +117,8 @@ function nodeContains(n: MNode, x: number, y: number) {
     const along = ax ? dx : dy, across = ax ? dy : dx;
     return Math.abs(across) <= HALF && Math.abs(along) <= PREFAB_PORT[n.prefab!];
   }
-  const h = nodeHalf(n);
-  return Math.abs(x - n.x) <= h + 1e-6 && Math.abs(y - n.y) <= h + 1e-6;
+  const r = nodeRect(n);
+  return x >= r.x0 - 1e-6 && x <= r.x1 + 1e-6 && y >= r.y0 - 1e-6 && y <= r.y1 + 1e-6;
 }
 
 /** 物件脚下的路面：取低于物件、最高的那一层；都在上方时取最近的 */

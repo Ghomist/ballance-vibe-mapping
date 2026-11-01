@@ -335,6 +335,7 @@ export class Editor {
 
   private frame() {
     const dt = Math.min(this.clock.getDelta(), 0.1);
+    this.tickCamera(dt);
     if (this.display !== this.model) {
       const r = lerpModel(this.display, this.model, 1 - Math.exp(-dt / MOVE_TAU));
       this.display = r.done ? this.model : r.model;
@@ -1018,8 +1019,8 @@ export class Editor {
     const n = m.nodes[nodeId];
     const ports = nodePorts(m, nodeId);
     const base = {
-      segs: arrowSegs(dir, nodeHalf(n), 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z,
-      face: { x: n.x + DX[dir] * nodeHalf(n), y: n.y + DY[dir] * nodeHalf(n), z: n.z, dir, w: 5 },
+      segs: arrowSegs(dir, nodeHalf(n, dir), 3.5), pos: [n.x, n.y, n.z + 0.08] as [number, number, number], color: C_CREATE, dir, z: n.z,
+      face: { x: n.x + DX[dir] * nodeHalf(n, dir), y: n.y + DY[dir] * nodeHalf(n, dir), z: n.z, dir, w: 5 },
     };
     if (ports[dir]) return { ...base, valid: false, reason: '这一侧已经连着路了', apply: () => null };
     const lone = n.kind === 'block' && portCount(ports) === 0;
@@ -1462,7 +1463,8 @@ export class Editor {
   }
 
   /**
-   * 自动连接（常驻，不受格栅 / 自动对齐开关影响）：拖动的端点靠近能接上的地方
+   * 自动连接（常驻，不受格栅 / 自动对齐开关影响）：只接同一高度的；按住 Alt 时高度不同的也接（本段变成坡）。
+   * 拖动的端点靠近能接上的地方
    *（对面的端点、路块 / 盘点路口、平台边、直道侧面）时吸过去，显示绿色提示，松手即接上。
    */
   private pullToConnection(m: Model, g: { seg: number; key: EndKey }) {
@@ -1484,7 +1486,7 @@ export class Editor {
       if (n.kind === 'platform') {
         for (const e of boundaryEdges(cellSet(n))) if (e.out === opp(out)) cands.push(ax === 0 ? e.x : e.y);
       } else if (n.kind === 'block' || n.kind === 'checkpoint') {
-        const h = nodeHalf(n);
+        const h = nodeHalf(n, opp(out));
         cands.push((ax === 0 ? n.x : n.y) - (DX[out] + DY[out]) * h);
       }
     }
@@ -1494,7 +1496,7 @@ export class Editor {
     for (const c of near) {
       extendTo(m, s.id, g.key, c);
       const [nx, ny] = endPos(s, g.key);
-      if (Math.abs((ax === 0 ? nx : ny) - c) < 1e-6 && Math.abs((ax === 0 ? ny : nx) - lat) < 1e-6 && findConnection(m, s.id, g.key, true)) return;
+      if (Math.abs((ax === 0 ? nx : ny) - c) < 1e-6 && Math.abs((ax === 0 ? ny : nx) - lat) < 1e-6 && findConnection(m, s.id, g.key, this.mods.alt)) return;
       Object.assign(s, save);
     }
   }
@@ -1507,7 +1509,7 @@ export class Editor {
     const { seg, key } = this.growEnd;
     const s = m.segs[seg];
     if (!s || !isFree(s[key])) return null;
-    const c = findConnection(m, seg, key, true);
+    const c = findConnection(m, seg, key, this.mods.alt);
     if (!c) return null;
     const [x, y] = endPos(s, key);
     const out = key === 'a' ? opp(s.dir) : s.dir;
@@ -1525,7 +1527,13 @@ export class Editor {
 
   private onDown(e: PointerEvent) {
     this.syncMods(e);
-    if (e.button === 1) { this.drag = { type: 'orbit' }; return; }
+    if (e.button === 1) {
+      // 环视绕着正在操作 / 选中的东西转：先把视图中心平移过去
+      const f = e.shiftKey ? null : this.focusBox(); // Shift+中键是平移，不动
+      if (f) this.moveCamera(f.getCenter(new THREE.Vector3()), null);
+      this.drag = { type: 'orbit' };
+      return;
+    }
     if (e.button !== 0) return;
     this.setMouse(e);
     // gizmo 手柄优先（按住 Ctrl）
@@ -1787,7 +1795,7 @@ export class Editor {
       return;
     }
     if (d.type === 'action' && this.growEnd && m.segs[this.growEnd.seg]) {
-      tryConnect(m, this.growEnd.seg, this.growEnd.key, true);
+      tryConnect(m, this.growEnd.seg, this.growEnd.key, this.mods.alt);
     }
     this.growEnd = null;
     this.guides = [];
@@ -1845,6 +1853,7 @@ export class Editor {
       if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; rebaseObj(m, id); });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
+    if (k === 'f') this.frameSelection();
     if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
     if (k === 'escape' && this.placing) { this.cancelPlace(); return; }
     if (k === 'escape') {
@@ -2238,6 +2247,57 @@ export class Editor {
     this.mutate((mm) => { addCheckpoint(mm, prefab, cx, cy, 0, 0); });
   }
 
+  // ---------------- 视角 ----------------
+
+  private camAnim: { dT: THREE.Vector3; dP: THREE.Vector3; k: number } | null = null;
+
+  /** 正在操作 / 选中的东西的包围盒（多选、单选，或拖动中的那个） */
+  private focusBox(): THREE.Box3 | null {
+    const ids = this.selection.size ? [...this.selection] : this.selected !== null ? [this.selected] : [];
+    const box = new THREE.Box3();
+    for (const id of ids) {
+      for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
+        if (mesh.userData.handle) continue;
+        mesh.updateMatrixWorld();
+        box.expandByObject(mesh);
+      }
+    }
+    return box.isEmpty() ? null : box;
+  }
+
+  /** 平滑地把视图中心移到 center；dist 不为空时同时调整到这个观察距离（视线方向不变） */
+  private moveCamera(center: THREE.Vector3, dist: number | null) {
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    if (dist !== null) off.setLength(dist);
+    const dT = center.clone().sub(t);
+    const dP = center.clone().add(off).sub(this.camera.position);
+    if (dT.lengthSq() < 1e-6 && dP.lengthSq() < 1e-6) return;
+    this.camAnim = { dT, dP, k: 0 };
+  }
+
+  /** 每帧按增量推进（与用户同时进行的环视 / 平移叠加，不会互相打架） */
+  private tickCamera(dt: number) {
+    const a = this.camAnim;
+    if (!a) return;
+    const ease = (x: number) => 1 - (1 - x) ** 3;
+    const k1 = Math.min(a.k + dt / 0.28, 1);
+    const f = ease(k1) - ease(a.k);
+    a.k = k1;
+    this.controls.target.addScaledVector(a.dT, f);
+    this.camera.position.addScaledVector(a.dP, f);
+    if (k1 >= 1) this.camAnim = null;
+    this.overlayDirty = true;
+  }
+
+  /** F：视角对正选中的东西 */
+  frameSelection() {
+    const box = this.focusBox();
+    if (!box) { this.flashStatus('没有选中的东西'); return; }
+    const size = box.getSize(new THREE.Vector3()).length();
+    this.moveCamera(box.getCenter(new THREE.Vector3()), THREE.MathUtils.clamp(size * 1.4, 20, 800));
+  }
+
   private focusRoot() {
     const c = this.elemCenter(this.model, this.model.root) ?? [0, 0, 0];
     const off = this.camera.position.clone().sub(this.controls.target);
@@ -2371,7 +2431,7 @@ export class Editor {
       if (d.type === 'marquee') hs = [H(['LMB'], '框选'), H(['Shift'], '追加'), H(['Esc'], '取消')];
       else {
         hs = [H(['LMB'], '确认'), H(['Esc'], '取消')];
-        if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], this.gridMode !== this.gridFlipped ? '临时关格栅' : '临时开格栅'));
+        if (!['height', 'railHeight', 'objHeight'].includes(d.type)) hs.push(H(['Alt'], (this.gridMode !== this.gridFlipped ? '临时关格栅' : '临时开格栅') + ' · 允许连成坡'));
       }
     } else if (this.tool === 'edit') {
       if (this.mods.shift) hs = [H(['Shift', 'LMB'], '侧面拉成平台 / 推平台边')];
@@ -2379,7 +2439,7 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '自动对齐'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['F'], '对正选中'), H(['G'], '格栅'), H(['S'], '自动对齐'),
       ];
     } else if (this.tool === 'cut') hs = [H(['C', 'LMB'], '点截面分隔（路面 / 钢轨）'), H([], '松开 C 回到原来的工具'), H(['MMB'], '环视')];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];

@@ -29,20 +29,27 @@ function push(out: Edge[], a: P3, b: P3, o: [number, number]) {
   else out.push({ a, b, out: o });
 }
 
-/** 矩形节点（路块、转换块、底座）没接路的边 */
+/** 矩形节点（路块、转换块、底座）没接路的边。栅栏路面是两格：第二格的侧边总是外沿 */
 function nodeEdges(m: Model, n: MNode, out: Edge[]) {
   let hx = HALF, hy = HALF;
   if (n.kind === 'transition' && n.narrow) { if (n.axis === 0) hx = HALF / 2; else hy = HALF / 2; }
-  if (n.kind === 'base' && n.baseKind === 'fence') { if (n.rot! % 2 === 0) hx = 2 * HALF; else hy = 2 * HALF; }
   const ports = nodePorts(m, n.id);
-  for (const d of [0, 1, 2, 3] as Dir[]) {
-    if (ports[d]) continue;
+  const side = (cx: number, cy: number, hx: number, hy: number, d: Dir) => {
     const ax = d % 2 === 0;
-    const cx = n.x + DX[d] * hx, cy = n.y + DY[d] * hy;
+    const x = cx + DX[d] * hx, y = cy + DY[d] * hy;
     const t = ax ? hy : hx;
-    const a: P3 = ax ? [cx, cy - t, n.z] : [cx - t, cy, n.z];
-    const b: P3 = ax ? [cx, cy + t, n.z] : [cx + t, cy, n.z];
-    push(out, a, b, [DX[d], DY[d]]);
+    push(out, ax ? [x, y - t, n.z] : [x - t, y, n.z], ax ? [x, y + t, n.z] : [x + t, y, n.z], [DX[d], DY[d]]);
+  };
+  const fence = n.kind === 'base' && n.baseKind === 'fence';
+  for (const d of [0, 1, 2, 3] as Dir[]) {
+    if (fence && d === n.rot) continue;
+    if (!ports[d]) side(n.x, n.y, hx, hy, d);
+  }
+  if (fence) {
+    const d = n.rot!;
+    const cx = n.x + DX[d] * 2 * HALF, cy = n.y + DY[d] * 2 * HALF;
+    for (const e of [((d + 1) % 4) as Dir, ((d + 3) % 4) as Dir]) side(cx, cy, HALF, HALF, e);
+    if (!ports[d]) side(cx, cy, HALF, HALF, d);
   }
 }
 

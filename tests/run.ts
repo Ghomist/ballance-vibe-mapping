@@ -34,7 +34,7 @@ function validate(m: Model, label: string) {
       check(!!n, `${label}: seg ${s.id}.${k} 指向不存在的节点 ${e.node}`);
       if (!n || n.kind === 'platform') continue; // 平台的路口可以在边上任意位置
       const d = k === 'a' ? s.dir : opp(s.dir);
-      const h = nodeHalf(n);
+      const h = nodeHalf(n, d);
       const [x, y] = endPos(s, k);
       check(Math.abs(n.x + DX[d] * h - x) < 1e-6 && Math.abs(n.y + DY[d] * h - y) < 1e-6,
         `${label}: seg ${s.id}.${k} 与节点 ${n.id} 端口不对齐 (${x},${y}) vs node (${n.x},${n.y}) dir ${d}`);

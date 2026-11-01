@@ -134,14 +134,28 @@ export const DEFAULT_SETTINGS: MapSettings = {
 export interface PortRef { seg: number; key: EndKey }
 
 export const isFree = (e: End): e is FreeEnd => e.node === null;
-export const nodeHalf = (n: MNode) => (n.kind === 'joint' ? 0 : n.kind === 'checkpoint' ? PREFAB_PORT[n.prefab!]
-  : n.kind === 'base' && n.baseKind === 'fence' ? BLOCK
+/**
+ * 节点中心到某个方向路口的距离。栅栏路面例外：节点在栅栏所在的那一格（第一格）上，
+ * 往栅栏方向（rot）还延伸一格（第二格，栅栏被推过去的地方），所以那一侧是 7.5，其余三侧 2.5。
+ */
+export const nodeHalf = (n: MNode, d?: Dir) => (n.kind === 'joint' ? 0 : n.kind === 'checkpoint' ? PREFAB_PORT[n.prefab!]
+  : n.kind === 'base' && n.baseKind === 'fence' ? (d === n.rot ? 3 * HALF : HALF)
   : n.kind === 'transition' && n.narrow ? HALF / 2 : HALF);
+
+/** 节点占的矩形（栅栏路面是 5×10，其余按 nodeHalf 的正方形） */
+export function nodeRect(n: MNode): { x0: number; y0: number; x1: number; y1: number } {
+  const h = nodeHalf(n);
+  const r = { x0: n.x - h, y0: n.y - h, x1: n.x + h, y1: n.y + h };
+  if (n.kind === 'base' && n.baseKind === 'fence') {
+    const d = n.rot!, ext = 2 * HALF;
+    if (d === 0) r.x1 += ext; else if (d === 2) r.x0 -= ext; else if (d === 1) r.y1 += ext; else r.y0 -= ext;
+  }
+  return r;
+}
 
 /** 节点可以接路的方向（路块四个方向都行；盘点路面只有延伸段那一侧 / 两侧） */
 export function nodePortDirs(n: MNode): Dir[] {
   if (n.kind === 'checkpoint') return n.prefab === 'start' ? [n.rot!] : [n.rot!, opp(n.rot!)];
-  if (n.kind === 'base' && n.baseKind === 'fence') return [n.rot!, opp(n.rot!)];
   return [0, 1, 2, 3];
 }
 

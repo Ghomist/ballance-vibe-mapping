@@ -96,7 +96,7 @@ export function addSegAtPort(m: Model, nodeId: number, d: Dir, len = 1.25): numb
   if (nodePorts(m, nodeId)[d]) return null;
   if (n.kind !== 'block' && n.kind !== 'checkpoint' && n.kind !== 'base') return null;
   if (!nodePortDirs(n).includes(d)) return null;
-  const h = nodeHalf(n);
+  const h = nodeHalf(n, d);
   const s = addSeg(m, {
     x: n.x + DX[d] * h, y: n.y + DY[d] * h, dir: d, len, style: n.style,
     a: { node: n.id }, b: freeEnd(n.z, 'closed'),
@@ -409,7 +409,7 @@ export function findConnection(m: Model, segId: number, k: EndKey, adjust: boole
     if ((n.kind !== 'block' && n.kind !== 'checkpoint' && n.kind !== 'base') || !zok(n.z)) continue;
     const d = opp(out);
     if (!nodePortDirs(n).includes(d)) continue;
-    const h = nodeHalf(n);
+    const h = nodeHalf(n, d);
     if (!near(n.x + DX[d] * h, px) || !near(n.y + DY[d] * h, py)) continue;
     if (nodePorts(m, n.id)[d]) continue;
     return { type: 'port', node: n.id, z: n.z };

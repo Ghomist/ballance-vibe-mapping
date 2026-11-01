@@ -258,11 +258,30 @@ export function baseScenarios(emptyModel: () => Model, check: Check, scenario: S
     const b = placeBase(m, o);
     normalize(m);
     validate(m, 'fence');
-    check(b !== null && Math.abs(m.nodes[b].x - 22.5) < 1e-9 && nodeLinks(m, b).length === 2, `栅栏路面中心应在 x=22.5，实际 ${b !== null ? m.nodes[b].x : '无'}`);
+    check(b !== null && Math.abs(m.nodes[b].x - 20) < 1e-9 && nodeLinks(m, b).length === 2, `栅栏路面节点应在栅栏那一格 x=20，实际 ${b !== null ? m.nodes[b].x : '无'}`);
     delete m.objs[o];
     normalize(m);
     validate(m, 'fence-revert');
     check(segCount(m) === 1 && Math.abs(Object.values(m.segs)[0].len - 50) < 1e-9, '应接回一整段 50 长的路');
+  });
+
+  scenario('栅栏横在路上：第一格换掉路面，第二格伸到路外；侧面可以再接一条路', () => {
+    const m = emptyModel();
+    const s = blockToSeg(m, 1, 0);
+    extendTo(m, s, 'b', 47.5);
+    // 栅栏朝 +Y（横在 X 向的路上），对准的那一格在 (20, 0)
+    const o = addObj(m, 'P_Modul_01', 20 + 0.65, -2.5, 0, 90)!;
+    const b = placeBase(m, o);
+    normalize(m);
+    validate(m, 'fence-cross');
+    check(b !== null && Math.abs(m.nodes[b].x - 20) < 1e-9 && Math.abs(m.nodes[b].y) < 1e-9, '栅栏路面节点在路上那一格');
+    check(b !== null && nodeLinks(m, b).length === 2, '路从两侧接着');
+    const side = addSegAtPort(m, b!, 1);
+    check(side !== null && Math.abs(m.segs[side!].y - 7.5) < 1e-9, '延伸那一格的末端（y=7.5）可以接路');
+    delete m.objs[o];
+    normalize(m);
+    validate(m, 'fence-cross-revert');
+    check(!Object.values(m.nodes).some((n) => n.kind === 'base'), '删掉栅栏后变回普通路');
   });
 }
 

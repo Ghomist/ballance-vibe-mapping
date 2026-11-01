@@ -37,42 +37,60 @@ export function anchorWorld(o: Obj): [number, number] {
   return [o.x + a[0] * Math.cos(r) - a[1] * Math.sin(r), o.y + a[0] * Math.sin(r) + a[1] * Math.cos(r)];
 }
 
-/** 给机关铺上专属路面：脚下是直道就挖出一段，是普通路块就直接换掉。成功返回节点 id */
+/**
+ * 给机关铺上专属路面，成功返回节点 id。节点放在机关对准的那一格（脚下那一格）上：
+ *   脚下是普通路块就直接换掉；是直道就挖出这一格。
+ *   栅栏路面还要往栅栏方向多占一格（栅栏被推过去的地方）：
+ *   栅栏横在路上时，这一格伸到路外面；顺着路时，把那一侧的路再缩短一格。
+ */
 export function placeBase(m: Model, objId: number): number | null {
   const o = m.objs[objId];
   const spec = o && baseOf(o.type);
   if (!o || !spec || o.base !== undefined) return null;
-  const [ax, ay] = anchorWorld(o);
+  const [cx, cy] = anchorWorld(o);
   const floorZ = o.z + (objType(o.type)?.anchor?.[2] ?? 0);
   const d = objDir(o);
-  // 栅栏：节点中心在两格的中间（从对准的那一格往栅栏方向再走 2.5）
-  const half = spec.kind === 'fence' ? BLOCK : HALF;
-  const cx = spec.kind === 'fence' ? ax + DX[d] * HALF : ax, cy = spec.kind === 'fence' ? ay + DY[d] * HALF : ay;
+  const fence = spec.kind === 'fence';
   const props = { kind: 'base' as const, baseKind: spec.kind, baseMat: spec.mat, style: 'normal' as const, obj: objId, rot: d };
-  // 普通路块（变球器、风扇）
-  if (spec.kind !== 'fence') {
-    for (const n of Object.values(m.nodes)) {
-      if (n.kind !== 'block' || Math.abs(n.x - cx) > EPS || Math.abs(n.y - cy) > EPS || Math.abs(n.z - floorZ) > 0.01) continue;
-      Object.assign(n, props);
-      o.base = n.id;
-      return n.id;
-    }
+  // 普通路块：直接换掉（栅栏的延伸那一侧不能接着路）
+  for (const n of Object.values(m.nodes)) {
+    if (n.kind !== 'block' || Math.abs(n.x - cx) > EPS || Math.abs(n.y - cy) > EPS || Math.abs(n.z - floorZ) > 0.01) continue;
+    if (fence && nodePorts(m, n.id)[d]) return null;
+    Object.assign(n, props);
+    o.base = n.id;
+    return n.id;
   }
-  // 直道：中心落在路中线上、高度一致；栅栏要顺着路
+  // 直道：这一格的中心落在路中线上、高度一致、不越过两端
   for (const s of Object.values(m.segs)) {
-    if (spec.kind === 'fence' && axisOf(s.dir) !== axisOf(d)) continue;
     const t = (cx - s.x) * DX[s.dir] + (cy - s.y) * DY[s.dir];
     const lat = (cx - s.x) * -DY[s.dir] + (cy - s.y) * DX[s.dir];
     if (Math.abs(lat) > EPS || t < -EPS || t > s.len + EPS) continue;
     const za = endZ(m, s, 'a');
     if (Math.abs(za - floorZ) > 0.01 || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;
-    // 不能越过两端：节点必须整个落在这段路上
-    if (t < half - EPS && !isFree(s.a)) continue;
-    if (t > s.len - half + EPS && !isFree(s.b)) continue;
-    const n = insertNodeOnSeg(m, s.id, t, half, props);
+    if (t < HALF - EPS && !isFree(s.a)) continue;
+    if (t > s.len - HALF + EPS && !isFree(s.b)) continue;
+    // 栅栏顺着路：延伸那一侧的路要能再让出一格
+    const along = fence && axisOf(s.dir) === axisOf(d);
+    if (along) {
+      const rest = d === s.dir ? s.len - t - HALF : t - HALF;
+      const endFree = isFree(d === s.dir ? s.b : s.a);
+      if (rest < 2 * HALF - EPS && !endFree) continue;
+    }
+    const n = insertNodeOnSeg(m, s.id, t, HALF, props);
     if (!n) continue;
-    // 插入时可能被夹到直道范围内：位置有偏差就撤销
     if (Math.abs(n.x - cx) > EPS || Math.abs(n.y - cy) > EPS) { revertBase(m, n.id); continue; }
+    if (along) {
+      // 延伸那一侧的直道往后缩一格，接到 7.5 远的路口上；不够长就去掉
+      const p = nodePorts(m, n.id)[d];
+      if (p) {
+        const sg = m.segs[p.seg];
+        if (sg.len <= 2 * HALF + EPS) { delete m.segs[sg.id]; }
+        else {
+          if (p.key === 'a') { sg.x += DX[sg.dir] * 2 * HALF; sg.y += DY[sg.dir] * 2 * HALF; }
+          sg.len -= 2 * HALF;
+        }
+      }
+    }
     o.base = n.id;
     return n.id;
   }
@@ -85,11 +103,20 @@ export function revertBase(m: Model, nodeId: number) {
   if (!n || n.kind !== 'base') return;
   const o = n.obj !== undefined ? m.objs[n.obj] : undefined;
   if (o && o.base === nodeId) delete o.base;
+  if (n.baseKind === 'fence') {
+    const pd = nodePorts(m, nodeId)[n.rot!];
+    if (pd) {
+      const sg = m.segs[pd.seg];
+      if (pd.key === 'a') { sg.x -= DX[sg.dir] * 2 * HALF; sg.y -= DY[sg.dir] * 2 * HALF; }
+      sg.len += 2 * HALF;
+    }
+    n.baseKind = 'trafo'; // 之后按普通 5×5 处理
+  }
   // 正好接着对穿的两段路：两段路各伸到中心、合成一整段（不留截面接头）
   const ports = nodePorts(m, nodeId);
   const links = ports.filter((p) => p).length;
   const through = ([0, 1] as Dir[]).find((d) => ports[d] && ports[opp(d)]);
-  if (links === 2 && through !== undefined && (n.baseKind !== 'fence' || axisOf(n.rot!) === axisOf(through))) {
+  if (links === 2 && through !== undefined) {
     const half = nodeHalf(n);
     for (const p of [ports[through]!, ports[opp(through)]!]) {
       const sg = m.segs[p.seg];
@@ -102,32 +129,8 @@ export function revertBase(m: Model, nodeId: number) {
     deleteElem(m, nodeId);
     return;
   }
-  if (n.baseKind !== 'fence') {
-    n.kind = 'block';
-    delete n.baseKind; delete n.baseMat; delete n.obj; delete n.rot;
-    return;
-  }
-  // 栅栏路面：换成一段 10 长的直道，两头原来接着的路照常接上
-  const d = n.rot!;
-  const id = m.nextId++;
-  // （ports 已在上面取过）
-  const pa = ports[opp(d)], pb = ports[d];
-  m.segs[id] = {
-    id, x: n.x - DX[d] * BLOCK, y: n.y - DY[d] * BLOCK, dir: d, len: 2 * BLOCK, style: 'normal',
-    a: { node: null, z: n.z, style: 'closed' }, b: { node: null, z: n.z, style: 'closed' },
-  };
-  // 原来接在栅栏路面上的直道：通过接头接到新直道两端
-  for (const [p, k] of [[pa, 'a'], [pb, 'b']] as const) {
-    if (!p) continue;
-    const j = m.nextId++;
-    const [x, y] = endPos(m.segs[id], k as EndKey);
-    m.nodes[j] = { id: j, kind: 'joint', x, y, z: n.z, style: 'normal', axis: axisOf(d) };
-    m.segs[id][k as EndKey] = { node: j };
-    m.segs[p.seg][p.key] = { node: j };
-  }
-  for (const l of nodeLinks(m, nodeId)) m.segs[l.seg][l.key] = { node: null, z: n.z, style: 'closed' };
-  delete m.nodes[nodeId];
-  if (m.root === nodeId) m.root = id;
+  n.kind = 'block';
+  delete n.baseKind; delete n.baseMat; delete n.obj; delete n.rot;
 }
 
 /** 规范化：机关没了的专属路面变回普通路面；指向不存在节点的机关清掉引用 */
@@ -159,9 +162,8 @@ export function baseParts(m: Model, n: MNode): PrefabPart[] {
   const z = n.z - 2.5; // 资产原点在方块中心
   if (n.baseKind === 'trafo') return [{ name: `TrafoBase_${n.baseMat ?? 'Wood'}`, type: 'asset', pos: [n.x, n.y, z], rotZ: 0 }];
   if (n.baseKind === 'fence') {
-    // Slider 的原点在第一格中心，本地 +Y 沿栅栏方向
-    const d = n.rot!;
-    return [{ name: 'Slider', type: 'asset', pos: [n.x - DX[d] * HALF, n.y - DY[d] * HALF, z], rotZ: d * 90 - 90 }];
+    // Slider 的原点在第一格中心（就是节点位置），本地 +Y 沿栅栏方向
+    return [{ name: 'Slider', type: 'asset', pos: [n.x, n.y, z], rotZ: n.rot! * 90 - 90 }];
   }
   // 风扇：没接路的边要有边框
   const ports = nodePorts(m, n.id);
