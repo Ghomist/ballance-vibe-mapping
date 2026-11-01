@@ -44,7 +44,19 @@ export function cutForObj(m: Model, id: number): number {
   const o = m.objs[id];
   if (!o) return 0;
   let n = 0;
-  for (const g of gapsOf(o)) {
+  for (const g of gapsOf(o)) n += cutRange(m, id, g);
+  return n;
+}
+
+export type GapRange = ReturnType<typeof gapsOf>[number];
+
+/**
+ * 把沿 axis、[lo, hi] 这一段、横向中心在 lats 附近、顶面（或凹槽槽底）在 z 的直路去掉，断开处记在机关 id 名下。
+ * 也用于凹槽路上嵌入风扇 / 变球器底座（挖掉底座那一格）。返回断开了几段路
+ */
+export function cutRange(m: Model, id: number, g: GapRange): number {
+  let n = 0;
+  {
     // 缺口里（含两头）的截面接头先拆开成两个开放端点（坡道分界、分隔过的路都会有接头），之后照常截断；
     // 接回去时两侧的开放端点重新碰在一起，规范化会自动接上
     for (const j of Object.values(m.nodes)) {
@@ -60,7 +72,7 @@ export function cutForObj(m: Model, id: number): number {
   return n;
 }
 
-function cutLine(m: Model, id: number, g: ReturnType<typeof gapsOf>[number]): number {
+function cutLine(m: Model, id: number, g: GapRange): number {
   let n = 0;
   for (const s of Object.values(m.segs)) {
     if (axisOf(s.dir) !== g.axis) continue;
@@ -152,7 +164,7 @@ export function uncutObj(m: Model, id: number) {
 
 /** 规范化：机关没了的缺口接回去；不存在的直道上的标记不用管 */
 export function repairGaps(m: Model): boolean {
-  const lost = marked(m, (g) => !m.objs[g.obj] || !isSplitObj(m.objs[g.obj].type));
+  const lost = marked(m, (g) => !m.objs[g.obj]);
   if (!lost.length) return false;
   uncutObj(m, lost[0].g.obj);
   return true;

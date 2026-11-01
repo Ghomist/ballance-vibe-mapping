@@ -8,10 +8,11 @@
 import type { PrefabPart } from './checkpoint';
 import { insertNodeOnSeg } from './checkpoint';
 import { deleteElem } from './ops';
+import { cutRange, uncutObj } from './gaps';
 import type { Obj } from './objects';
 import { objType } from './objects';
 import {
-  BLOCK, BaseKind, DX, DY, Dir, EndKey, HALF, MNode, Model, axisOf, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp,
+  BLOCK, BaseKind, CELL, DX, DY, Dir, EndKey, HALF, MNode, Model, SINK_DEPTH, axisOf, endPos, endZ, isFree, nodeHalf, nodeLinks, nodePorts, opp,
 } from './types';
 
 const EPS = 1e-6;
@@ -52,6 +53,8 @@ export function placeBase(m: Model, objId: number): number | null {
   const d = objDir(o);
   const fence = spec.kind === 'fence';
   const props = { kind: 'base' as const, baseKind: spec.kind, baseMat: spec.mat, style: 'normal' as const, obj: objId, rot: d };
+  // 凹槽路面 / 凹槽平台：底座嵌进凹槽里（顶面与下沉 0.7 的槽底齐平）
+  if (!fence && embedSunk(m, objId, cx, cy, floorZ)) return o.base!;
   // 普通路块：直接换掉（栅栏的延伸那一侧不能接着路）
   for (const n of Object.values(m.nodes)) {
     if (n.kind !== 'block' || Math.abs(n.x - cx) > EPS || Math.abs(n.y - cy) > EPS || Math.abs(n.z - floorZ) > 0.01) continue;
@@ -97,6 +100,42 @@ export function placeBase(m: Model, objId: number): number | null {
   return null;
 }
 
+/**
+ * 凹槽路面、凹槽平台上的风扇 / 变球器：底座顶面对准槽底，挖掉底座那一格（直路截断成开放端点，平台挖掉 4×4 小格），
+ * 底座单独放在坑里。机关挪走或删掉时，路接回去、平台的小格补回去。
+ */
+function embedSunk(m: Model, objId: number, cx: number, cy: number, floorZ: number): boolean {
+  const lvl = (z: number) => Math.abs(z - SINK_DEPTH - floorZ) < 0.01;
+  for (const s of Object.values(m.segs)) {
+    if (s.style !== 'sink') continue;
+    const za = endZ(m, s, 'a');
+    if (!lvl(za) || Math.abs(endZ(m, s, 'b') - za) > EPS) continue;
+    const ax = axisOf(s.dir);
+    const t = (cx - s.x) * DX[s.dir] + (cy - s.y) * DY[s.dir];
+    const lat = (cx - s.x) * -DY[s.dir] + (cy - s.y) * DX[s.dir];
+    if (Math.abs(lat) > EPS || t < -EPS || t > s.len + EPS) continue;
+    const c = ax === 0 ? cx : cy;
+    if (!cutRange(m, objId, { axis: ax, lo: c - HALF, hi: c + HALF, z: floorZ, lats: [ax === 0 ? cy : cx] })) continue;
+    const id = placeFreeBase(m, objId);
+    if (id !== null) m.nodes[id].inRoad = ax;
+    return id !== null;
+  }
+  for (const n of Object.values(m.nodes)) {
+    if (n.kind !== 'platform' || n.style !== 'sink' || !lvl(n.z)) continue;
+    const cells: string[] = [];
+    const i0 = Math.round((cx - HALF) / CELL), j0 = Math.round((cy - HALF) / CELL);
+    if (Math.abs(i0 * CELL - (cx - HALF)) > EPS || Math.abs(j0 * CELL - (cy - HALF)) > EPS) continue;
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) cells.push(`${i0 + i},${j0 + j}`);
+    const own = new Set(n.cells ?? []);
+    if (!cells.every((k) => own.has(k))) continue;
+    const id = placeFreeBase(m, objId);
+    if (id === null) continue;
+    m.nodes[id].hole = { cells };
+    return true;
+  }
+  return false;
+}
+
 /** 不在路面上：在机关下面单独放一块专属底座（不接任何路） */
 export function placeFreeBase(m: Model, objId: number): number | null {
   const o = m.objs[objId];
@@ -118,8 +157,12 @@ export function revertBase(m: Model, nodeId: number) {
   if (!n || n.kind !== 'base') return;
   const o = n.obj !== undefined ? m.objs[n.obj] : undefined;
   if (o && o.base === nodeId) delete o.base;
-  // 单独的底座：没有替换过路面，直接去掉
-  if (n.free) { delete m.nodes[nodeId]; return; }
+  // 单独的底座：没有替换过路面，直接去掉；嵌在凹槽里的把挖掉的路接回去、平台小格补回去
+  if (n.free) {
+    if (n.obj !== undefined) uncutObj(m, n.obj);
+    delete m.nodes[nodeId];
+    return;
+  }
   if (n.baseKind === 'fence') {
     const pd = nodePorts(m, nodeId)[n.rot!];
     if (pd) {
@@ -182,6 +225,9 @@ export function baseParts(m: Model, n: MNode): PrefabPart[] {
     // Slider 的原点在第一格中心（就是节点位置），本地 +Y 沿栅栏方向
     return [{ name: 'Slider', type: 'asset', pos: [n.x, n.y, z], rotZ: n.rot! * 90 - 90 }];
   }
+  // 嵌在凹槽里的风扇：平台里四边都没有边框；直路里只有两侧有边框（两头接着路）
+  if (n.hole) return [{ name: 'Ventilator_NoEdge_Borderless', type: 'asset', pos: [n.x, n.y, z], rotZ: 0 }];
+  if (n.inRoad !== undefined) return [{ name: 'Ventilator_2Face_Opposite', type: 'asset', pos: [n.x, n.y, z], rotZ: n.inRoad === 0 ? 90 : 0 }];
   // 风扇：没接路的边要有边框
   const ports = nodePorts(m, n.id);
   const closed = new Set(([0, 1, 2, 3] as Dir[]).filter((d) => !ports[d]));

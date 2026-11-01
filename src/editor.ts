@@ -3223,9 +3223,9 @@ function boxSegs(x0: number, y0: number, z0: number, x1: number, y1: number, z1:
 }
 
 /**
- * 对准方块的顶面高度：凹槽路面、凹槽平台（含细边花纹平台）上对准下沉 0.7 的槽底，机关才能融进凹槽里；
- * 要替换路面的机关（变球器、风扇、栅栏）仍对准路面标称高度（专属路面换掉的是整块）
+ * 对准方块的顶面高度：凹槽路面、凹槽平台（含细边花纹平台）上对准下沉 0.7 的槽底，机关才能融进凹槽里
+ * （风扇、变球器的底座也嵌在槽底）；栅栏的专属路面是两格长的整块，仍对准路面标称高度
  */
 function blockTopZ(cell: { z: number; sink: boolean }, type: string) {
-  return cell.sink && !baseOf(type) ? cell.z - SINK_DEPTH : cell.z;
+  return cell.sink && baseOf(type)?.kind !== 'fence' ? cell.z - SINK_DEPTH : cell.z;
 }

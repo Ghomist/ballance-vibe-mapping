@@ -146,8 +146,8 @@ const models = {};
 {
   models.Fake_Extra_Point = merge('Fake_Extra_Point', [
     sphere(0, 0, 0, 0.4, { ...SILVER }),
-    { ...join1([torus([0, 0, 0], 2, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 0, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 1, 1.9, 0.07, {}, 32, 5)]), name: 'P_Extra_Point_Ring', texture: null, color: [0.55, 1, 0.65] },
-    sphere(0, 0, 0, 2.2, { name: 'P_Extra_Point_Shell', texture: null, color: [0.55, 1, 0.65], opacity: 0.1 }, 24, 14),
+    { ...join1([torus([0, 0, 0], 2, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 0, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 1, 1.9, 0.07, {}, 32, 5)]), name: 'P_Extra_Point_Ring', texture: null, color: [1, 0.32, 0.3] },
+    sphere(0, 0, 0, 2.2, { name: 'P_Extra_Point_Shell', texture: null, color: [1, 0.32, 0.3], opacity: 0.1 }, 24, 14),
   ]);
 }
 for (const [name, m] of Object.entries(models)) {

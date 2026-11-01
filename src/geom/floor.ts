@@ -308,6 +308,8 @@ function buildPlatform(mb: MeshBuilder, m: Model, n: MNode) {
   const insets = platformInsets(m, n.id);
   const insetLinks = new Set(insets.map((i) => i.link));
   const skip = new Set(insets.flatMap((i) => insetCells(i)));
+  // 嵌在平台里的风扇 / 变球器底座盖住的小格：不画顶面（底座顶面就是槽底）
+  for (const c of embeddedCells(m, n)) skip.add(c);
   // 开口：从边界中扣掉，并补上道路两侧边沿的延长线
   // 同样式的路面接平台：开口处往里 2.5 的带子由两块 1/4 内角拼成（与 T 字路口一致），平台边框直线延续
   const cornerOpenings: { x: number; y: number; out: Dir }[] = [];
@@ -435,7 +437,7 @@ export function elemKey(m: Model, id: number, chains: Chains): string {
   if (s) return JSON.stringify([s, endZ(m, s, 'a'), endZ(m, s, 'b'), chains.get(id)]);
   const n = m.nodes[id];
   if (!n) return '';
-  if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key)), platformInsets(m, id).map((i) => i.tr.id)]);
+  if (n.kind === 'platform') return JSON.stringify([n, nodeLinks(m, id).map((l) => linkOpening(m.segs[l.seg], l.key)), platformInsets(m, id).map((i) => i.tr.id), embeddedCells(m, n)]);
   // 相连直道的样式也会影响形状（例如平台里的衔接块要和路的截面对齐）
   return JSON.stringify([n, nodePorts(m, id).map((p) => (p ? m.segs[p.seg].style : null))]);
 }
@@ -459,4 +461,10 @@ export function buildFloorMeshes(m: Model): ElemMesh[] {
   const chains = computeChains(m);
   const ids = [...Object.keys(m.segs), ...Object.keys(m.nodes)].map(Number);
   return ids.map((id) => buildElem(m, id, chains)).filter((e): e is ElemMesh => !!e);
+}
+
+/** 平台上被嵌入的机关底座盖住的小格 */
+function embeddedCells(m: Model, n: MNode): string[] {
+  const own = cellSet(n);
+  return Object.values(m.nodes).flatMap((b) => (b.kind === 'base' && b.hole ? b.hole.cells.filter((c) => own.has(c)) : []));
 }

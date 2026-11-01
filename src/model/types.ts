@@ -67,6 +67,10 @@ export interface MNode {
   obj?: number;
   /** 单独的机关底座（没有替换路面，离开路面放着）：删掉机关时整块去掉 */
   free?: boolean;
+  /** 嵌在凹槽平台里的机关底座：盖住的平台小格（平台不画这些小格的顶面，底座顶面就是槽底） */
+  hole?: { cells: string[] };
+  /** 嵌在凹槽直路里的机关底座：路沿哪根轴（两头接着路，没有边框） */
+  inRoad?: 0 | 1;
   /** 仅用于显示过渡：平台整体平移时，按目标形状绘制再偏移这么多（不会存进模型） */
   dispOff?: [number, number, number];
   /** checkpoint：起点 / 小节盘点 */

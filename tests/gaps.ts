@@ -1,6 +1,7 @@
 // 从中间断开的机关：放在直路中间时把跨着的那段路去掉，挪走 / 删掉后接回去
 import { addObj } from '../src/model/objects';
 import { cutForObj, uncutObj } from '../src/model/gaps';
+import { placeBase } from '../src/model/bases';
 import { blockToSeg, extendTo, normalize } from '../src/model/ops';
 import { Model, Seg, cloneModel, endPos, isFree } from '../src/model/types';
 
@@ -125,6 +126,42 @@ export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n
     // 接回成连续的路（-30..30，中间没有断开的自由端）
     const free = back.flatMap((q) => [q.a, q.b]).filter((e) => isFree(e)).length;
     check(near(span(back[0])[0], -30) && near(span(back[back.length - 1])[1], 30) && free === 2, `接回连续的路（${JSON.stringify(back.map(span))}）`);
+  });
+
+  scenario('凹槽路面 / 凹槽平台上的风扇：底座嵌进槽底（低 0.7），删掉后路接回、底座去掉', () => {
+    // 凹槽直路：风扇对准方块顶面 = 槽底（-0.7），风扇原点再低 0.34
+    const m = emptyModel();
+    delete m.nodes[1]; m.root = 10;
+    m.segs[10] = { id: 10, x: -30, y: 0, dir: 0, len: 60, style: 'sink', a: { node: null, z: 0, style: 'closed' }, b: { node: null, z: 0, style: 'closed' } };
+    m.nextId = 20;
+    const id = addObj(m, 'P_Modul_18', 2.5, 0, -0.7 - 0.34, 0)!;
+    const b = placeBase(m, id);
+    normalize(m);
+    const base = b !== null ? m.nodes[b] : undefined;
+    const ss = segs(m);
+    check(!!base && !!base.free && near(base.z, -0.7, 1e-6), `底座单独嵌在槽底（${JSON.stringify(base)}）`);
+    check(ss.length === 2 && near(span(ss[0])[1], 0) && near(span(ss[1])[0], 5) && ss.every((q) => q.style === 'sink'), `挖掉底座那一格、没有加平凹转换（${JSON.stringify(ss.map(span))}）`);
+    delete m.objs[id];
+    normalize(m);
+    check(segs(m).length === 1 && near(segs(m)[0].len, 60) && !Object.values(m.nodes).some((n) => n.kind === 'base'), '删掉后路接回、底座去掉');
+
+    // 凹槽平台：挖掉底座下面 4×4 小格
+    const p = emptyModel();
+    delete p.nodes[1];
+    const cells: string[] = [];
+    for (let i = 0; i < 12; i++) for (let j = 0; j < 12; j++) cells.push(`${i},${j}`);
+    p.nodes[5] = { id: 5, kind: 'platform', x: 0, y: 0, z: 0, style: 'sink', cells };
+    p.root = 5; p.nextId = 20;
+    const fid = addObj(p, 'P_Modul_18', 7.5, 7.5, -0.7 - 0.34, 0)!;
+    const pb = placeBase(p, fid);
+    normalize(p);
+    const plat = Object.values(p.nodes).filter((n) => n.kind === 'platform');
+    const left = plat.reduce((a, n) => a + (n.cells?.length ?? 0), 0);
+    check(pb !== null && !!p.nodes[pb]?.hole && p.nodes[pb].hole!.cells.length === 16 && near(p.nodes[pb].z, -0.7, 1e-6) && left === 144, `底座嵌在槽底、盖住 16 个小格，平台本身不变（剩 ${left}）`);
+    delete p.objs[fid];
+    normalize(p);
+    const back = Object.values(p.nodes).filter((n) => n.kind === 'platform');
+    check(back.reduce((a, n) => a + (n.cells?.length ?? 0), 0) === 144 && !Object.values(p.nodes).some((n) => n.kind === 'base'), '删掉后底座去掉、平台完整');
   });
 
   scenario('路已经断开时（机关跨在两段路之间）不再动路', () => {
