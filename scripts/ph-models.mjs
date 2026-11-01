@@ -1,7 +1,7 @@
 // 资产库里没有假机关的几个机关（风扇、生命球、分数球、Dome），用原版的机关文件（3D Entities/PH/*.nmo）补上显示用的模型。
 //   原版文件里有的网格直接用（Dome 罩子和影子、风扇转子、生命球的油膜球）；
-//   游戏运行时由脚本生成的部分照原版的样子补上：生命球里的银球、分数球的银球核心和绕着转的小球（带红色拖尾）、
-//   风扇的鼓风区域（原版碰撞盒 2×2×16 里的白色絮状粒子）。
+//   其余是示意模型，按占位符的大小表现出大概的范围：生命球、分数球中间的银球，分数球外面的三道环，
+//   风扇的鼓风区域（半透明的风柱和几道环）。
 // 输出与 dump-blend-assets.py 相同格式的 public/fakes/Fake_*.json（Blender 坐标系）。
 // 用法：node scripts/ph-models.mjs（npm run assets 会调用）；需要 Blender + BBP 和 Ballance 安装目录。
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -76,21 +76,40 @@ const join1 = (parts) => ({ ...parts[0], pos: parts.flatMap((p) => p.pos), uv: p
 let seed = 1;
 const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
 
-/** 一团烟：三片互相垂直的方片（从哪个方向看都有） */
-function puff(cx, cy, cz, s, part) {
+/** 圆环（圆心 c，法线沿 axis：0=X 1=Y 2=Z，大半径 R、管半径 r） */
+function torus(c, axis, R, r, part, seg = 40, tube = 6) {
   const pos = [], uv = [], nrm = [];
-  const quads = [
-    [[-s, 0, -s], [s, 0, -s], [s, 0, s], [-s, 0, s], [0, 1, 0]],
-    [[0, -s, -s], [0, s, -s], [0, s, s], [0, -s, s], [1, 0, 0]],
-    [[-s, -s, 0], [s, -s, 0], [s, s, 0], [-s, s, 0], [0, 0, 1]],
-  ];
-  const t = [[0, 0], [1, 0], [1, 1], [0, 1]];
-  for (const q of quads) {
-    for (const k of [0, 1, 2, 0, 2, 3]) { pos.push(r5(cx + q[k][0]), r5(cy + q[k][1]), r5(cz + q[k][2])); uv.push(...t[k]); nrm.push(...q[4]); }
+  const map = (v) => (axis === 2 ? v : axis === 1 ? [v[0], v[2], v[1]] : [v[2], v[1], v[0]]);
+  const pt = (i, j) => {
+    const a = (i / seg) * Math.PI * 2, b = (j / tube) * Math.PI * 2;
+    const n = map([Math.cos(a) * Math.cos(b), Math.sin(a) * Math.cos(b), Math.sin(b)]);
+    const p = map([(R + r * Math.cos(b)) * Math.cos(a), (R + r * Math.cos(b)) * Math.sin(a), r * Math.sin(b)]);
+    return { p: [c[0] + p[0], c[1] + p[1], c[2] + p[2]], n, t: [i / seg, j / tube] };
+  };
+  const push = (...vs) => { for (const v of vs) { pos.push(...v.p.map(r5)); nrm.push(...v.n.map(r5)); uv.push(...v.t.map(r5)); } };
+  for (let i = 0; i < seg; i++) for (let j = 0; j < tube; j++) {
+    const a = pt(i, j), b = pt(i + 1, j), e = pt(i + 1, j + 1), d = pt(i, j + 1);
+    push(a, b, e, a, e, d);
   }
   return { ...part, pos, uv, nrm };
 }
-const SILVER = { name: 'ExtraBall', texture: 'ExtraBall.bmp' };
+
+/** 竖直的圆筒侧面（不封口） */
+function tube(r, z0, z1, part, seg = 32) {
+  const pos = [], uv = [], nrm = [];
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const v = (a, z) => [r5(r * Math.cos(a)), r5(r * Math.sin(a)), z];
+    const n = (a) => [r5(Math.cos(a)), r5(Math.sin(a)), 0];
+    for (const [a, z, u] of [[a0, z0, 0], [a1, z0, 1], [a1, z1, 1], [a0, z0, 0], [a1, z1, 1], [a0, z1, 0]]) {
+      pos.push(...v(a, z)); nrm.push(...n(a)); uv.push(u, z === z0 ? 0 : 1);
+    }
+  }
+  return { ...part, pos, uv, nrm };
+}
+
+/** 银球：不上贴图，银灰色 */
+const SILVER = { name: 'Silver', texture: null, color: [0.8, 0.82, 0.86] };
 
 if (!existsSync(PH)) { console.warn(`跳过原版机关模型：找不到 ${PH}`); process.exit(0); }
 mkdirSync(out, { recursive: true });
@@ -104,20 +123,15 @@ const models = {};
     objectPart(d, 'P_Dome_Shadow', { name: 'P_DomeShadow', texture: 'DomeShadow.tga', alphaBlend: true }),
   ]);
 }
-// 风扇：转子（底座是专属路面 Ventilator_*，另外显示）+ 鼓风区域（原版碰撞盒：中心 ±1、原点上方 1.14～17.14）里的白色絮状烟
+// 风扇：转子（底座是专属路面 Ventilator_*，另外显示）+ 鼓风区域示意：半透明风柱（到占位符顶部 16.7）和几道环
 {
   const d = dump('P_Modul_18');
-  seed = 18;
-  const smoke = [];
-  for (let i = 0; i < 34; i++) {
-    const h = rnd();
-    // 越往上越散、越淡（小）
-    const r = 0.25 + 0.75 * rnd() * (0.5 + h / 2), a = rnd() * Math.PI * 2;
-    smoke.push(puff(r * Math.cos(a), r * Math.sin(a), 1.4 + h * 15.5, 0.55 + 0.5 * rnd() * (1 - h * 0.5), {}));
-  }
+  const rings = [];
+  for (const z of [1.5, 5, 8.5, 12, 15.5]) rings.push(torus([0, 0, z], 2, 1.7, 0.05, {}, 32, 4));
   models.Fake_Modul_18 = merge('Fake_Modul_18', [
     objectPart(d, 'P_Modul_18_Rotor', { name: 'P_Modul_18_Rotor', texture: 'Rail_Environment.bmp' }),
-    { ...join1(smoke), name: 'P_Modul_18_Wind', texture: 'Particle_Smoke.bmp', blend: 'add', tint: [0.13, 0.13, 0.14] },
+    tube(1.7, 0.6, 16.7, { name: 'P_Modul_18_Wind', texture: null, color: [0.78, 0.9, 1], opacity: 0.13 }),
+    { ...join1(rings), name: 'P_Modul_18_WindRing', texture: null, color: [0.85, 0.95, 1], opacity: 0.55 },
   ]);
 }
 // 生命球：半透明的油膜球（叠加混合），里面一个银球
@@ -128,19 +142,12 @@ const models = {};
     objectPart(d, 'P_Extra_Life_Sphere', { name: 'P_Extra_Life_Sphere', texture: 'P_Extra_Life_Oil.bmp', blend: 'add' }),
   ]);
 }
-// 分数球：小银球核心，周围六个更小的银球（游戏里绕着核心转），每个后面拖着一串渐小的红色粒子
+// 分数球：银球核心，外面三道互相垂直的环和一层很淡的外壳（大致是占位符的范围）
 {
-  const orbit = (a) => [1.6 * Math.cos(a), 1.6 * Math.sin(a), 0.5 * Math.sin(a * 2)];
-  const balls = [sphere(0, 0, 0, 0.35, { ...SILVER })];
-  const trail = [];
-  for (let k = 0; k < 6; k++) {
-    const a = (k / 6) * Math.PI * 2;
-    balls.push(sphere(...orbit(a), 0.2, { ...SILVER }, 10, 6));
-    for (let i = 1; i <= 9; i++) trail.push(sphere(...orbit(a - i * 0.07), 0.19 * (1 - i / 11), {}, 5, 3));
-  }
   models.Fake_Extra_Point = merge('Fake_Extra_Point', [
-    join1(balls),
-    { ...join1(trail), name: 'P_Extra_Point_Trail', texture: null, color: [1, 0.12, 0.06], blend: 'add' },
+    sphere(0, 0, 0, 0.4, { ...SILVER }),
+    { ...join1([torus([0, 0, 0], 2, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 0, 1.9, 0.07, {}, 32, 5), torus([0, 0, 0], 1, 1.9, 0.07, {}, 32, 5)]), name: 'P_Extra_Point_Ring', texture: null, color: [0.55, 1, 0.65] },
+    sphere(0, 0, 0, 2.2, { name: 'P_Extra_Point_Shell', texture: null, color: [0.55, 1, 0.65], opacity: 0.1 }, 24, 14),
   ]);
 }
 for (const [name, m] of Object.entries(models)) {

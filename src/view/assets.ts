@@ -12,6 +12,8 @@ interface AssetPartJSON {
   blend?: 'add';
   /** 有贴图时乘上的颜色（叠加混合的烟用它调淡） */
   tint?: number[];
+  /** 不透明度（示意范围的半透明外壳） */
+  opacity?: number;
   pos: number[]; uv: number[]; nrm: number[];
 }
 
@@ -96,6 +98,7 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
       map: p.texture ? texture(p.texture) : null,
       transparent: !!p.alphaBlend || p.blend === 'add', alphaTest: p.alphaTest ? 0.5 : 0, side: p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,
       ...(p.blend === 'add' ? { blending: THREE.AdditiveBlending, depthWrite: false } : {}),
+      ...(p.opacity !== undefined && p.opacity < 1 ? { transparent: true, opacity: p.opacity, depthWrite: false, side: THREE.DoubleSide } : {}),
     });
     return { geometry: g, material: mat };
   });

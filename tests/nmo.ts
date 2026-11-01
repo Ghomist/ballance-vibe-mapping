@@ -115,6 +115,13 @@ export async function nmoScenarios(check: Check, scenario: (name: string, fn: ()
     const floors = f.objects.find((o) => o.name === 'Phys_Floors')!;
     check(Array.from(floors.dw.slice(3)).every((i) => f.objects[i].cid === 41), '组里都是 3D 物体');
   });
+  scenario('nmo: 所有挡块合成一个物体（分开会导致声音出问题）', () => {
+    const mm = emptyModel();
+    addObj(mm, 'P_Modul_25', 0, 0, 0, 0); addObj(mm, 'P_Modul_30', 30, 0, 0, 0); addObj(mm, 'P_Modul_19', 60, 0, 0, 90); addObj(mm, 'P_Modul_37', 90, 0, 0, 0);
+    const doc = buildNmoDoc(exportScene(mm), lib as unknown as NmoLib);
+    const g = doc.groups.find((x) => x.name === 'Phys_FloorStopper');
+    check(!!g && g.objects.length === 1, `Phys_FloorStopper 组里只有一个物体（${g?.objects.length}）`);
+  });
   scenario('nmo: 网格与材质', () => {
     const floor = f.objects.find((o) => o.name === 'A_Floor_BVM_01');
     check(!!floor && floor.cid === 41 && floor.classId === 33, '路面物体');
