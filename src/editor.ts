@@ -204,6 +204,7 @@ export class Editor {
     this.controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE };
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.18;
+    this.controls.enableZoom = false; // 滚轮缩放自己做，带缓动
     this.controls.target.set(5, 5, 0);
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
@@ -229,6 +230,11 @@ export class Editor {
       if (e.button === 1) this.controls.enableRotate = e.shiftKey || !this.focusBox();
     }, true);
     el.addEventListener('pointerdown', (e) => this.onDown(e));
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const cur = this.zoomGoal ?? this.camera.position.distanceTo(this.controls.target);
+      this.zoomGoal = THREE.MathUtils.clamp(cur * Math.exp(e.deltaY * 0.0012), 2, 3000);
+    }, { passive: false });
     window.addEventListener('pointermove', (e) => this.onMove(e));
     window.addEventListener('pointerup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => this.onContextMenu(e));
@@ -2297,6 +2303,8 @@ export class Editor {
   // ---------------- 视角 ----------------
 
   private camAnim: { dT: THREE.Vector3; dP: THREE.Vector3; k: number } | null = null;
+  /** 滚轮缩放的目标距离（相机到视图中心），每帧缓动过去 */
+  private zoomGoal: number | null = null;
 
   /** 正在操作 / 选中的东西的包围盒（多选、单选，或拖动中的那个） */
   private focusBox(): THREE.Box3 | null {
@@ -2321,10 +2329,19 @@ export class Editor {
     const dP = center.clone().add(off).sub(this.camera.position);
     if (dT.lengthSq() < 1e-6 && dP.lengthSq() < 1e-6) return;
     this.camAnim = { dT, dP, k: 0 };
+    if (dist !== null) this.zoomGoal = null;
   }
 
   /** 每帧按增量推进（与用户同时进行的环视 / 平移叠加，不会互相打架） */
   private tickCamera(dt: number) {
+    if (this.zoomGoal !== null) {
+      const off = this.camera.position.clone().sub(this.controls.target);
+      const cur = off.length();
+      const next = cur + (this.zoomGoal - cur) * (1 - Math.exp(-dt / 0.07));
+      this.camera.position.copy(this.controls.target).add(off.setLength(next));
+      if (Math.abs(this.zoomGoal - next) < Math.max(0.005, cur * 1e-4)) this.zoomGoal = null;
+      this.overlayDirty = true;
+    }
     const a = this.camAnim;
     if (!a) return;
     const ease = (x: number) => 1 - (1 - x) ** 3;
