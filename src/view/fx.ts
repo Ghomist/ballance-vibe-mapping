@@ -64,6 +64,11 @@ export class Fx {
       it = { obj, mat, opacity: 0, target: 1, pos, pulse: false, transient: false };
       this.items.set(key, it);
     }
+    // three.js 第一次画这个几何体时会记下实例数，之后线段变多只会画出前面那几条：段数变了就换一个新的几何体
+    if (it.obj.geometry.getAttribute('instanceStart')?.count !== segs.length / 6) {
+      it.obj.geometry.dispose();
+      it.obj.geometry = new LineSegmentsGeometry();
+    }
     it.obj.geometry.setPositions(segs);
     it.obj.geometry.setColors(colors);
     if (it.mat.dashed) it.obj.computeLineDistances();

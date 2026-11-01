@@ -2785,13 +2785,23 @@ export class Editor {
   /** 正在操作 / 选中的东西的包围盒（多选、单选，或拖动中的那个） */
   private focusBox(): THREE.Box3 | null {
     const ids = this.selection.size ? [...this.selection] : this.selected !== null ? [this.selected] : [];
-    const box = new THREE.Box3();
+    const box = new THREE.Box3(), one = new THREE.Box3();
     for (const id of ids) {
+      one.makeEmpty();
       for (const mesh of this.meshCache.get(id)?.meshes ?? []) {
         if (mesh.userData.handle) continue;
         mesh.updateMatrixWorld();
-        box.expandByObject(mesh);
+        one.expandByObject(mesh);
       }
+      // 很高的机关 / 装饰（例如柱子长三百多）：只看对准方块附近，免得视图中心跑到地下很远的地方
+      const o = this.model.objs[id];
+      const blocks = o ? anchorBlocks(o) : [];
+      if (blocks.length && !one.isEmpty() && one.max.z - one.min.z > 40) {
+        const top = Math.max(...blocks.map((b) => b.top));
+        one.min.z = Math.max(one.min.z, Math.min(...blocks.map((b) => b.top)) - 10);
+        one.max.z = Math.min(one.max.z, top + 20);
+      }
+      box.union(one);
     }
     return box.isEmpty() ? null : box;
   }
