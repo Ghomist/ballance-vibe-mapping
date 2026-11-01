@@ -7,6 +7,7 @@ import { cellSet, insetKind, linkOpening, makeInset, mergePlatforms, openingFits
 import { railEnd } from './rail';
 import { renumberSectors } from './checkpoint';
 import { repairBases } from './bases';
+import { repairGaps } from './gaps';
 
 const EPS = 1e-6;
 
@@ -669,6 +670,7 @@ function normalizeOnce(m: Model): boolean {
     }
   }
   if (repairBases(m)) return true;
+  if (repairGaps(m)) return true;
   if (repairPlatforms(m)) return true;
   if (platformsToRoads(m)) return true;
   if (mergePlatforms(m)) return true;

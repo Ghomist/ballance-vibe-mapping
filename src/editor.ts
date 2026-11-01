@@ -18,6 +18,7 @@ import {
 import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
 import { baseOf, placeBase, placeFreeBase, revertBase } from './model/bases';
+import { cutForObj, isSplitObj, uncutObj } from './model/gaps';
 import { exportScene } from './export/scene';
 import { exportNmo } from './export/nmo-scene';
 import { addObj, anchorBlocks, autoSector, followSurfaces, objSector, objType, sectorCount, surfacesAt } from './model/objects';
@@ -1689,6 +1690,7 @@ export class Editor {
       const o = m.objs[g.id];
       if (!o) return false;
       if (o.base !== undefined) revertBase(m, o.base);
+      uncutObj(m, o.id);
       o.x += v[0]; o.y += v[1]; o.z += v[2];
       this.settleObj(m, o.id);
       return true;
@@ -1705,7 +1707,8 @@ export class Editor {
           const baseMoves = o.base !== undefined && piece.has(o.base);
           if (o.base !== undefined && !baseMoves) revertBase(m, o.base);
           o.x += v[0]; o.y += v[1]; o.z += v[2];
-          if (!baseMoves) this.settleObj(m, o.id);
+          if (isSplitObj(o.type)) { uncutObj(m, o.id); this.settleObj(m, o.id); }
+          else if (!baseMoves) this.settleObj(m, o.id);
         }
       }
     }
@@ -2028,6 +2031,12 @@ export class Editor {
     }
     if (d.type === 'obj') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
+      if (!d.moved) {
+        // 开始拖：先把它断开的路接回去，松手时在新位置重新断开
+        const m0 = cloneModel(this.model);
+        uncutObj(m0, d.id);
+        this.setModel(m0);
+      }
       d.moved = true;
       const o = this.model.objs[d.id];
       if (!o) return;
@@ -2517,13 +2526,15 @@ export class Editor {
    */
   private settleObj(m: Model, id: number) {
     const o = m.objs[id];
-    if (!o || !baseOf(o.type)) return;
+    const split = !!o && isSplitObj(o.type);
+    if (!o || (!baseOf(o.type) && !split)) return;
     const b = anchorBlocks(o)[0];
     const cell = b ? this.alignBlock(b.x, b.y, b.top, b.hx, b.hy, m) : null;
-    if (b && cell && Math.hypot(cell.x - b.x, cell.y - b.y) < 1.25 && Math.abs(cell.z - b.top) < 0.5) {
-      o.x += cell.x - b.x; o.y += cell.y - b.y; o.z += cell.z - b.top;
-      if (placeBase(m, id) !== null) return;
-    }
+    const near = !!b && !!cell && Math.hypot(cell.x - b.x, cell.y - b.y) < 1.25 && Math.abs(cell.z - b.top) < 0.5;
+    if (near) { o.x += cell!.x - b!.x; o.y += cell!.y - b!.y; o.z += cell!.z - b!.top; }
+    // 从中间断开的机关：落在直路中间就把跨着的那段路去掉
+    if (split) { cutForObj(m, id); return; }
+    if (near && placeBase(m, id) !== null) return;
     placeFreeBase(m, id);
   }
 
@@ -3011,10 +3022,15 @@ function guardFromS(id: number, l: Loop, lo: number, hi: number) {
   return { id, a: pointAt(l, lo + e).p, b: pointAt(l, hi - e).p };
 }
 
-/** 需要专属路面的机关：拆掉原来的底座，在当前位置重新铺（位置不在路上时就不铺） */
+/**
+ * 需要专属路面的机关：拆掉原来的底座，在当前位置重新铺（位置不在路上时就不铺）；
+ * 从中间断开的机关：把原来断开的路接回去，在当前位置重新断开
+ */
 function rebaseObj(m: Model, id: number) {
   const o = m.objs[id];
-  if (!o || !baseOf(o.type)) return;
+  if (!o) return;
+  if (isSplitObj(o.type)) { uncutObj(m, id); cutForObj(m, id); return; }
+  if (!baseOf(o.type)) return;
   if (o.base !== undefined) revertBase(m, o.base);
   // 不在路面上（或放不下）：单独放一块底座
   if (placeBase(m, id) === null) placeFreeBase(m, id);

@@ -1,0 +1,86 @@
+// 从中间断开的机关：放在直路中间时把跨着的那段路去掉，挪走 / 删掉后接回去
+import { addObj } from '../src/model/objects';
+import { cutForObj, uncutObj } from '../src/model/gaps';
+import { blockToSeg, extendTo, normalize } from '../src/model/ops';
+import { Model, Seg, cloneModel, endPos, isFree } from '../src/model/types';
+
+type Check = (c: boolean, msg: string) => void;
+const near = (a: number, b: number, e = 1e-6) => Math.abs(a - b) < e;
+
+/** 沿 X 的直道：从 x=-2.5 到 x=len，y=0 */
+function road(emptyModel: () => Model, len: number) {
+  const m = emptyModel();
+  const s = blockToSeg(m, 1, 0);
+  extendTo(m, s, 'b', len);
+  normalize(m);
+  return m;
+}
+const segs = (m: Model) => Object.values(m.segs).sort((p, q) => p.x - q.x);
+const span = (s: Seg) => [+endPos(s, 'a')[0].toFixed(3), +endPos(s, 'b')[0].toFixed(3)];
+
+export function gapScenarios(emptyModel: () => Model, check: Check, scenario: (n: string, f: () => void) => void) {
+  scenario('秋千放在直路中间：两个对准方块之间的路去掉，断开处是开放端点', () => {
+    const m = road(emptyModel, 50);
+    const len0 = segs(m)[0].len, x0 = segs(m)[0].x;
+    // 秋千对准方块在本地 x=±10，方块之间空 15
+    const id = addObj(m, 'P_Modul_08', 25, 0, -1.5, 0)!;
+    const before = cloneModel(m);
+    check(cutForObj(m, id) === 1, '断开了一段路');
+    normalize(m);
+    const ss = segs(m);
+    check(ss.length === 2, `变成两段（${ss.length}）`);
+    check(near(span(ss[0])[1], 17.5) && near(span(ss[1])[0], 32.5), `缺口 17.5..32.5（${JSON.stringify(ss.map(span))}）`);
+    check(ss.every((s) => [s.a, s.b].every((e) => !isFree(e) || e.style === 'open' || !e.gap)), '断开处是开放端点');
+    check(isFree(ss[0].b) && ss[0].b.style === 'open' && isFree(ss[1].a) && ss[1].a.style === 'open', '缺口两边都是 open');
+    // 删掉秋千：路接回一整段
+    delete m.objs[id];
+    normalize(m);
+    const back = segs(m);
+    check(back.length === 1 && near(back[0].x, x0) && near(back[0].len, len0), `删掉后接回原样（${JSON.stringify(back.map(span))}）`);
+    // 接回去后和断开前一样
+    check(JSON.stringify(back.map(span)) === JSON.stringify(segs(before).map(span)), '与断开前相同');
+  });
+
+  scenario('机关挪走后路接回去，在新位置重新断开；转 90° 横在路上不断', () => {
+    const m = road(emptyModel, 60);
+    const id = addObj(m, 'P_Modul_30', 20.1, 0, -0.5, 0)!; // 跷跷板 ±9.9 → 缺口 15
+    cutForObj(m, id);
+    normalize(m);
+    check(segs(m).length === 2, '先断开');
+    uncutObj(m, id);
+    m.objs[id].x = 40.1; // 主对准方块（本地 x=9.9）落在格子 [47.5,52.5] 上
+    cutForObj(m, id);
+    normalize(m);
+    const ss = segs(m);
+    check(ss.length === 2 && near(span(ss[0])[1], 32.5) && near(span(ss[1])[0], 47.5), `挪到新位置重新断开（${JSON.stringify(ss.map(span))}）`);
+    uncutObj(m, id);
+    normalize(m);
+    m.objs[id].rot = 90;
+    check(cutForObj(m, id) === 0 && segs(m).length === 1, '横着放不断路');
+  });
+
+  scenario('放在路的一头（缺口伸出路外）：只截短，删掉后补回原来的端点', () => {
+    const m = road(emptyModel, 20);
+    const s0 = segs(m)[0];
+    const style0 = isFree(s0.b) ? s0.b.style : null;
+    // 推板：主方块中心 x=2.5（[0,5]），另一个在 -12.56；缺口取 10
+    const id = addObj(m, 'P_Modul_25', 15, 0, 0, 180)!; // 转 180°：主方块在 [10,15]，缺口 15..25
+    cutForObj(m, id);
+    normalize(m);
+    let ss = segs(m);
+    check(ss.length === 1 && near(span(ss[0])[1], 15), `截到 15（${JSON.stringify(ss.map(span))}）`);
+    delete m.objs[id];
+    normalize(m);
+    ss = segs(m);
+    check(ss.length === 1 && near(span(ss[0])[1], 20) && isFree(ss[0].b) && ss[0].b.style === style0 && !ss[0].b.gap, `补回到 20、端点样式还原（${JSON.stringify(ss.map(span))}）`);
+  });
+
+  scenario('路已经断开时（机关跨在两段路之间）不再动路', () => {
+    const m = road(emptyModel, 50);
+    const id = addObj(m, 'P_Modul_08', 25, 0, -1.5, 0)!;
+    cutForObj(m, id);
+    normalize(m);
+    const snap = JSON.stringify(m.segs);
+    check(cutForObj(m, id) === 0 && JSON.stringify(m.segs) === snap, '重复断开不改路');
+  });
+}

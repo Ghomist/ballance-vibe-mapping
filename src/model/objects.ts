@@ -61,6 +61,8 @@ export interface ObjType {
   prop?: boolean;
   /** 全图只能有一个 */
   unique?: boolean;
+  /** 从中间断开的机关（秋千、跷跷板等）：放在直路中间时，对准方块之间的那段路去掉，断开处是开放端点 */
+  split?: boolean;
 }
 
 /** 名称取自 Ballance Wiki「机关」词条 */
@@ -77,17 +79,17 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Dome', cat: 'module', label: '半球型钢罩', anchor: [0, 0, 0] },
   { type: 'P_Modul_01', cat: 'module', label: '活式木栅栏', anchor: [2.5, 0.65, 0] },
   { type: 'P_Modul_03', cat: 'module', label: '升降机', anchor: [13.37, 0.04, -10.76] },
-  { type: 'P_Modul_08', cat: 'module', label: '秋千', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]] },
+  { type: 'P_Modul_08', cat: 'module', label: '秋千', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]], split: true },
   { type: 'P_Modul_17', cat: 'module', label: '单摆（杠杆靶）', anchor: [0, 0, -5] },
   { type: 'P_Modul_18', cat: 'module', label: '风扇', anchor: [0, 0, 0.34] },
-  { type: 'P_Modul_19', cat: 'module', label: '双向挡板（双翼桥）', anchor: [0, 5, 0], more: [[-11.63, 5, 0], [-5.84, -10, 0], [5.81, -10, 0]] },
-  { type: 'P_Modul_25', cat: 'module', label: '推板', anchor: [2.5, 0, 0], more: [[-12.56, 0, 0]] },
+  { type: 'P_Modul_19', cat: 'module', label: '双向挡板（双翼桥）', anchor: [0, 5, 0], more: [[-11.63, 5, 0], [-5.84, -10, 0], [5.81, -10, 0]], split: true },
+  { type: 'P_Modul_25', cat: 'module', label: '推板', anchor: [2.5, 0, 0], more: [[-12.56, 0, 0]], split: true },
   { type: 'P_Modul_26', cat: 'module', label: '沙袋', anchor: [0.23, -0.22, -2.68] },
-  { type: 'P_Modul_29', cat: 'module', label: '软木桥', anchor: [10.97, 0, 0.17], more: [[-9.36, 0, 0.17]] },
-  { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]] },
-  { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]] },
-  { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]] },
-  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]] },
+  { type: 'P_Modul_29', cat: 'module', label: '软木桥', anchor: [10.97, 0, 0.17], more: [[-9.36, 0, 0.17]], split: true },
+  { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]], split: true },
+  { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]], split: true },
+  { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: true },
+  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: true },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   { type: 'Latern', cat: 'deco', label: '灯塔' },
   { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）' },

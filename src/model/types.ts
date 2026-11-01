@@ -80,7 +80,9 @@ export interface MNode {
 }
 
 export interface AttachedEnd { node: number }
-export interface FreeEnd { node: null; z: number; style: EndStyle }
+/** 机关从中间断开路面时留下的开放端点：属于哪个机关、断开前这一侧被去掉的长度和端点样式（见 gaps.ts） */
+export interface GapMark { obj: number; len: number; style?: EndStyle }
+export interface FreeEnd { node: null; z: number; style: EndStyle; gap?: GapMark }
 export type End = AttachedEnd | FreeEnd;
 export type EndKey = 'a' | 'b';
 
