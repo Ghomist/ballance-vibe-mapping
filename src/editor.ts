@@ -25,7 +25,7 @@ import {
   axisOf, cloneModel, emptyModel, endOutDir, endPos, endZ, isFree, migrateModel, nodeHalf, nodeLinks, nodePortDirs, nodePorts, opp, portCount, zAt,
 } from './model/types';
 import {
-  Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
+  RAIL_RADIUS, RAIL_SPAN, Rail, RailKind, RailPiece, RailState, SPIRAL_RADIUS, SPIRAL_SCREW, TRANSITION_LEN, extendStart, nearestPiece, nearestS,
   pieceLength, pushPiece, railEnd, railTopOffset, splitRail, stateAt,
 } from './model/rail';
 import {
@@ -942,13 +942,7 @@ export class Editor {
     const shift = this.mods.shift;
     if (p.kind === 'obj' || p.kind === 'guard' || this.tool === 'guard') return null;
     if (p.kind === 'rail') return this.railEndAction(p);
-    if (this.tool === 'rail') {
-      if (p.kind !== 'seg') return null;
-      const s = m.segs[p.id];
-      const { t } = this.segLocal(s, p.point);
-      const k: EndKey = t < s.len / 2 ? 'a' : 'b';
-      return isFree(s[k]) ? this.railStartAction(s, k) : null;
-    }
+    if (this.tool === 'rail') return this.railToolAction(p);
     if (p.kind === 'seg') {
       const s = m.segs[p.id];
       if (!s) return null;
@@ -1194,15 +1188,70 @@ export class Editor {
     return { kind, len: 0, radius, angle: deg * Math.sign(lat), dz: 0 };
   }
 
-  /** 钢轨工具：从路面自由端拖出一条新钢轨（双轨，最顶端与路面顶面对齐） */
-  private railStartAction(s: Seg, k: EndKey): Action {
+  /**
+   * 钢轨工具的悬停判定，和路块完全一样：直道靠近哪条边就从哪条边出去（自由端端面，或侧面上鼠标所在的位置），
+   * 路块 / 底座 / 盘点从鼠标所在那一侧的空路口出去，平台从鼠标所在的边出去。新钢轨顶端与路面顶面对齐。
+   */
+  private railToolAction(p: Pick): Action | null {
     const m = this.model;
-    const [ex, ey] = endPos(s, k);
-    const out = k === 'a' ? opp(s.dir) : s.dir;
-    const z = endZ(m, s, k);
+    const s = m.segs[p.id];
+    if (s) {
+      const { t, lat } = this.segLocal(s, p.point);
+      const D: [number, number] = [DX[s.dir], DY[s.dir]];
+      const nd = p.normal;
+      const cands: { what: EndKey | 'L' | 'R'; d: number }[] = [{ what: 'L', d: HALF - lat }, { what: 'R', d: HALF + lat }];
+      if (isFree(s.a)) cands.push({ what: 'a', d: t });
+      if (isFree(s.b)) cands.push({ what: 'b', d: s.len - t });
+      let what = cands.reduce((x, y) => (y.d < x.d ? y : x)).what;
+      if (Math.abs(nd.x * D[0] + nd.y * D[1]) > 0.7 && isFree(s[t < s.len / 2 ? 'a' : 'b'])) what = t < s.len / 2 ? 'a' : 'b';
+      if (Math.abs(nd.x * -D[1] + nd.y * D[0]) > 0.7) what = lat >= 0 ? 'L' : 'R';
+      if (what === 'a' || what === 'b') {
+        const [ex, ey] = endPos(s, what);
+        return this.railStartAction(ex, ey, endZ(m, s, what), endOutDir(s, what));
+      }
+      const left = ((s.dir + 1) % 4) as Dir;
+      const side = what === 'L' ? left : opp(left);
+      // 侧面上的位置：和开路口一样，格栅 / 自动对齐
+      const t0 = Math.min(Math.max(t, 0), s.len);
+      const at0: [number, number, number] = [s.x + D[0] * t0, s.y + D[1] * t0, zAt(m, s, t0)];
+      const c = this.snapEdge(axisOf(s.dir) === 0 ? p.point.x : p.point.y, axisOf(s.dir), at0);
+      const tc = Math.min(Math.max(this.tOfCoord(s, c), 0), s.len);
+      const cx = s.x + D[0] * tc + DX[side] * HALF, cy = s.y + D[1] * tc + DY[side] * HALF;
+      return this.railStartAction(cx, cy, zAt(m, s, tc), side);
+    }
+    const n = m.nodes[p.id];
+    if (!n) return null;
+    if (n.kind === 'platform') {
+      const run = edgeRunAt(n, p.point.x, p.point.y);
+      if (!run) return null;
+      const isX = axisOf(run.out) === 0;
+      const raw = isX ? p.point.y : p.point.x;
+      const a0 = Math.min(Math.max(raw, run.from), run.to);
+      let along = this.snapEdge(raw, isX ? 1 : 0, isX ? [run.line, a0, n.z] : [a0, run.line, n.z]);
+      along = Math.min(Math.max(along, run.from), run.to);
+      return this.railStartAction(isX ? run.line : along, isX ? along : run.line, n.z, run.out);
+    }
+    if (n.kind === 'block' || n.kind === 'base' || n.kind === 'checkpoint' || n.kind === 'transition') {
+      const dx = p.point.x - n.x, dy = p.point.y - n.y;
+      const dot = (d: Dir) => DX[d] * dx + DY[d] * dy;
+      const dirs = n.kind === 'transition' ? ([0, 1, 2, 3] as Dir[]).filter((d) => axisOf(d) !== n.axis) : nodePortDirs(n);
+      const dir = dirs.reduce((a, b) => (dot(b) > dot(a) ? b : a));
+      const h = n.kind === 'transition' ? HALF : nodeHalf(n, dir);
+      const act = this.railStartAction(n.x + DX[dir] * h, n.y + DY[dir] * h, n.z, dir);
+      if (nodePorts(m, n.id)[dir]) return { ...act, valid: false, reason: '这一侧接着路' };
+      return act;
+    }
+    return null;
+  }
+
+  /** 从 (x,y) 处、顶面高度 topZ 朝 out 拖出一条新钢轨（双轨，最顶端与路面顶面对齐） */
+  private railStartAction(ex: number, ey: number, topZ: number, out: Dir): Action {
+    const z = topZ;
     const E: RailState = { x: ex, y: ey, z: z - railTopOffset('double'), heading: out * 90 };
     return {
       valid: true, segs: arrowSegs(out, 0, 4), pos: [ex, ey, z + 0.3], color: C_RAIL, dir: out, z,
+      // 示意：钢轨的截面（两根轨道的宽度、轨道高度）
+      face: { x: ex, y: ey, z: z, dir: out, w: RAIL_SPAN + 2 * RAIL_RADIUS, h: 2 * RAIL_RADIUS },
       apply: () => null,
       apply2: (mm, x, y) => {
         const p = this.railPieceTo(E, x, y, 'double', false);
@@ -1320,26 +1369,37 @@ export class Editor {
   }
 
   /** 钢轨端点落在路面自由端上时，调整高度让钢轨最顶端与路面顶面对齐 */
+  /**
+   * 钢轨跟着路面高度走：起点（或直线末段的终点）落在路面外沿上、并且朝外（终点朝里）时，
+   * 把钢轨顶端对齐到那里的路面顶面。外沿包括直道端面和侧面、路块空边、平台边。
+   */
   private alignRailsToRoads(m: Model) {
-    const roadEnds: { x: number; y: number; z: number; out: number }[] = [];
-    for (const s of Object.values(m.segs)) for (const k of ['a', 'b'] as EndKey[]) {
-      if (!isFree(s[k])) continue;
-      const [x, y] = endPos(s, k);
-      roadEnds.push({ x, y, z: endZ(m, s, k), out: (k === 'a' ? opp(s.dir) : s.dir) * 90 });
-    }
-    const same = (a: number, b: number) => ((((a - b) % 360) + 360) % 360) < 1e-3;
+    const loops = outlineLoops(m);
+    const edgeZ = (x: number, y: number, heading: number): number | null => {
+      const h = (heading * Math.PI) / 180, hx = Math.cos(h), hy = Math.sin(h);
+      for (const l of loops) {
+        for (let i = 0; i < l.outs.length; i++) {
+          const a = l.pts[i], b = l.pts[(i + 1) % l.pts.length], o = l.outs[i];
+          if (o[0] * hx + o[1] * hy < 0.999) continue;
+          const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+          const t = ((x - a[0]) * dx + (y - a[1]) * dy) / L2;
+          if (t < -1e-6 || t > 1 + 1e-6) continue;
+          if (Math.hypot(a[0] + dx * t - x, a[1] + dy * t - y) > 0.02) continue;
+          return a[2] + (b[2] - a[2]) * t;
+        }
+      }
+      return null;
+    };
     for (const r of Object.values(m.rails)) {
       if (!r.pieces.length) continue;
       const first = r.pieces[0];
-      for (const e of roadEnds) {
-        if (Math.hypot(e.x - r.x, e.y - r.y) < 0.02 && same(e.out, r.heading)) r.z = e.z - railTopOffset(first.kind);
-      }
+      const zs = edgeZ(r.x, r.y, r.heading);
+      if (zs !== null) r.z = zs - railTopOffset(first.kind);
       const E = railEnd(r);
       const last = r.pieces[r.pieces.length - 1];
       if (last.angle !== 0) continue;
-      for (const e of roadEnds) {
-        if (Math.hypot(e.x - E.x, e.y - E.y) < 0.02 && same(e.out, E.heading + 180)) last.dz += e.z - railTopOffset(last.kind) - E.z;
-      }
+      const ze = edgeZ(E.x, E.y, E.heading + 180);
+      if (ze !== null) last.dz += ze - railTopOffset(last.kind) - E.z;
     }
   }
 
@@ -1606,6 +1666,28 @@ export class Editor {
       // 空白处按下不松：拖出选框多选（Shift 追加）；只是点一下则清空选择
       if (this.tool === 'edit' || this.tool === 'cut') {
         this.drag = { type: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey };
+        return;
+      }
+      // 钢轨工具：空地上按住拖，从地面（高度 0）拉出一条钢轨，方向按拖动的方向
+      const g = this.tool === 'rail' ? this.rayOnPlaneZ(0) : null;
+      if (g) {
+        e.preventDefault();
+        const sx = this.snapEdge(g.x, 0, [g.x, g.y, 0]), sy = this.snapEdge(g.y, 1, [g.x, g.y, 0]);
+        const action: Action = {
+          valid: true, segs: [], pos: [sx, sy, 0], color: C_RAIL, dir: 0, z: 0,
+          apply: () => null,
+          apply2: (mm, x, y) => {
+            const dx = x - sx, dy = y - sy;
+            if (Math.hypot(dx, dy) < 0.5) return;
+            const dir: Dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 0 : 2) : (dy >= 0 ? 1 : 3);
+            const E: RailState = { x: sx, y: sy, z: -railTopOffset('double'), heading: dir * 90 };
+            const piece = this.railPieceTo(E, x, y, 'double', false);
+            if (!piece || piece.len <= 1e-6) return;
+            const id = mm.nextId++;
+            mm.rails[id] = { id, ...E, pieces: [piece] };
+          },
+        };
+        this.drag = { type: 'action', snapshot: cloneModel(this.model), action, sx: e.clientX, sy: e.clientY, started: false };
         return;
       }
       this.select(null);
