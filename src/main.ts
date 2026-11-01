@@ -246,8 +246,8 @@ document.getElementById('feedback')!.addEventListener('click', async () => {
 // 全图设置
 const panel = document.getElementById('settings-panel')!;
 const FIELDS: { key: keyof typeof editor.settings; label: string; hint: string; step: number }[] = [
-  { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（原版约 3.37）', step: 0.05 },
-  { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（手册：1.5）', step: 0.05 },
+  { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（默认 2.6，原版约 3.37）', step: 0.05 },
+  { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（默认 2，手册：1.5）', step: 0.05 },
   { key: 'guardOffset', label: '护栏离路边', hint: '管中心在路边外侧多远', step: 0.05 },
   { key: 'guardRadius', label: '护栏管半径', hint: '', step: 0.01 },
   { key: 'nailDepth', label: '铆钉深度', hint: '铆钉顶部在路面以下（手册：0.7）', step: 0.05 },

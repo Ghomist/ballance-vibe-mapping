@@ -128,9 +128,9 @@ export interface MapSettings {
   propLift: number;
 }
 
-/** 默认值：量自原版关卡，与制图手册一致（护栏底部在路面下 1.5，铆钉在路面下约 0.7） */
+/** 默认值：护栏顶部离路面 2.6、立柱伸到路面下 2，铆钉在路面下约 0.7（原版关卡量得顶部约 3.37、立柱 1.5） */
 export const DEFAULT_SETTINGS: MapSettings = {
-  guardTop: 3.37, guardPostDepth: 1.5, guardOffset: 0.25, guardRadius: 0.25, nailDepth: 0.7, propLift: 0.1,
+  guardTop: 2.6, guardPostDepth: 2, guardOffset: 0.25, guardRadius: 0.25, nailDepth: 0.7, propLift: 0.1,
 };
 
 export interface PortRef { seg: number; key: EndKey }
