@@ -7,7 +7,7 @@ import { getMaterial, getRailMaterial } from './view/materials';
 import { Gizmo, type GizmoHandle } from './view/gizmo';
 import { Snapper, type SnapResult } from './view/snap';
 import { Fx, rectSegs } from './view/fx';
-import { createGrid } from './view/grid';
+import { GRID_THEMES, createGrid, themeGrid } from './view/grid';
 import { FaceFx, type FaceSpec, faceSegs } from './view/face';
 import { assetVersion, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from './view/assets';
 import { hasStopper, stopperMesh } from './model/stoppers';
@@ -176,6 +176,8 @@ export class Editor {
   private gizmoKey = '';
   private gizmoHover: GizmoHandle | null = null;
   private faceFx = new FaceFx();
+  private grid!: THREE.Group;
+  theme: 'dark' | 'light' = 'dark';
   /** 多选（框选） */
   private selection = new Set<number>();
   private marquee: HTMLDivElement;
@@ -208,7 +210,8 @@ export class Editor {
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(-0.4, -0.7, 1);
     this.scene.add(sun);
-    this.scene.add(createGrid());
+    this.grid = createGrid();
+    this.scene.add(this.grid);
     this.scene.add(this.ghost);
     this.scene.add(this.faceFx.group);
     this.scene.add(this.floor, this.fx.group, this.gizmo.group);
@@ -292,6 +295,15 @@ export class Editor {
   }
 
   exportJSON(): string { return JSON.stringify({ format: 'bvm', version: 1, model: this.model }, null, 1); }
+
+  /** 亮色 / 暗色：场景背景与网格跟着换 */
+  setTheme(t: 'dark' | 'light') {
+    this.theme = t;
+    const g = GRID_THEMES[t];
+    (this.scene.background as THREE.Color).set(g.bg);
+    themeGrid(this.grid, g);
+    this.onChange();
+  }
 
   /** 全图设置 */
   get settings() { return this.model.settings; }

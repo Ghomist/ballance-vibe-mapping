@@ -45,38 +45,63 @@ snapBtn.addEventListener('click', () => { editor.setSnapMode(!editor.snapMode); 
 const palette = document.getElementById('palette')!;
 const viewCanvas = () => document.querySelector<HTMLCanvasElement>('#viewport canvas')!;
 const groups: [string, string][] = [['module', '机关'], ['deco', '装饰']];
-palette.innerHTML = '<div class="lib-head"><span>机关库</span><button id="lib-fold" title="收起 / 展开">⟨</button></div><div class="lib-body"></div>';
+palette.innerHTML = `
+  <div class="lib-head">
+    <span class="title">机关库</span><span class="count">${OBJ_TYPES.length} 个</span>
+    <button class="fold" id="lib-fold" title="收起 / 展开"><svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg></button>
+  </div>
+  <div class="lib-search"><input type="search" placeholder="搜索名称或代号…" /></div>
+  <div class="lib-body"></div>
+  <div class="lib-foot">按住卡片拖到场景里放下 · 拖动中 R 旋转 · 右键 / Esc 取消</div>`;
 const body = palette.querySelector('.lib-body')!;
-const cards: { el: HTMLElement; type: string }[] = [];
+const cards: { el: HTMLElement; type: string; text: string }[] = [];
+const sections: HTMLDetailsElement[] = [];
 for (const [cat, title] of groups) {
-  const h = document.createElement('h4');
-  h.textContent = title;
-  body.appendChild(h);
+  const list = OBJ_TYPES.filter((x) => x.cat === cat);
+  const sec = document.createElement('details');
+  sec.className = 'lib-sec';
+  sec.open = true;
+  sec.innerHTML = `<summary>${title} <small>${list.length}</small></summary>`;
   const grid = document.createElement('div');
   grid.className = 'lib-grid';
-  body.appendChild(grid);
-  for (const t of OBJ_TYPES.filter((x) => x.cat === cat)) {
+  sec.appendChild(grid);
+  body.appendChild(sec);
+  sections.push(sec);
+  for (const t of list) {
     const el = document.createElement('div');
     el.className = 'lib-card';
-    el.title = `${t.label}（${t.type}）
-按住拖到视图里放下`;
-    el.innerHTML = `<div class="thumb"></div><span>${t.label}</span><small>${t.type}</small>`;
+    el.title = `${t.label}
+${t.type}`;
+    el.innerHTML = `<div class="thumb"></div><span>${t.label}</span>`;
     el.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       startPlace(t.type, e);
     });
     grid.appendChild(el);
-    cards.push({ el, type: t.type });
+    cards.push({ el, type: t.type, text: `${t.label} ${t.type}`.toLowerCase() });
   }
 }
+const empty = document.createElement('div');
+empty.className = 'lib-empty';
+empty.textContent = '没有匹配的机关';
+empty.hidden = true;
+body.appendChild(empty);
+// 搜索：按名称或代号过滤，空的分组隐藏
+palette.querySelector<HTMLInputElement>('.lib-search input')!.addEventListener('input', (e) => {
+  const q = (e.target as HTMLInputElement).value.trim().toLowerCase();
+  let any = false;
+  for (const c of cards) { const hit = !q || c.text.includes(q); c.el.classList.toggle('hidden', !hit); any ||= hit; }
+  for (const sec of sections) sec.hidden = ![...sec.querySelectorAll('.lib-card')].some((el) => !el.classList.contains('hidden'));
+  empty.hidden = any;
+});
 // 预览图：模型加载好后补上
 const fillThumbs = () => {
   for (const c of cards) {
     const box = c.el.querySelector<HTMLDivElement>('.thumb')!;
     if (box.dataset.done) continue;
     const url = thumbnail(c.type);
-    if (url) { box.style.backgroundImage = `url(${url})`; box.dataset.done = '1'; }
+    if (url) { box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); box.dataset.done = '1'; }
   }
 };
 fillThumbs();
@@ -165,6 +190,20 @@ ${String(e).slice(0, 1500)}`);
     exportBtn.removeAttribute('disabled');
   }
 }));
+
+// 亮色 / 暗色（记在本地）
+const applyTheme = (t: 'dark' | 'light') => {
+  document.documentElement.dataset.theme = t;
+  editor.setTheme(t);
+  try { localStorage.setItem('bvm.theme', t); } catch { /* 存不了就算了 */ }
+};
+let savedTheme: string | null = null;
+try { savedTheme = localStorage.getItem('bvm.theme'); } catch { /* 用默认 */ }
+applyTheme(savedTheme === 'light' ? 'light' : 'dark');
+document.getElementById('theme')!.addEventListener('click', (e) => {
+  applyTheme(editor.theme === 'dark' ? 'light' : 'dark');
+  (e.currentTarget as HTMLButtonElement).blur();
+});
 
 // 全图设置
 const panel = document.getElementById('settings-panel')!;

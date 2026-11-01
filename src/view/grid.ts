@@ -9,6 +9,23 @@ const LABEL_STEP = 25;
 
 export const AXIS_COLORS = { x: 0xff3352, y: 0x8bdc00, z: 0x2890ff };
 
+export interface GridTheme { bg: number; minor: number; major: number }
+export const GRID_THEMES: Record<'dark' | 'light', GridTheme> = {
+  dark: { bg: 0x1d2330, minor: 0x283040, major: 0x343e54 },
+  light: { bg: 0xdfe5ee, minor: 0xc9d1dd, major: 0xb2bccb },
+};
+
+/** 换主题：线的颜色按背景重新混合（网格线是预先与背景混合好的不透明色） */
+export function themeGrid(g: THREE.Group, t: GridTheme) {
+  const bg = new THREE.Color(t.bg);
+  for (const o of g.children) {
+    const u = o.userData as { base?: number | 'minor' | 'major'; opacity?: number };
+    if (u.base === undefined) continue;
+    const base = u.base === 'minor' ? t.minor : u.base === 'major' ? t.major : u.base;
+    ((o as THREE.LineSegments).material as THREE.LineBasicMaterial).color.set(base).lerp(bg, 1 - (u.opacity ?? 1));
+  }
+}
+
 export function createGrid(): THREE.Group {
   const g = new THREE.Group();
   const minor: number[] = [];
@@ -18,8 +35,8 @@ export function createGrid(): THREE.Group {
     const arr = v % MAJOR === 0 ? major : minor;
     arr.push(v, -EXTENT, 0, v, EXTENT, 0, -EXTENT, v, 0, EXTENT, v, 0);
   }
-  g.add(lineSegs(minor, 0x283040, 1));
-  g.add(lineSegs(major, 0x343e54, 1));
+  g.add(lineSegs(minor, 'minor', 1));
+  g.add(lineSegs(major, 'major', 1));
   g.add(lineSegs([-EXTENT, 0, 0, EXTENT, 0, 0], AXIS_COLORS.x, 0.85));
   g.add(lineSegs([0, -EXTENT, 0, 0, EXTENT, 0], AXIS_COLORS.y, 0.85));
   g.add(lineSegs([0, 0, -60, 0, 0, 60], AXIS_COLORS.z, 0.5));
@@ -30,18 +47,17 @@ export function createGrid(): THREE.Group {
     g.add(label(String(v), 0.8, v, AXIS_COLORS.y));
   }
   g.add(label('0', 0.8, -0.8, 0x9aa4b8));
+  themeGrid(g, GRID_THEMES.dark);
   // 网格就在 z = 0：先于路面绘制、不写深度，路面画上去时直接盖住它（包括 0.7 深的凹槽里），不会穿出来
   return g;
 }
 
-const BG = new THREE.Color(0x1d2330); // 与场景背景色一致
-
-function lineSegs(pts: number[], color: number, opacity: number) {
+function lineSegs(pts: number[], color: number | 'minor' | 'major', opacity: number) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  // 不透明（与背景色预先混合），这样和路面一起在不透明阶段、按 renderOrder 先画
-  const c = new THREE.Color(color).lerp(BG, 1 - opacity);
-  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: c, depthWrite: false, depthTest: false }));
+  // 不透明（与背景色预先混合，见 themeGrid），这样和路面一起在不透明阶段、按 renderOrder 先画
+  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ depthWrite: false, depthTest: false }));
+  line.userData = { base: color, opacity };
   line.renderOrder = -10;
   return line;
 }
