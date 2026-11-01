@@ -245,14 +245,25 @@ export class Editor {
     host.addEventListener('pointerdown', (e) => {
       if (e.button === 1) this.controls.enableRotate = e.shiftKey || !this.orbitPivot();
     }, true);
-    el.addEventListener('pointerdown', (e) => this.onDown(e));
+    el.addEventListener('pointerdown', (e) => {
+      this.onDown(e);
+      if (this.downInfo && this.drag?.type === 'marquee') this.downInfo.marquee = true;
+    });
     el.addEventListener('wheel', (e) => {
       e.preventDefault();
       const cur = this.zoomGoal ?? this.camera.position.distanceTo(this.controls.target);
       this.zoomGoal = THREE.MathUtils.clamp(cur * Math.exp(e.deltaY * 0.0012), 2, 3000);
     }, { passive: false });
     window.addEventListener('pointermove', (e) => this.onMove(e));
-    window.addEventListener('pointerup', (e) => this.onUp(e));
+    window.addEventListener('pointerup', (e) => {
+      // 点选（没拖动、没改东西）了新的东西：视图平移过去
+      const down = this.downInfo;
+      this.downInfo = null;
+      this.onUp(e);
+      if (!down || this.selKey() === down.sel || !this.focusBox()) return;
+      const clicked = Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4;
+      if ((clicked && this.undoStack.length === down.undo) || down.marquee) this.panToSelection();
+    });
     el.addEventListener('contextmenu', (e) => this.onContextMenu(e));
     el.addEventListener('dblclick', (e) => {
       this.setMouse(e);
@@ -1836,8 +1847,15 @@ export class Editor {
     this.updateStatus();
   }
 
+  /** 左键按下时的位置与选择（松开时判断是不是点选了新的东西） */
+  private downInfo: { x: number; y: number; sel: string; undo: number; marquee: boolean } | null = null;
+  private selKey() { return `${this.selected}|${[...this.selection].sort().join(',')}`; }
+
   private onDown(e: PointerEvent) {
     this.syncMods(e);
+    if (e.button === 0) {
+      this.downInfo = { x: e.clientX, y: e.clientY, sel: this.selKey(), undo: this.undoStack.length, marquee: false };
+    }
     if (e.button === 1) {
       // 有选中的东西时绕着它转（只换环绕点，视图不挪）；没有时由 OrbitControls 绕视图中心转
       const pivot = e.shiftKey ? null : this.orbitPivot(); // Shift+中键是平移
@@ -2135,7 +2153,7 @@ export class Editor {
     if (d?.type === 'marquee') {
       const moved = this.marquee.classList.contains('open');
       this.marquee.classList.remove('open');
-      if (!moved && !d.add) { this.orbitPivot(); this.selection.clear(); this.select(null); }
+      if (!moved && !d.add) { this.selection.clear(); this.select(null); }
       this.updateStatus();
       return;
     }
@@ -2217,7 +2235,7 @@ export class Editor {
     if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
     if (k === 'escape' && this.placing) { this.cancelPlace(); return; }
     if (k === 'escape') {
-      if (!this.drag && this.selection.size) { this.orbitPivot(); this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
+      if (!this.drag && this.selection.size) { this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
       this.cancelDrag();
       this.hideMenu();
       this.marquee.classList.remove('open');
@@ -2760,14 +2778,38 @@ export class Editor {
     this.viewKey = s!;
   }
 
-  /** 上一次选中的东西的中心：取消选择后环视仍绕着它转 */
-  private lastPivot: THREE.Vector3 | null = null;
-
-  /** 环绕点：当前选中的东西；没有选中时沿用上一次的 */
+  /** 环绕点：选中的东西的中心；没有选中时取离画面中心最近的物体 */
   private orbitPivot(): THREE.Vector3 | null {
     const f = this.focusBox();
-    if (f) this.lastPivot = f.getCenter(new THREE.Vector3());
-    return this.lastPivot;
+    if (f) return f.getCenter(new THREE.Vector3());
+    return this.centerPivot();
+  }
+
+  /** 画面正中的物体：视线正中打到的那一点；没打到时取包围盒中心在屏幕上离画面中心最近的物体 */
+  private centerPivot(): THREE.Vector3 | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hit = rc.intersectObjects(this.pickables.filter((o) => o.visible), false)[0];
+    if (hit) return hit.point.clone();
+    let best: THREE.Vector3 | null = null, bd = Infinity;
+    const box = new THREE.Box3(), c = new THREE.Vector3(), q = new THREE.Vector3();
+    for (const { meshes } of this.meshCache.values()) {
+      box.makeEmpty();
+      for (const mesh of meshes) { if (mesh.userData.handle) continue; mesh.updateMatrixWorld(); box.expandByObject(mesh); }
+      if (box.isEmpty()) continue;
+      box.getCenter(c);
+      q.copy(c).project(this.camera);
+      if (q.z < -1 || q.z > 1) continue; // 在相机后面
+      const d = q.x * q.x + q.y * q.y;
+      if (d < bd) { bd = d; best = c.clone(); }
+    }
+    return best;
+  }
+
+  /** 点选了东西：视图中心平移过去（不拉近；按 F 才拉近） */
+  private panToSelection() {
+    const box = this.focusBox();
+    if (box) this.moveCamera(box.getCenter(new THREE.Vector3()), null);
   }
 
   /** F：视角对正选中的东西 */
@@ -2788,8 +2830,6 @@ export class Editor {
   // ---------------- 状态与提交 ----------------
 
   private select(id: number | null) {
-    // 换掉 / 取消选择前记住它的中心，之后的环视还绕着它转
-    if (this.selected !== null || this.selection.size) this.orbitPivot();
     if (id !== null && !this.selection.has(id)) this.selection.clear();
     this.selected = id;
     this.overlayDirty = true;
@@ -2933,7 +2973,7 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['F'], '对正选中'), H(['G'], '格栅对齐'), H(['S'], '自动对齐'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['F'], '拉近选中'), H(['G'], '格栅对齐'), H(['S'], '自动对齐'),
       ];
     } else if (this.tool === 'cut') hs = [H(['C', 'LMB'], '点截面分隔（路面 / 钢轨）'), H([], '松开 C 回到原来的工具'), H(['MMB'], '环视')];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];
