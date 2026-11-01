@@ -13,11 +13,11 @@ interface AssetPartJSON {
 const cache = new Map<string, AssetPiece[] | 'loading' | 'missing'>();
 const texLoader = new THREE.TextureLoader();
 const texCache = new Map<string, THREE.Texture>();
-let onLoaded: () => void = () => {};
+const listeners: (() => void)[] = [];
 /** 每加载完一个模型就加一，作为网格缓存键的一部分 */
 export let assetVersion = 0;
 
-export function setAssetLoadedCallback(cb: () => void) { onLoaded = cb; }
+export function setAssetLoadedCallback(cb: () => void) { listeners.push(cb); }
 
 function texture(file: string) {
   let t = texCache.get(file);
@@ -88,7 +88,7 @@ export function getAsset(kind: 'asset' | 'element', name: string): AssetPiece[] 
   if (c === undefined) {
     cache.set(key, 'loading');
     load(kind, name).then(
-      (r) => { cache.set(key, r); assetVersion++; onLoaded(); },
+      (r) => { cache.set(key, r); assetVersion++; for (const f of listeners) f(); },
       () => { cache.set(key, 'missing'); console.warn(`缺少模型 ${name}，运行 npm run assets 生成。`); },
     );
   }

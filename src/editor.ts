@@ -12,7 +12,7 @@ import { FaceFx, type FaceSpec, faceSegs } from './view/face';
 import { assetVersion, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from './view/assets';
 import { hasStopper, stopperMesh } from './model/stoppers';
 import {
-  addCheckpoint, checkpoints, findStart, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
+  addCheckpoint, checkpoints, findStart, newMapModel, moveSector, placeCheckpointOnSeg, placeStartAtEnd, prefabExtent, prefabParts, rotateCheckpoint,
 } from './model/checkpoint';
 import { buildGuard } from './geom/railing';
 import { type Loop, outlineLoops, pointAt, project, projectNear } from './model/outline';
@@ -37,7 +37,7 @@ import {
   addSegAtPlatform, blockToPlatform, boundaryEdges, cellSet, edgeRunAt, extrudePlatform, openingFits, platformBBox, segToPlatform,
 } from './model/platform';
 
-export type Tool = 'edit' | 'cut' | 'rail' | 'object' | 'guard';
+export type Tool = 'edit' | 'cut' | 'rail' | 'guard';
 
 /** 护栏工具悬停的东西：护栏的端头（拖动调长度）、护栏本身、或路面外沿上的一点（新建护栏） */
 type GuardHover =
@@ -123,8 +123,10 @@ export class Editor {
   gridMode = true;
   /** 自动对齐：靠近其它元素的边界 / 端点 / 高度时对齐过去（与格栅相互独立；自动连接不受它影响） */
   snapMode = true;
-  /** 机关工具当前要放的物件类型 */
-  objType = 'P_Extra_Point';
+  /** 正在从机关库拖出来放置的物件类型（没有在放置时为 null） */
+  placing: string | null = null;
+  /** 放置拖动中，鼠标是否在视图上 */
+  private placingOver = false;
   onStatus: (s: string) => void = () => {};
   onChange: () => void = () => {};
   onHints: (h: Hint[]) => void = () => {};
@@ -178,7 +180,7 @@ export class Editor {
 
   constructor(private host: HTMLElement) {
     this.loadPrefs();
-    this.model = this.loadLocal() ?? emptyModel();
+    this.model = this.loadLocal() ?? newMapModel();
     this.display = this.model;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -274,7 +276,7 @@ export class Editor {
 
   reset() {
     this.pushUndo(this.model);
-    this.model = emptyModel();
+    this.model = newMapModel();
     this.commitView();
   }
 
@@ -764,7 +766,7 @@ export class Editor {
     let c = 'default';
     if (d) c = d.type === 'marquee' ? 'crosshair' : d.type === 'height' || d.type === 'railHeight' || d.type === 'objHeight' ? 'ns-resize' : 'grabbing';
     else if (this.gizmoHover && this.gizmo.active) c = 'grab';
-    else if (this.tool === 'object') c = h?.kind === 'obj' ? 'grab' : 'copy';
+    else if (this.placing) c = this.placingOver ? 'copy' : 'no-drop';
     else if (this.tool === 'guard') { const g = h ? this.guardHoverAt(h) : null; c = !g ? 'default' : g.type === 'end' ? 'ew-resize' : g.type === 'body' ? 'pointer' : 'copy'; }
     else if (!h) c = 'default';
     else if (h.kind === 'obj') c = this.mods.alt ? 'ns-resize' : 'grab';
@@ -896,7 +898,7 @@ export class Editor {
   private actionFor(p: Pick): Action | null {
     const m = this.model;
     const shift = this.mods.shift;
-    if (p.kind === 'obj' || p.kind === 'guard' || this.tool === 'object' || this.tool === 'guard') return null;
+    if (p.kind === 'obj' || p.kind === 'guard' || this.tool === 'guard') return null;
     if (p.kind === 'rail') return this.railEndAction(p);
     if (this.tool === 'rail') {
       if (p.kind !== 'seg') return null;
@@ -1528,19 +1530,6 @@ export class Editor {
       }
     }
     const p = this.pick();
-    // 机关工具：点到路面（或空地）就放下一个，按住可以继续拖动调整位置
-    if (this.tool === 'object' && (!p || p.kind !== 'obj')) {
-      e.preventDefault();
-      const at = this.objPlacement(this.objType);
-      if (!at) return;
-      const snapshot = cloneModel(this.model);
-      const id = addObj(this.model, this.objType, at.x, at.y, at.z, at.rot);
-      if (id === null) { this.flashStatus(`${objType(this.objType)?.label ?? this.objType} 只能有一个`); return; }
-      this.setModel(this.model);
-      this.select(id);
-      this.drag = { type: 'obj', snapshot, id, ox: 0, oy: 0, moved: true, sx: e.clientX, sy: e.clientY };
-      return;
-    }
     if (this.tool === 'guard' && p) {
       const g = this.guardHoverAt(p);
       if (g) {
@@ -1833,16 +1822,16 @@ export class Editor {
     if (k === '1') this.setTool('edit');
     if (k === '2') this.setTool('cut');
     if (k === '3') this.setTool('rail');
-    if (k === '4') this.setTool('object');
-    if (k === '5') this.setTool('guard');
+    if (k === '4') this.setTool('guard');
     if (k === 'r') {
       const id = this.hover?.kind === 'obj' ? this.hover.id : this.selected;
       // 机关工具里没指着已放的物件：转的是待放置的朝向
-      if (this.tool === 'object' && this.hover?.kind !== 'obj') { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
+      if (this.placing) { this.placeRot = (this.placeRot + (e.shiftKey ? 270 : 90)) % 360; this.updateGhost(); return; }
       if (id !== null && this.model.objs[id]) this.mutate((m) => { m.objs[id].rot = (m.objs[id].rot + (e.shiftKey ? -1 : 1) * (this.gridMode ? 90 : 15) + 360) % 360; rebaseObj(m, id); });
     }
     if (k === 'g') this.setGridMode(!this.gridMode);
     if (k === 's' && !e.ctrlKey) this.setSnapMode(!this.snapMode);
+    if (k === 'escape' && this.placing) { this.cancelPlace(); return; }
     if (k === 'escape') {
       if (!this.drag && this.selection.size) { this.selection.clear(); this.overlayDirty = true; this.updateStatus(); }
       this.cancelDrag();
@@ -2128,21 +2117,75 @@ export class Editor {
   }
 
   private updateGhost() {
-    const show = this.tool === 'object' && !this.drag && this.hover?.kind !== 'obj';
+    const type = this.placing;
+    const show = !!type && this.placingOver;
     if (!show) { this.ghost.visible = false; return; }
-    const at = this.objPlacement(this.objType);
+    const at = this.objPlacement(type!);
     if (!at) { this.ghost.visible = false; return; }
-    if (this.ghostType !== this.objType || this.ghost.children.length === 0) {
+    if (this.ghostType !== type || this.ghost.children.length === 0) {
       this.ghost.clear();
-      for (const mesh of this.objMeshes({ type: this.objType, x: 0, y: 0, z: 0, rot: 0 }, true)) this.ghost.add(mesh);
-      this.ghostType = this.ghost.children.length ? this.objType : '';
+      for (const mesh of this.objMeshes({ type: type!, x: 0, y: 0, z: 0, rot: 0 }, true)) this.ghost.add(mesh);
+      this.ghostType = this.ghost.children.length ? type! : '';
     }
     this.ghost.position.set(at.x, at.y, at.z);
     this.ghost.rotation.z = (at.rot * Math.PI) / 180;
     this.ghost.visible = true;
   }
 
-  setObjType(t: string) { this.objType = t; this.ghostType = ''; this.setTool('object'); }
+  // ---------------- 机关库拖放 ----------------
+
+  /** 从机关库按下一张卡片：开始拖放 */
+  beginPlace(type: string) {
+    this.cancelDrag();
+    this.placing = type;
+    this.placingOver = false;
+    this.ghostType = '';
+    this.updateStatus();
+    this.overlayDirty = true;
+  }
+
+  /** 拖放中鼠标移动（over：是否在视图上） */
+  placeMove(clientX: number, clientY: number, over: boolean) {
+    if (!this.placing) return;
+    this.placingOver = over;
+    if (over) {
+      this.setMouse({ clientX, clientY } as MouseEvent);
+      this.hover = this.pick();
+    }
+    this.updateGhost();
+    this.overlayDirty = true;
+  }
+
+  /** 松开：在视图上就放下，否则取消 */
+  endPlace(clientX: number, clientY: number, over: boolean) {
+    const type = this.placing;
+    if (!type) return;
+    this.placeMove(clientX, clientY, over);
+    const at = over ? this.objPlacement(type) : null;
+    this.placing = null;
+    this.ghost.visible = false;
+    this.updateStatus();
+    if (!at) return;
+    const before = cloneModel(this.model);
+    const m = this.model;
+    const id = addObj(m, type, at.x, at.y, at.z, at.rot);
+    if (id === null) { this.flashStatus(`${objType(type)?.label ?? type}只能有一个`); return; }
+    rebaseObj(m, id);
+    normalize(m);
+    this.pushUndo(before);
+    this.commitView(before);
+    this.select(id);
+  }
+
+  /** 右键 / Esc：取消放置 */
+  cancelPlace() {
+    if (!this.placing) return;
+    this.placing = null;
+    this.ghost.visible = false;
+    this.overlayDirty = true;
+    this.updateStatus();
+  }
+
 
   private showMenu(x: number, y: number, items: (MenuItem | null)[]) {
     const menu = this.menu;
@@ -2306,7 +2349,9 @@ export class Editor {
     const H = (keys: string[], label: string): Hint => ({ keys, label });
     const d = this.drag;
     let hs: Hint[];
-    if (d && d.type !== 'orbit') {
+    if (this.placing) {
+      hs = [H(['LMB'], `松开放下「${objType(this.placing)?.label ?? this.placing}」`), H(['RMB'], '取消'), H(['R'], '旋转'), H(['Esc'], '取消')];
+    } else if (d && d.type !== 'orbit') {
       if (d.type === 'marquee') hs = [H(['LMB'], '框选'), H(['Shift'], '追加'), H(['Esc'], '取消')];
       else {
         hs = [H(['LMB'], '确认'), H(['Esc'], '取消')];
@@ -2321,9 +2366,6 @@ export class Editor {
         H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '自动对齐'),
       ];
     } else if (this.tool === 'cut') hs = [H(['LMB'], '点截面分隔'), H(['LMB'], '空白处框选'), H(['RMB'], '菜单'), H(['MMB'], '环视')];
-    else if (this.tool === 'object') hs = [
-      H(['LMB'], `放置「${objType(this.objType)?.label ?? this.objType}」`), H(['LMB'], '拖动物件'), H(['Alt', 'LMB'], '调高度'), H(['R'], '旋转'), H(['RMB'], '小节 / 删除'),
-    ];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];
     else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
     if (this.selection.size && !d) hs.push(H(['X'], '删除选中'), H(['Esc'], '取消选择'));

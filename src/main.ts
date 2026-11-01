@@ -1,5 +1,7 @@
 import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES } from './model/objects';
+import { thumbnail } from './view/thumbs';
+import { setAssetLoadedCallback } from './view/assets';
 import { DEFAULT_SETTINGS } from './model/types';
 
 const editor = new Editor(document.getElementById('viewport')!);
@@ -39,31 +41,79 @@ const snapBtn = document.getElementById('snap') as HTMLButtonElement;
 const syncSnap = () => snapBtn.classList.toggle('active', editor.snapMode);
 snapBtn.addEventListener('click', () => { editor.setSnapMode(!editor.snapMode); snapBtn.blur(); });
 
-// 机关工具的物件面板
+// 机关库：侧边面板，按住卡片拖到视图里放下（右键 / Esc 取消，拖动中 R 旋转）
 const palette = document.getElementById('palette')!;
+const viewCanvas = () => document.querySelector<HTMLCanvasElement>('#viewport canvas')!;
 const groups: [string, string][] = [['module', '机关'], ['deco', '装饰']];
+palette.innerHTML = '<div class="lib-head"><span>机关库</span><button id="lib-fold" title="收起 / 展开">⟨</button></div><div class="lib-body"></div>';
+const body = palette.querySelector('.lib-body')!;
+const cards: { el: HTMLElement; type: string }[] = [];
 for (const [cat, title] of groups) {
   const h = document.createElement('h4');
   h.textContent = title;
-  palette.appendChild(h);
+  body.appendChild(h);
+  const grid = document.createElement('div');
+  grid.className = 'lib-grid';
+  body.appendChild(grid);
   for (const t of OBJ_TYPES.filter((x) => x.cat === cat)) {
-    const b = document.createElement('button');
-    b.dataset.type = t.type;
-    b.innerHTML = `<span>${t.label}</span><small>${t.type}</small>`;
-    b.addEventListener('click', () => { editor.setObjType(t.type); b.blur(); });
-    palette.appendChild(b);
+    const el = document.createElement('div');
+    el.className = 'lib-card';
+    el.title = `${t.label}（${t.type}）
+按住拖到视图里放下`;
+    el.innerHTML = `<div class="thumb"></div><span>${t.label}</span><small>${t.type}</small>`;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      startPlace(t.type, e);
+    });
+    grid.appendChild(el);
+    cards.push({ el, type: t.type });
   }
 }
-const syncPalette = () => {
-  palette.hidden = editor.tool !== 'object';
-  palette.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('active', b.dataset.type === editor.objType));
+// 预览图：模型加载好后补上
+const fillThumbs = () => {
+  for (const c of cards) {
+    const box = c.el.querySelector<HTMLDivElement>('.thumb')!;
+    if (box.dataset.done) continue;
+    const url = thumbnail(c.type);
+    if (url) { box.style.backgroundImage = `url(${url})`; box.dataset.done = '1'; }
+  }
 };
+fillThumbs();
+setAssetLoadedCallback(fillThumbs);
+palette.querySelector('#lib-fold')!.addEventListener('click', () => palette.classList.toggle('folded'));
 
-editor.onChange = () => { syncTools(); syncGrid(); syncSnap(); syncPalette(); };
+function startPlace(type: string, e0: PointerEvent) {
+  editor.beginPlace(type);
+  const over = (e: PointerEvent) => document.elementFromPoint(e.clientX, e.clientY) === viewCanvas();
+  const move = (e: PointerEvent) => editor.placeMove(e.clientX, e.clientY, over(e));
+  const finish = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointerdown', rightCancel, true);
+    window.removeEventListener('contextmenu', noMenu, true);
+    window.removeEventListener('keydown', esc);
+    document.body.classList.remove('placing');
+    // 右键菜单在松开右键后才会弹出：稍后再移除拦截
+    setTimeout(() => window.removeEventListener('contextmenu', noMenu, true), 300);
+  };
+  const up = (e: PointerEvent) => { if (e.button !== 0) return; finish(); editor.endPlace(e.clientX, e.clientY, over(e)); };
+  const rightCancel = (e: PointerEvent) => { if (e.button === 2) { e.preventDefault(); e.stopPropagation(); finish(); editor.cancelPlace(); window.addEventListener('contextmenu', noMenu, true); } };
+  const noMenu = (e: Event) => { e.preventDefault(); e.stopPropagation(); };
+  const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') finish(); };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointerdown', rightCancel, true);
+  window.addEventListener('contextmenu', noMenu, true);
+  window.addEventListener('keydown', esc);
+  document.body.classList.add('placing');
+  move(e0);
+}
+
+editor.onChange = () => { syncTools(); syncGrid(); syncSnap(); };
 syncTools();
 syncGrid();
 syncSnap();
-syncPalette();
 
 document.getElementById('undo')!.addEventListener('click', () => editor.undo());
 document.getElementById('redo')!.addEventListener('click', () => editor.redo());

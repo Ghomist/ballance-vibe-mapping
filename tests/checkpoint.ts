@@ -310,3 +310,17 @@ export function guardScenarios(emptyModel: () => Model, check: Check, scenario: 
     check(!!buildGuards(m).get(id), '坡道上护栏仍是一整段');
   });
 }
+
+import { newMapModel } from '../src/model/checkpoint';
+
+export function newMapScenarios(check: Check, scenario: Scenario) {
+  scenario('新建地图：只有起点，路口落在格栅上，从路口长出的路对齐格栅', () => {
+    const m = newMapModel();
+    const ns = Object.values(m.nodes);
+    check(ns.length === 1 && ns[0].kind === 'checkpoint' && ns[0].prefab === 'start' && m.root === ns[0].id, '应只有一个起点，并作为高度基准');
+    const s = addSegAtPort(m, ns[0].id, 0)!;
+    extendTo(m, s, 'b', 20);
+    normalize(m);
+    check(Math.abs(m.segs[s].x) < 1e-9 && Math.abs(m.segs[s].y - 2.5) < 1e-9, `路从 (0, 2.5) 开始，实际 (${m.segs[s].x}, ${m.segs[s].y})`);
+  });
+}

@@ -3,7 +3,7 @@
 // 小节编号：起点固定是第 1 小节（PS_FourFlames_01 + PR_Resetpoint_01）；
 // 每个小节盘点激活下一个小节，sector = n 时对应 PC_TwoFlames_{n-1} 与 PR_Resetpoint_{n}。
 import {
-  DX, DY, Dir, EndKey, MNode, Model, PREFAB_PORT, Prefab, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp,
+  DX, DY, Dir, EndKey, HALF, MNode, Model, PREFAB_PORT, emptyModel, Prefab, axisOf, endOutDir, endPos, endZ, isFree, nodePorts, opp,
 } from './types';
 import { isSloped } from './ops';
 import { baseParts } from './bases';
@@ -154,4 +154,11 @@ export function prefabParts(m: Model, n: MNode): PrefabPart[] {
 /** 盘点路面的平面占地（用于拾取外的粗略判断、吸附等）：沿路口轴向 ±port，垂直方向 ±9 */
 export function prefabExtent(n: MNode): { along: number; across: number; axis: 0 | 1 } {
   return { along: PREFAB_PORT[n.prefab!], across: n.prefab === 'start' ? 9.27 : 9.1, axis: axisOf(n.rot!) };
+}
+
+/** 新建地图：只有一个起点（四火 + 第 1 小节重生点），路口朝 +X，正好落在格栅 x = 0、路中线 y = 2.5 上 */
+export function newMapModel(): Model {
+  const m: Model = { ...emptyModel(), nodes: {}, root: null };
+  addCheckpoint(m, 'start', -PREFAB_PORT.start, HALF, 0, 0);
+  return m;
 }
