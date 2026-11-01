@@ -738,8 +738,11 @@ export class Editor {
     const hit = this.rayOnPlaneZ(z);
     if (!hit) return null;
     // 只在当前位置附近连续移动（斜着拖过路面不会跳到对面的路边）
-    const s = projectNear(l, hit.x, hit.y, d.s);
-    // 吸附：拐角（顶点）、格栅
+    return this.snapGuardS(l, projectNear(l, hit.x, hit.y, d.s));
+  }
+
+  /** 外沿上的位置吸附：先吸拐角（顶点），再按格栅 / 自动对齐（护栏的起点、终点都用它） */
+  private snapGuardS(l: Loop, s: number): number {
     const { seg } = pointAt(l, s);
     const base = l.closed ? Math.floor(s / l.len) * l.len : 0;
     const s0 = base + l.cum[seg], s1 = base + l.cum[seg + 1];
@@ -1594,7 +1597,8 @@ export class Editor {
           this.drag = { type: 'guard', snapshot, id: g.id, end: g.end, loop: pa.loop, s0: fixed, s: moving, sx: e.clientX, sy: e.clientY, started: false };
           return;
         }
-        this.drag = { type: 'guard', snapshot, id: null, end: 'b', loop: g.loop, s0: g.s, s: g.s, sx: e.clientX, sy: e.clientY, started: false };
+        const s0 = this.snapGuardS(this.loops[g.loop], g.s);
+        this.drag = { type: 'guard', snapshot, id: null, end: 'b', loop: g.loop, s0, s: s0, sx: e.clientX, sy: e.clientY, started: false };
         return;
       }
     }
