@@ -101,8 +101,10 @@ export function placeBase(m: Model, objId: number): number | null {
 }
 
 /**
- * 凹槽路面、凹槽平台上的风扇 / 变球器：底座顶面对准槽底，挖掉底座那一格（直路截断成开放端点，平台挖掉 4×4 小格），
- * 底座单独放在坑里。机关挪走或删掉时，路接回去、平台的小格补回去。
+ * 凹槽直路上的风扇 / 变球器：底座顶面对准槽底，挖掉底座那一格（直路截断成开放端点），底座单独放在缺口里；
+ * 平台（凹槽平台对准槽底，普通平台对准顶面）上：底座嵌在平台里，平台不画盖住的 4×4 小格。
+ * 关掉格栅 / 自动对齐时底座不一定落在平台的小格上：就近挪到小格上（最多 0.625）。
+ * 机关挪走或删掉时，路接回去，平台照常画。
  */
 function embedSunk(m: Model, objId: number, cx: number, cy: number, floorZ: number): boolean {
   const lvl = (z: number) => Math.abs(z - SINK_DEPTH - floorZ) < 0.01;
@@ -121,13 +123,15 @@ function embedSunk(m: Model, objId: number, cx: number, cy: number, floorZ: numb
     return id !== null;
   }
   for (const n of Object.values(m.nodes)) {
-    if (n.kind !== 'platform' || n.style !== 'sink' || !lvl(n.z)) continue;
+    if (n.kind !== 'platform' || !(n.style === 'sink' ? lvl(n.z) : Math.abs(n.z - floorZ) < 0.01)) continue;
     const cells: string[] = [];
     const i0 = Math.round((cx - HALF) / CELL), j0 = Math.round((cy - HALF) / CELL);
-    if (Math.abs(i0 * CELL - (cx - HALF)) > EPS || Math.abs(j0 * CELL - (cy - HALF)) > EPS) continue;
     for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) cells.push(`${i0 + i},${j0 + j}`);
     const own = new Set(n.cells ?? []);
     if (!cells.every((k) => own.has(k))) continue;
+    // 对齐到小格
+    const o = m.objs[objId];
+    o.x += i0 * CELL + HALF - cx; o.y += j0 * CELL + HALF - cy;
     const id = placeFreeBase(m, objId);
     if (id === null) continue;
     m.nodes[id].hole = { cells };

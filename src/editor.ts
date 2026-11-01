@@ -2581,9 +2581,9 @@ export class Editor {
   }
 
   /**
-   * 对准方块落到 (x,y) 下面的路面上，返回方块中心。优先级：
-   *   1. 方块的面与路的两头（直道端面、截面接头、路块边沿）贴齐——不管格栅和自动对齐开没开；
-   *   2. 5×5 的方块落在格子上（格栅）或吸附（自动对齐）；
+   * 对准方块落到 (x,y) 下面的路面上，返回方块中心（路面高度、横向居中总是生效）。沿路方向：
+   *   1. 自动对齐开着时，方块的面与路的两头（直道端面、截面接头、路块边沿）贴齐；
+   *   2. 格栅开着时方块的边落在 2.5 的格线上，自动对齐开着时吸附到附近的特征；两个都关着时跟着鼠标连续移动；
    * 横向：方块和路一样宽时落在路中线上。
    */
   private alignBlock(x: number, y: number, z: number, hx: number, hy: number, model: Model = this.model): { x: number; y: number; z: number; sink: boolean } | null {
@@ -2594,7 +2594,7 @@ export class Editor {
     const tol = Math.min(1.25, this.snap().tol);
     /** 一维：区间 [lo, hi] 内放半宽 h 的方块，优先贴两头 */
     const fit = (c: number, lo: number, hi: number, h: number, axis: 0 | 1, at: [number, number, number]) => {
-      const cands = [lo + h, hi - h].filter((v) => v >= lo + h - 1e-6 && v <= hi - h + 1e-6);
+      const cands = this.snapMode ? [lo + h, hi - h].filter((v) => v >= lo + h - 1e-6 && v <= hi - h + 1e-6) : [];
       const near = cands.filter((v) => Math.abs(v - c) < tol).sort((p, q) => Math.abs(p - c) - Math.abs(q - c))[0];
       if (near !== undefined) return near;
       const v = Math.abs(h - HALF) < 1e-6 ? this.snapEdge(c, axis, at) : this.snapEdge(c - h, axis, at) + h;
@@ -2617,9 +2617,8 @@ export class Editor {
       const r = nodeRect(node);
       return { x: fit(x, r.x0, r.x1, hx, 0, [x, y, sf.z]), y: fit(y, r.y0, r.y1, hy, 1, [x, y, sf.z]), z: node.z, sink: node.style === 'sink' };
     }
-    // 平台：5×5 方块落在格子上，其余按格栅 / 吸附
+    // 平台：方块的边按格栅（2.5）/ 吸附；嵌入底座时再对齐到平台的 1.25 小格（见 bases.ts）
     const sink = node?.style === 'sink';
-    if (this.gridMode && Math.abs(hx - HALF) < 1e-6 && Math.abs(hy - HALF) < 1e-6) return { x: Math.floor(x / 5) * 5 + 2.5, y: Math.floor(y / 5) * 5 + 2.5, z: sf.z, sink };
     return { x: this.snapEdge(x - hx, 0, [x, y, sf.z]) + hx, y: this.snapEdge(y - hy, 1, [x, y, sf.z]) + hy, z: sf.z, sink };
   }
 

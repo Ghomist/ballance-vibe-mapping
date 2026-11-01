@@ -78,15 +78,15 @@ export class Snapper {
 
   /** 水平坐标（axis 0 = x，1 = y）；step 为格栅步长 */
   axis(m: Model, axis: 0 | 1, raw: number, exclude: Set<number> = new Set(), step = GRID): SnapResult {
-    // 机关的对准方块优先于格栅和自动对齐（即使自动对齐关着）
-    let pb: SnapResult | null = null, pd = this.tol;
-    for (const { p, prio } of this.features(m, exclude)) {
-      if (!prio) continue;
-      const d = Math.abs(p[axis] - raw);
-      if (d < pd) { pd = d; pb = { v: p[axis], from: p }; }
-    }
-    if (pb) return pb;
     if (this.snap) {
+      // 机关的对准方块优先于格栅和其它特征（自动对齐关着时不吸附）
+      let pb: SnapResult | null = null, pd = this.tol;
+      for (const { p, prio } of this.features(m, exclude)) {
+        if (!prio) continue;
+        const d = Math.abs(p[axis] - raw);
+        if (d < pd) { pd = d; pb = { v: p[axis], from: p }; }
+      }
+      if (pb) return pb;
       let best: SnapResult | null = null, bd = this.reach();
       for (const { p } of this.features(m, exclude)) {
         const d = Math.abs(p[axis] - raw);
