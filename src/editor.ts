@@ -620,7 +620,8 @@ export class Editor {
     const rot = o.rot + (fix.rot ?? 0);
     const out = pieces.map((pc) => {
       const mesh = new THREE.Mesh(pc.geometry, ghost ? GHOST_MAT : pc.material);
-      mesh.position.set(o.x, o.y, o.z + (fix.dz ?? 0));
+      const r = (o.rot * Math.PI) / 180, fx = fix.dx ?? 0, fy = fix.dy ?? 0;
+      mesh.position.set(o.x + fx * Math.cos(r) - fy * Math.sin(r), o.y + fx * Math.sin(r) + fy * Math.cos(r), o.z + (fix.dz ?? 0));
       // 先绕本地 Y 倾斜，再绕 Z 转
       mesh.rotation.order = 'ZYX';
       mesh.rotation.y = ((fix.pitch ?? 0) * Math.PI) / 180;

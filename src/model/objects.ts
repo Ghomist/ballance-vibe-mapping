@@ -114,13 +114,16 @@ const FAKES = new Set([
 /**
  * 和占位符对不上的机关模型，显示时再调整：先绕本地 Y 轴（转轴）倾斜 pitch 度，再绕 Z 转 rot 度、上下挪 dz。
  *   单摆：模型横着放；升降机：模型在升起的位置（底板比占位符高 9.1）；浮板：顶部和占位符顶部（路面）齐平；
- *   跷跷板：模型是平的，按占位符的初始姿态倾斜约 10°（-X 一端落下、+X 一端抬起），转轴抬到占位符转轴的高度。
+ *   跷跷板：模型是平的，按占位符的初始姿态倾斜约 10°（-X 一端落下、+X 一端抬起），转轴抬到占位符转轴的高度；
+ *   双向挡板：模型的转轴在原点、两块板各对着 y=±7.5 的路，占位符的两条路在 y=5、y=-10，转轴在两个缺口相接处（x≈-2.92），
+ *   平放的那块板搭在挡块上（dx、dy 是机关本地坐标里的平移，跟着机关一起转）。
  */
-export const FAKE_FIX: Record<string, { rot?: number; dz?: number; pitch?: number }> = {
+export const FAKE_FIX: Record<string, { rot?: number; dx?: number; dy?: number; dz?: number; pitch?: number }> = {
   Fake_Modul_17: { rot: 90 },
   Fake_Modul_03: { dz: -9.1 },
   Fake_Modul_41: { dz: -1.35 },
   Fake_Modul_30: { pitch: -10, dz: 2.55 },
+  Fake_Modul_19: { dx: -2.92, dy: -2.5, dz: -0.1 },
 };
 export function fakeModel(type: string): string | null {
   const n = type === 'PE_Balloon' ? 'Fake_Balloon' : type.replace(/^P_/, 'Fake_');

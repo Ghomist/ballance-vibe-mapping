@@ -41,7 +41,7 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
     mesh.rotation.order = 'ZYX';
     mesh.rotation.y = ((fix.pitch ?? 0) * Math.PI) / 180;
     mesh.rotation.z = ((fix.rot ?? 0) * Math.PI) / 180;
-    mesh.position.z = fix.dz ?? 0;
+    mesh.position.set(fix.dx ?? 0, fix.dy ?? 0, fix.dz ?? 0);
     group.add(mesh);
   }
   scene.add(group);
