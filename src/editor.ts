@@ -118,7 +118,10 @@ const GHOST_MAT = new THREE.MeshBasicMaterial({ color: 0x9fd2ff, transparent: tr
 
 export class Editor {
   model: Model;
-  tool: Tool = 'edit';
+  private baseTool: Tool = 'edit';
+  /** 按住 C：临时进入分隔模式，松开回到原来的工具 */
+  private cutHeld = false;
+  get tool(): Tool { return this.cutHeld ? 'cut' : this.baseTool; }
   /** 格栅模式：一切对齐到 2.5 的倍数；关闭后自由拖动并智能吸附 */
   gridMode = true;
   /** 自动对齐：靠近其它元素的边界 / 端点 / 高度时对齐过去（与格栅相互独立；自动连接不受它影响） */
@@ -230,7 +233,7 @@ export class Editor {
     });
     window.addEventListener('keydown', (e) => this.onKey(e, true));
     window.addEventListener('keyup', (e) => this.onKey(e, false));
-    window.addEventListener('blur', () => { this.mods = { ctrl: false, shift: false, alt: false }; this.overlayDirty = true; });
+    window.addEventListener('blur', () => { this.mods = { ctrl: false, shift: false, alt: false }; this.setCutHeld(false); this.overlayDirty = true; });
     window.addEventListener('pointerdown', (e) => { if (!this.menu.contains(e.target as Node)) this.hideMenu(); });
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
@@ -242,7 +245,15 @@ export class Editor {
 
   // ---------------- 公共接口 ----------------
 
-  setTool(t: Tool) { this.tool = t; this.overlayDirty = true; this.updateGhost(); this.updateStatus(); this.onChange(); }
+  setTool(t: Tool) { this.baseTool = t; this.overlayDirty = true; this.updateGhost(); this.updateStatus(); this.onChange(); }
+
+  private setCutHeld(on: boolean) {
+    if (this.cutHeld === on) return;
+    this.cutHeld = on;
+    this.overlayDirty = true;
+    this.updateStatus();
+    this.onChange();
+  }
 
   setGridMode(on: boolean) { this.gridMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
   setSnapMode(on: boolean) { this.snapMode = on; this.savePrefs(); this.overlayDirty = true; this.updateStatus(); this.onChange(); }
@@ -1798,9 +1809,11 @@ export class Editor {
       this.onMove({ clientX: lm.clientX, clientY: lm.clientY, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey } as PointerEvent);
       this.onChange();
     }
-    if (!down) return;
     if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
+    // 按住 C 分隔，松开恢复
+    if (k === 'c' && !e.ctrlKey && !e.altKey) { if (!e.repeat) this.setCutHeld(down); return; }
+    if (!down) return;
     if (e.ctrlKey && k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
     if (e.ctrlKey && k === 'y') { e.preventDefault(); this.redo(); return; }
     if (k === 'delete' || k === 'backspace' || (k === 'x' && !e.ctrlKey && !e.altKey && !this.drag)) {
@@ -1820,9 +1833,8 @@ export class Editor {
     }
     if (k === 'e') this.toggleHoveredEnd();
     if (k === '1') this.setTool('edit');
-    if (k === '2') this.setTool('cut');
-    if (k === '3') this.setTool('rail');
-    if (k === '4') this.setTool('guard');
+    if (k === '2') this.setTool('rail');
+    if (k === '3') this.setTool('guard');
     if (k === 'r') {
       // 指着盘点：转重生朝向
       const hn = this.hover?.kind === 'node' ? this.model.nodes[this.hover.id] : undefined;
@@ -2367,9 +2379,9 @@ export class Editor {
       else if (this.mods.alt) hs = [H(['Alt', 'LMB'], '调高度成坡'), H([], '绿框升降 · 橙虚线变坡 · 其余不动')];
       else hs = [
         H(['LMB'], '拉长 / 开路口'), H(['LMB'], '空白处框选'), H(['Shift'], '平台'), H(['Alt'], '坡面'), H(['Ctrl'], '移动'),
-        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '自动对齐'),
+        H(['RMB'], '菜单'), H(['MMB'], '环视'), H(['Wheel'], '缩放'), H(['C'], '按住分隔'), H(['E'], '端点开合'), H(['G'], '格栅'), H(['S'], '自动对齐'),
       ];
-    } else if (this.tool === 'cut') hs = [H(['LMB'], '点截面分隔'), H(['LMB'], '空白处框选'), H(['RMB'], '菜单'), H(['MMB'], '环视')];
+    } else if (this.tool === 'cut') hs = [H(['C', 'LMB'], '点截面分隔（路面 / 钢轨）'), H([], '松开 C 回到原来的工具'), H(['MMB'], '环视')];
     else if (this.tool === 'guard') hs = [H(['LMB'], '点路边：沿这条直边放护栏'), H(['LMB'], '沿路边拖：自由长度、可跨拐角'), H(['LMB'], '拖护栏端头：调长度'), H(['X'], '删除'), H(['MMB'], '环视')];
     else hs = [H(['LMB'], '从路端拖出钢轨'), H(['LMB'], '端头拉长 / 侧面拐弯'), H(['Alt', 'LMB'], '末端坡度'), H(['RMB'], '单双轨 / 螺旋')];
     if (this.selection.size && !d) hs.push(H(['X'], '删除选中'), H(['Esc'], '取消选择'));
