@@ -37,4 +37,10 @@ function exportApi(): Plugin {
   };
 }
 
-export default defineConfig({ plugins: [exportApi()] });
+// 发布到 GitHub Pages（ghomist.github.io/ballance-vibe-mapping/）时用子路径；本地开发仍是根路径
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/ballance-vibe-mapping/' : '/',
+  // 构建产物放在 _app/，不和 public/assets（资产库模型）混在一起
+  build: { assetsDir: '_app' },
+  plugins: [exportApi()],
+}));

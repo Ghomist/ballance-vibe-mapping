@@ -2,6 +2,8 @@
 
 一个只关心赛道走向与结构的 Ballance 制图器：路面材质的衔接、UV、平凹转换都由程序自动处理。
 
+在线版本：https://ghomist.github.io/ballance-vibe-mapping/（推到 master 后由 GitHub Actions 自动发布；线上版本只能导出场景描述，导出 NMO / .blend 需要本地运行）
+
 ## 运行
 
 ```bash
@@ -10,7 +12,7 @@ npm run assets     # 生成预览素材：贴图、资产库模型（盘点路�
 npm run dev
 ```
 
-`npm run assets` 需要本机装有 Ballance、Blender 和 BBP。路径默认是 `D:/Ballance/Textures`、`D:/BlenderLibrary/BallanceAssets/BallanceAssets.blend`、`D:/Blender/blender.exe`，可以用环境变量 `BALLANCE_TEXTURES`、`BALLANCE_ASSETS`、`BLENDER`、`BBP_DIR` 指定其它位置。
+`public/` 下的贴图、资产库模型和机关占位符已经提交在仓库里，直接 `npm run dev` 就能用；重新生成需要本机装有 Ballance、Blender 和 BBP（`npm run assets`）。路径默认是 `D:/Ballance/Textures`、`D:/BlenderLibrary/BallanceAssets/BallanceAssets.blend`、`D:/Blender/blender.exe`，可以用环境变量 `BALLANCE_TEXTURES`、`BALLANCE_ASSETS`、`BLENDER`、`BBP_DIR` 指定其它位置。
 
 ## 导出
 

@@ -155,6 +155,13 @@ document.getElementById('save')!.addEventListener('click', () => {
 
 // 导出
 const exportBtn = document.getElementById('export')!;
+// 线上版本（GitHub Pages）没有本机 Blender，只能导出场景描述
+if (!import.meta.env.DEV) {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#export-menu button[data-format="nmo"], #export-menu button[data-format="blend"]')) {
+    b.disabled = true;
+    b.querySelector('small')!.textContent = '需要在本地用 npm run dev 运行编辑器';
+  }
+}
 const exportMenu = document.getElementById('export-menu')!;
 exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.toggle('open'); });
 window.addEventListener('pointerdown', (e) => { if (!exportMenu.contains(e.target as Node) && e.target !== exportBtn) exportMenu.classList.remove('open'); });
