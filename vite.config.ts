@@ -41,6 +41,6 @@ function exportApi(): Plugin {
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? '/ballance-vibe-mapping/' : '/',
   // 构建产物放在 _app/，不和 public/assets（资产库模型）混在一起
-  build: { assetsDir: '_app' },
+  build: { assetsDir: '_app', rollupOptions: { input: { main: 'index.html', proto: 'proto.html' } } },
   plugins: [exportApi()],
 }));
