@@ -451,14 +451,14 @@ function drawOverlay() {
 /** 对齐辅助面：在对齐的那个坐标上画一块半透明的面，边缘渐变淡出，像一堵虚拟的墙 */
 function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
   // 半透明纯色：和正在操作的物体一样大的部分不透明度一致，再往外 FADE 个单位渐变到全透明（没有边框）
-  const { b } = gd, FADE = 0.5, ALPHA = 0.22;
+  const { b } = gd, FADE = 1, ALPHA = 0.22;
   const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
   const lo = [b.x0, b.y0, b.z0], hi = [b.x1, b.y1, b.z1];
   const P = (u: number, v: number): number[] => { const p = [0, 0, 0]; p[gd.axis] = gd.value; p[ua] = u; p[va] = v; return p; };
   const u0 = lo[ua], u1 = hi[ua], v0 = lo[va], v1 = hi[va];
   const inner = [P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)];
   const outer = [P(u0 - FADE, v0 - FADE), P(u1 + FADE, v0 - FADE), P(u1 + FADE, v1 + FADE), P(u0 - FADE, v1 + FADE)];
-  const col = new THREE.Color(AXIS_COLOR[gd.axis]);
+  const col = new THREE.Color(0x4cff8a);
   const pos: number[] = [], rgba: number[] = [];
   const v = (p: number[], a: number) => { pos.push(...p); rgba.push(col.r, col.g, col.b, a); };
   // 中间：两个三角形
@@ -577,25 +577,26 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
     out[a] += best.diff;
     hits.push({ a, value: best.value, ob: best.ob });
   }
-  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: shiftB(b, out) });
+  // 辅助面盖住正在操作的物体和对齐到的物体，一眼看出是和谁对齐
+  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: unionB(shiftB(b, out), h.ob) });
   return out;
 }
 
 /** 选中整体（顶面 b.z1 + dz）靠近的平面：和选中东西在平面上有重叠的路面的顶面、凹槽的槽底。返回吸附后的 dz */
 function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
   const z = b.z1 + dz, thr = worldPerPx(near) * SIZE5_PX;
-  let best: { v: number; d: number } | null = null;
+  let best: { v: number; d: number; ob: Bounds } | null = null;
   for (const e of Object.values(doc.elems)) {
     if (sel.has(e.id) || e.kind !== 'box' || e.slope) continue;
     const f = footprint(e);
     if (Math.min(f.x1, b.x1) - Math.max(f.x0, b.x0) <= 0 || Math.min(f.y1, b.y1) - Math.max(f.y0, b.y0) <= 0) continue;
     for (const v of e.style === 'normal' ? [e.z] : [e.z, e.z - SINK_DEPTH]) {
       const dd = Math.abs(v - z);
-      if (dd < thr && (!best || dd < best.d)) best = { v, d: dd };
+      if (dd < thr && (!best || dd < best.d)) best = { v, d: dd, ob: elemBounds(e) };
     }
   }
   if (!best) { guides = []; return null; }
-  guides = [{ axis: 2, value: best.v, b: shiftB(b, [0, 0, best.v - b.z1]) }];
+  guides = [{ axis: 2, value: best.v, b: unionB(shiftB(b, [0, 0, best.v - b.z1]), best.ob) }];
   return best.v - b.z1;
 }
 
@@ -828,7 +829,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     for (const ob of Object.values(doc.elems).filter((x) => x.id !== o.id).map(elemBounds)) {
       for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - raw; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
     }
-    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: elemBounds(o) }); }
+    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: unionB(elemBounds(o), best.ob) }); }
   }
   // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有）
   const fixed = s < 2 ? lo : lo + len;
@@ -899,7 +900,7 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
       const diff = ob.z1 - raw;
       if (Math.abs(diff) < worldPerPx(p) * ALIGN_PX && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, v: ob.z1, ob };
     }
-    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: elemBounds(o) }); }
+    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: unionB(elemBounds(o), best.ob) }); }
   }
   const final = snap ?? raw;
   const setEnd = (x: Box, v: number) => {

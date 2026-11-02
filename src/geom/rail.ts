@@ -39,15 +39,13 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     const T = normalize([Math.cos(h), Math.sin(h), slope]);
     const U = normalize(cross(T, L)); // 截面内的“上”
     const c = [p.x + L[0] * lateral, p.y + L[1] * lateral, p.z + zOff];
-    // 首末两圈切成竖直截面（圆管和过端点的竖直面相交）：坡道、螺旋的端面是竖直的，和相接的轨道 / 路面严丝合缝
-    const end = i === 0 || i === pts.length - 1;
-    const stretch = Math.hypot(1, slope); // 竖直面上，截面的「上」方向被拉长 1/cosθ
+    // 和坡面路一样：每一圈都是竖直截面，大小不随坡度变（坡道是平轨沿竖直方向错切出来的），
+    // 所以任何坡度、螺旋的两头都和相接的轨道 / 路面截面完全一样
     const v: number[][] = [], n: number[][] = [];
     for (let k = 0; k < 8; k++) {
       const th = rad(phase + k * 45);
       const d = [L[0] * Math.cos(th) + U[0] * Math.sin(th), L[1] * Math.cos(th) + U[1] * Math.sin(th), L[2] * Math.cos(th) + U[2] * Math.sin(th)];
-      if (end) v.push([c[0] + L[0] * Math.cos(th) * RAIL_RADIUS, c[1] + L[1] * Math.cos(th) * RAIL_RADIUS, c[2] + Math.sin(th) * RAIL_RADIUS * stretch]);
-      else v.push([c[0] + d[0] * RAIL_RADIUS, c[1] + d[1] * RAIL_RADIUS, c[2] + d[2] * RAIL_RADIUS]);
+      v.push([c[0] + L[0] * Math.cos(th) * RAIL_RADIUS, c[1] + L[1] * Math.cos(th) * RAIL_RADIUS, c[2] + Math.sin(th) * RAIL_RADIUS]);
       n.push(d);
     }
     rings.push({ c, v, n });
