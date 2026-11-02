@@ -18,7 +18,7 @@ import { solve } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
-import { type Loop, project } from '../model/outline';
+import { type Loop, pathAlong, project, projectNear } from '../model/outline';
 import { exportBoxNmo } from './export';
 import { Box, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
 
@@ -482,6 +482,10 @@ function drawOverlay() {
       overlay.add(m);
     }
   }
+  // 选中一块路面时：四条边的中点显示开口开关（实心点：封口；绿色圆环：开口），点一下切换
+  if (!drag && !guardMode && !splitMode) for (const t of openToggles()) {
+    overlay.add(marks([t.p], t.open ? 'ring' : 'dot', t.open ? 0x4cff8a : t.id === openHover?.id && t.side === openHover.side ? 0xffffff : 0x9aa6bd, t.id === openHover?.id && t.side === openHover.side ? 16 : 12));
+  }
   // 护栏工具里：每条护栏两头的把手（拖它改长度），鼠标靠近的那个放大变绿
   if (guardMode) {
     for (const g of Object.values(doc.elems)) {
@@ -678,6 +682,7 @@ type Drag =
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
   | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
+  | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; loop: number; sFixed: number; sNear: number; moveB: boolean }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
@@ -714,6 +719,16 @@ el.addEventListener('pointerdown', (e) => {
   if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
   if (splitMode) { doSplit(e); return; }
   if (guardMode) { guardDown(e); return; }
+  // 点路面边上的开口开关：切换这一侧开口 / 封口
+  const tog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? openToggleAt(e) : null;
+  if (tog) {
+    snapshot();
+    const b = doc.elems[tog.id] as Box;
+    b.open = ((b.open ?? 0) ^ (1 << tog.side)) || undefined;
+    flash(b.open && b.open & (1 << tog.side) ? '这一侧开口（不画边框，露出凹槽截面）' : '这一侧封口');
+    rebuild();
+    return;
+  }
   if (vHeld && sel.size) {
     const at = new THREE.Vector2(e.clientX, e.clientY);
     const inside = [...sel].some((id) => {
@@ -788,6 +803,10 @@ el.addEventListener('pointerdown', (e) => {
   } else if (e.altKey) {
     const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
     drag = { t: 'lift', orig: origOf(), b: boundsOf(doc, sel), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
+  } else if (e.ctrlKey && elem.kind === 'guard') {
+    const a = elem.pts[0], b = elem.pts[elem.pts.length - 1];
+    const end: 0 | 1 = Math.hypot(h.p.x - a[0], h.p.y - a[1]) <= Math.hypot(h.p.x - b[0], h.p.y - b[1]) ? 0 : 1;
+    if (!startGuardLen(h.id, end)) { undo.pop(); return; }
   } else if (e.ctrlKey && elem.kind === 'rail' && elem.pieces.length === 1 && elem.pieces[0].angle === 0) {
     sel = new Set([h.id]);
     drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
@@ -809,6 +828,9 @@ window.addEventListener('pointermove', (e) => {
     if (splitMode) { splitHover(e); return; }
     if (guardMode) { guardHover(e); return; }
     // 按住 Ctrl / Alt 时不提示别的路面（这时只会操作已经选中的东西）
+    const tg = openToggleAt(e);
+    const th = tg ? { id: tg.id, side: tg.side } : null;
+    if (th?.id !== openHover?.id || th?.side !== openHover?.side) { openHover = th; el.style.cursor = th ? 'pointer' : ''; if (th) dragInfo = '点击切换这一侧的开口'; else dragInfo = ''; drawOverlay(); updateStatus(); }
     const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
     if (id !== hoverId || vHeld) { hoverId = id; drawOverlay(); }
     return;
@@ -868,6 +890,7 @@ window.addEventListener('pointermove', (e) => {
   if (drag.t === 'tilt') { tiltTo(drag, p); return; }
   if (drag.t === 'railLen') { railLenTo(drag, p); return; }
   if (drag.t === 'railTilt') { railTiltTo(drag, p); return; }
+  if (drag.t === 'guardLen') { guardLenTo(drag, p); return; }
   const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
@@ -1022,6 +1045,57 @@ function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
     measure = { a: [end.x, end.y, o.z], b: [end.x, end.y, v[0]], tick: [0.6, 0.6, 0], text: `高差 ${fmt(final - o.z)}`, on5: snap !== null };
   }, [start]);
   dragInfo = `直轨：长 ${fmt(pc.len)} · 高差 ${fmt(final - o.z)}`;
+}
+
+/** 开始拖护栏的一头（end：0 起点 / 1 终点）：另一头固定，沿外沿改长度 */
+function startGuardLen(id: number, end: 0 | 1): boolean {
+  const g = doc.elems[id] as Extract<Elem, { kind: 'guard' }>;
+  const fixedP = end === 0 ? g.pts[g.pts.length - 1] : g.pts[0];
+  const movP = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
+  const pf = project(loops, fixedP, 1);
+  if (!pf) return false;
+  const l = loops[pf.loop];
+  const pm = project([l], movP, 1);
+  if (!pm) return false;
+  // 展开弧长：终点在起点之后（闭合环上可能要加一圈）
+  let sNear = pm.s;
+  if (l.closed) { if (end === 1 && sNear <= pf.s) sNear += l.len; if (end === 0 && sNear >= pf.s) sNear -= l.len; }
+  drag = { t: 'guardLen', id, orig: origOf([id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -movP[2]), loop: pf.loop, sFixed: pf.s, sNear, moveB: end === 1 };
+  return true;
+}
+
+/** 拖护栏的一头：沿外沿走；格栅开着时长度取整；长度靠近 5 的倍数、或者走到外沿的拐角时磁吸 */
+function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
+  const l = loops[d.loop];
+  if (!l) return;
+  const sgn = d.moveB ? 1 : -1;
+  let s = projectNear(l, p.x, p.y, d.sNear);
+  // 不能越过固定的那一头
+  if ((s - d.sFixed) * sgn < 0.2) s = d.sFixed + sgn * 0.2;
+  if (l.closed && Math.abs(s - d.sFixed) > l.len - 0.2) s = d.sFixed + sgn * (l.len - 0.2);
+  d.sNear = s;
+  let len = Math.abs(s - d.sFixed);
+  if (gridOn) len = Math.max(1, Math.round(len));
+  const raw = d.sFixed + sgn * len;
+  const thr = worldPerPx(p) * SIZE5_PX;
+  const cands: number[] = [];
+  const L5 = Math.round(len / 5) * 5;
+  if (L5 > 0) cands.push(d.sFixed + sgn * L5);
+  // 外沿的拐角（展开到 raw 附近）
+  const base = l.closed ? Math.floor(raw / l.len) * l.len : 0;
+  for (const c of l.cum) for (const k of l.closed ? [-1, 0, 1] : [0]) cands.push(base + c + k * l.len);
+  const snap = cands.filter((c) => Math.abs(c - raw) < thr && (c - d.sFixed) * sgn > 0.2).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw))[0] ?? null;
+  const final = snap ?? raw;
+  drive([raw], snap === null ? null : [snap], (v) => {
+    restore(d.orig);
+    const g = doc.elems[d.id] as Extract<Elem, { kind: 'guard' }>;
+    const r = d.moveB ? pathAlong(l, d.sFixed, v[0]) : pathAlong(l, v[0], d.sFixed);
+    if (r.pts.length < 2) return;
+    g.pts = r.pts.map((q) => [...q] as P3);
+    g.outs = r.outs.map((o) => [...o] as [number, number]);
+    [g.x, g.y, g.z] = g.pts[0];
+  }, [raw]);
+  dragInfo = `护栏长 ${fmt(Math.abs(final - d.sFixed))}${snap !== null ? '（吸附）' : ''}`;
 }
 
 /** Ctrl 拖钢轨：沿钢轨末端方向拉长 / 缩短最后一段直线（最后一段是弯道时接一段新的直线）；长度靠近 5 的倍数时磁吸 */
@@ -1288,6 +1362,25 @@ function surfacePoint(e: { clientX: number; clientY: number }): P3 | null {
   return null;
 }
 /** 护栏工具里，鼠标下的护栏端头（屏幕上 18 像素以内）：可以拖它改长度 */
+/** 路面开口的开关：选中一块路面时，四条边顶面的中点 */
+function openToggles(): { id: number; side: Dir; p: P3; open: boolean }[] {
+  if (sel.size !== 1) return [];
+  const b = doc.elems[[...sel][0]];
+  if (b?.kind !== 'box') return [];
+  const f = footprint(b);
+  const cx = (f.x0 + f.x1) / 2, cy = (f.y0 + f.y1) / 2;
+  const at: [number, number][] = [[f.x1, cy], [cx, f.y1], [f.x0, cy], [cx, f.y0]];
+  return ([0, 1, 2, 3] as Dir[]).map((side) => {
+    const [x, y] = at[side];
+    return { id: b.id, side, p: [x, y, boxTopAt(b, x, y) + 0.05] as P3, open: !!((b.open ?? 0) & (1 << side)) };
+  });
+}
+let openHover: { id: number; side: Dir } | null = null;
+function openToggleAt(e: { clientX: number; clientY: number }) {
+  const at = new THREE.Vector2(e.clientX, e.clientY);
+  return openToggles().find((t) => toScreen(t.p).distanceTo(at) < 11) ?? null;
+}
+
 /** 护栏端头的把手位置：立柱顶上（和实际的护栏一样往外偏 guardOffset） */
 function guardHandle(g: Extract<Elem, { kind: 'guard' }>, end: 0 | 1): P3 {
   const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
@@ -1328,12 +1421,12 @@ function guardDown(e: PointerEvent) {
   // 拖护栏的端头：另一头固定，沿外沿改长度（可以跨拐角）
   const end = guardEndAt(e);
   if (end) {
-    const g = doc.elems[end.id] as Extract<Elem, { kind: 'guard' }>;
-    const fixed = end.end === 0 ? g.pts[g.pts.length - 1] : g.pts[0];
-    const pr = project(loops, fixed, 1);
-    if (!pr) return;
+    snapshot();
+    sel = new Set([end.id]);
+    if (!startGuardLen(end.id, end.end)) { undo.pop(); return; }
     el.setPointerCapture(e.pointerId);
-    guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, replace: end.id, moved: true };
+    guardPreview = null;
+    drawOverlay();
     return;
   }
   const p = surfacePoint(e);
