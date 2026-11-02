@@ -192,10 +192,26 @@ export function solve(doc: Doc): Solved {
   const oedges: OEdge[] = [];
   // 盘点路面的侧边不算（实际的模型是圆盘，比 5 宽的带子大）：外沿在盘点处断开，护栏不会穿过盘点
   const cp = new Set(pieces.filter((p) => p.type === 'start' || p.type === 'check').map((p) => p.id));
+  // 外面紧挨着差不多一样高的路面（样式不同、坡插进平台留下的槽口、底座…）的边也不算：那里球还能滚过去，不该放护栏
+  const floors = elems.filter((e): e is Box | Piece => e.kind === 'box' || e.kind === 'piece');
+  const continues = (x: number, y: number, z: number) => floors.some((f) => {
+    const fp = footprint(f);
+    if (x <= fp.x0 || x >= fp.x1 || y <= fp.y0 || y >= fp.y1) return false;
+    const top = f.kind === 'box' ? boxTopAt(f, x, y) : f.z;
+    return Math.abs(top - z) < 1;
+  });
   for (const L of layers) for (const r of L.edges) {
     if (r.kind !== 'exp' || cp.has(r.owner)) continue;
     const P = (t: number) => L.world(...((r.ax === 0 ? [t, r.c] : [r.c, t]) as [number, number]), 0) as [number, number, number];
-    pushEdge(oedges, P(r.a), P(r.b), [DX[r.n], DY[r.n]]);
+    // 按 1 的步长切开，逐小段看外面是不是还有路面
+    const n = Math.max(1, Math.ceil(r.b - r.a));
+    for (let k = 0; k < n; k++) {
+      const t0 = r.a + ((r.b - r.a) * k) / n, t1 = r.a + ((r.b - r.a) * (k + 1)) / n;
+      const A = P(t0), B = P(t1);
+      const mx = (A[0] + B[0]) / 2 + DX[r.n] * 0.05, my = (A[1] + B[1]) / 2 + DY[r.n] * 0.05;
+      if (continues(mx, my, (A[2] + B[2]) / 2)) continue;
+      pushEdge(oedges, A, B, [DX[r.n], DY[r.n]]);
+    }
   }
   return { meshes: out, assets, owner: auto.owner, loops: loopsFromEdges(oedges) };
 }

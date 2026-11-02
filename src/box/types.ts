@@ -93,12 +93,16 @@ export interface RailElem extends ElemBase {
   pieces: RailPiece[];
 }
 
-/** 护栏：沿路面外沿从 a 走到 b（外沿是有方向的环，朝外在右手边）；路面改动后起止点重新投影到最近的外沿上 */
+/**
+ * 护栏：和上一版一样沿路面外沿走（拐角圆弧过渡、顺着坡走、两头立柱 + 铆钉），
+ * 但放下时就把走过的路径存下来（pts：外沿上的点，顶面高度；outs：每一段朝外的方向），
+ * 之后是一个独立的物体，可以移动 / 删除，不会因为路面改动而自己改道。
+ */
 export interface GuardElem extends ElemBase {
   kind: 'guard';
-  a: [number, number, number];
-  b: [number, number, number];
-  /** 拖动时整体平移用的参考点（= a） */
+  pts: [number, number, number][];
+  outs: [number, number][];
+  /** 参考点（= 起点），整体平移用 */
   x: number;
   y: number;
   z: number;
@@ -135,7 +139,7 @@ export function anchorRects(o: Obj): (Rect & { top: number })[] {
 
 /** 元素在平面上的范围 */
 export function footprint(e: Elem): Rect {
-  if (e.kind === 'guard') return { x0: Math.min(e.a[0], e.b[0]) - 0.5, y0: Math.min(e.a[1], e.b[1]) - 0.5, x1: Math.max(e.a[0], e.b[0]) + 0.5, y1: Math.max(e.a[1], e.b[1]) + 0.5 };
+  if (e.kind === 'guard') return { x0: Math.min(...e.pts.map((p) => p[0])) - 0.5, y0: Math.min(...e.pts.map((p) => p[1])) - 0.5, x1: Math.max(...e.pts.map((p) => p[0])) + 0.5, y1: Math.max(...e.pts.map((p) => p[1])) + 0.5 };
   if (e.kind === 'rail') {
     const ps = sampleRail(e);
     const pad = 2.25; // 双轨半宽 + 轨道半径

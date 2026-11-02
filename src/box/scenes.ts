@@ -33,11 +33,11 @@ class B {
     let st = { x, y, z, heading };
     for (const p of pieces) { this.rail(st.x, st.y, st.z, st.heading, [p]); st = advance(st, p); }
   }
-  /** 护栏：沿路面外沿从 a 走到 b（朝外在右手边） */
-  guard(a: [number, number, number], b: [number, number, number]) {
+  /** 护栏：沿一条直的路边从 a 走到 b，out 是朝外的方向 */
+  guard(a: [number, number, number], b: [number, number, number], out: [number, number]) {
     const id = this.doc.nextId++;
     const A: [number, number, number] = [a[0] + this.ox, a[1] + this.oy, a[2]], B: [number, number, number] = [b[0] + this.ox, b[1] + this.oy, b[2]];
-    this.doc.elems[id] = { id, kind: 'guard', a: A, b: B, x: A[0], y: A[1], z: A[2] };
+    this.doc.elems[id] = { id, kind: 'guard', pts: [A, B], outs: [out], x: A[0], y: A[1], z: A[2] };
     return id;
   }
   piece(type: PieceType, x: number, y: number, rot: Dir, z = 0) {
@@ -76,8 +76,8 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       // 终点气球：对准方块是路的最后一格，飞船在路的前方
       b.obj('PE_Balloon', r2 + 32.5, 2.5, 5, 2);
       // 护栏：平台的下沿和上沿（外沿的方向是朝外在右手边）
-      b.guard([px, -7.5, 5], [px + 20, -7.5, 5]);
-      b.guard([px + 20, 12.5, 5], [px, 12.5, 5]);
+      b.guard([px, -7.5, 5], [px + 20, -7.5, 5], [0, -1]);
+      b.guard([px + 20, 12.5, 5], [px, 12.5, 5], [0, 1]);
       return b.doc;
     },
   },

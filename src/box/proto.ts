@@ -15,10 +15,10 @@ import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, 
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
-import { edgeAt, guardRouteBox } from './guard';
+import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
-import { type Loop, pathAlong, project } from '../model/outline';
+import { type Loop, project } from '../model/outline';
 import { exportBoxNmo } from './export';
 import { Box, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
 
@@ -78,8 +78,9 @@ let splitMode = false;
 /** 护栏工具：点路面外沿放一整条直边的护栏，按住拖动沿外沿放一段 */
 let guardMode = false;
 let loops: Loop[] = [];
-let guardPreview: P3[] | null = null;
-let guardDrag: { loop: number; s0: number; a: P3 } | null = null;
+let guardPreview: Route | null = null;
+/** 护栏工具的拖动：从 s0 沿外沿拖；replace：正在拖某条护栏的端头 */
+let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean } | null = null;
 let splitAxis: 0 | 1 | null = null; // null：按路面较长的方向自动选
 const undo: string[] = [];
 const redo: string[] = [];
@@ -210,8 +211,7 @@ function rebuildInner() {
   // 护栏：钢管 + 两头的铆钉
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'guard') continue;
-    const route = guardRouteBox(loops, e);
-    const gm = route && guardFromRoute(route, DEFAULT_SETTINGS);
+    const gm = guardFromRoute({ pts: e.pts, outs: e.outs }, DEFAULT_SETTINGS);
     if (!gm) continue;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(gm.pos, 3));
@@ -302,7 +302,7 @@ function updateStatus() {
     parts.push(`选中 ${sel.size} 个 · ${fmt(b.x1 - b.x0)} × ${fmt(b.y1 - b.y0)} · 顶面 ${fmt(b.z1)}`);
   }
   parts.push(`${Object.keys(doc.elems).length} 个元素 · ${lastSolve.tris} 个三角形 · 求解 ${lastSolve.ms.toFixed(1)} ms`);
-  parts.push(guardMode ? '护栏：点路面外沿放一整条直边 · 沿外沿拖动放一段 · Esc / 右键退出' : splitMode
+  parts.push(guardMode ? '护栏：点路边放一整条直边 · 沿路边拖动放一段（可跨拐角）· 拖护栏端头改长度 · Esc / 右键退出' : splitMode
     ? '切分：点路面在鼠标处切开 · Tab 换方向 · Esc / 右键退出'
     : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Alt+Shift 拖一头拉坡 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
   if (gridOn) parts.push('格栅 1');
@@ -470,12 +470,16 @@ function drawOverlay() {
     Object.assign(measureLabel.style, { display: 'block', left: `${m.x}px`, top: `${m.y}px`, color: measure.on5 ? '#0b2a14' : '#e6ebf5', background: measure.on5 ? '#4cff8a' : 'rgba(20,26,38,.85)' });
     measureLabel.textContent = measure.text;
   }
-  if (guardPreview && guardPreview.length > 1) {
+  if (guardPreview && guardPreview.pts.length > 1) {
+    // 和上一版一样：预览画成护栏的样子（往外偏一点、在护栏顶的高度画横杆，两头画立柱）
+    const st = DEFAULT_SETTINGS, { pts, outs } = guardPreview;
+    const off = pts.map((p, i) => { const o = outs[Math.min(i, outs.length - 1)], o2 = outs[Math.max(i - 1, 0)]; return new THREE.Vector3(p[0] + (o[0] + o2[0]) / 2 * st.guardOffset, p[1] + (o[1] + o2[1]) / 2 * st.guardOffset, p[2]); });
     const segs: THREE.Vector3[] = [];
-    for (let i = 0; i + 1 < guardPreview.length; i++) for (const p of [guardPreview[i], guardPreview[i + 1]]) segs.push(new THREE.Vector3(p[0], p[1], p[2] + 0.06));
+    for (let i = 0; i + 1 < off.length; i++) segs.push(off[i].clone().setZ(off[i].z + st.guardTop), off[i + 1].clone().setZ(off[i + 1].z + st.guardTop));
+    for (const q of [off[0], off[off.length - 1]]) segs.push(q.clone().setZ(q.z - st.guardPostDepth), q.clone().setZ(q.z + st.guardTop));
     const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color: 0x4cff8a, depthTest: false }));
     l.renderOrder = 7;
-    overlay.add(l, marks([guardPreview[0], guardPreview[guardPreview.length - 1]], 'dot', 0x4cff8a, 10));
+    overlay.add(l);
   }
   if (splitPreview) {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
@@ -608,13 +612,22 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
   if (!alignOn) return d;
   const thr = worldPerPx(near) * ALIGN_PX;
   const out = [...d] as V3;
-  const others = Object.values(doc.elems).filter((e) => !sel.has(e.id)).map(elemBounds);
-  const vals = (x: Bounds, a: 0 | 1 | 2) => (a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0]);
+  // 参与对齐的坐标：一般按包围盒（两边 + 中线、顶面 + 底面）；钢轨只用它的吸附点（两头中心、两根轨的顶端），不然太多
+  const vals = (e: Elem, a: 0 | 1 | 2): number[] => {
+    if (e.kind === 'rail') return [...new Set(feats(e).verts.map((v) => +v[a].toFixed(4)))];
+    const x = elemBounds(e);
+    return a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0];
+  };
+  const others = Object.values(doc.elems).filter((e) => !sel.has(e.id));
+  const selElems = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  const onlyRails = selElems.length > 0 && selElems.every((e) => e.kind === 'rail');
   const hits: { a: 0 | 1 | 2; value: number; ob: Bounds }[] = [];
   for (const a of axes) {
     let best: { diff: number; value: number; ob: Bounds } | null = null;
-    const mine = vals(b, a).map((v) => v + d[a]);
-    for (const ob of others) for (const v of vals(ob, a)) for (const m of mine) {
+    const base = onlyRails ? [...new Set(selElems.flatMap((e) => vals(e, a)))] : (a === 0 ? [b.x0, b.x1, (b.x0 + b.x1) / 2] : a === 1 ? [b.y0, b.y1, (b.y0 + b.y1) / 2] : [b.z1, b.z0]);
+    const mine = base.map((v) => v + d[a]);
+    for (const oe of others) for (const v of vals(oe, a)) for (const m of mine) {
+      const ob = elemBounds(oe);
       const diff = v - m;
       if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, value: v, ob };
     }
@@ -1263,54 +1276,65 @@ function surfacePoint(e: { clientX: number; clientY: number }): P3 | null {
   if (h) return [h.p.x, h.p.y, h.p.z];
   return null;
 }
+/** 护栏工具里，鼠标下的护栏端头（屏幕上 18 像素以内）：可以拖它改长度 */
+function guardEndAt(e: { clientX: number; clientY: number }): { id: number; end: 0 | 1 } | null {
+  const at = new THREE.Vector2(e.clientX, e.clientY);
+  let best: { id: number; end: 0 | 1; d: number } | null = null;
+  for (const g of Object.values(doc.elems)) {
+    if (g.kind !== 'guard') continue;
+    ([0, 1] as const).forEach((end) => {
+      const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
+      const d = Math.min(toScreen(p).distanceTo(at), toScreen([p[0], p[1], p[2] + DEFAULT_SETTINGS.guardTop]).distanceTo(at));
+      if (d < 18 && (!best || d < best.d)) best = { id: g.id, end, d };
+    });
+  }
+  return best;
+}
 function guardHover(e: PointerEvent) {
   const p = surfacePoint(e);
   if (guardDrag) {
     const l = loops[guardDrag.loop];
-    if (p) {
-      const pr = project([l], p, 3);
-      if (pr) {
-        const f = l.closed ? (((pr.s - guardDrag.s0) % l.len) + l.len) % l.len : pr.s - guardDrag.s0;
-        const forward = l.closed ? f <= l.len - f : f >= 0;
-        guardPreview = forward ? pathAlong(l, guardDrag.s0, pr.s).pts : pathAlong(l, pr.s, guardDrag.s0).pts;
-      }
-    }
+    const pr = p ? project([l], p, 3) : null;
+    if (pr) guardPreview = shortPath(l, guardDrag.s0, pr.s);
+    if (pr && Math.abs(pr.s - guardDrag.s0) > 0.3) guardDrag.moved = true;
   } else {
-    const ed = p ? edgeAt(loops, p) : null;
-    guardPreview = ed ? [ed.a, ed.b] : null;
+    const end = guardEndAt(e);
+    el.style.cursor = end ? 'ew-resize' : '';
+    guardPreview = end ? null : p ? edgeAt(loops, p) : null;
   }
-  dragInfo = guardPreview ? `护栏长 ${fmt(guardPreview.slice(1).reduce((s, q, i) => s + Math.hypot(q[0] - guardPreview![i][0], q[1] - guardPreview![i][1]), 0))}` : '';
+  dragInfo = guardPreview ? `护栏长 ${fmt(routeLen(guardPreview))}` : '';
   drawOverlay(); updateStatus();
 }
 function guardDown(e: PointerEvent) {
+  // 拖护栏的端头：另一头固定，沿外沿改长度（可以跨拐角）
+  const end = guardEndAt(e);
+  if (end) {
+    const g = doc.elems[end.id] as Extract<Elem, { kind: 'guard' }>;
+    const fixed = end.end === 0 ? g.pts[g.pts.length - 1] : g.pts[0];
+    const pr = project(loops, fixed, 1);
+    if (!pr) return;
+    el.setPointerCapture(e.pointerId);
+    guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, replace: end.id, moved: true };
+    return;
+  }
   const p = surfacePoint(e);
   if (!p) return;
   const pr = project(loops, p, 1.5);
   if (!pr || pr.dist > 1.5) return;
   el.setPointerCapture(e.pointerId);
-  guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p };
+  guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, moved: false };
 }
 function guardUp(e: PointerEvent) {
   const gd = guardDrag!;
   guardDrag = null;
-  const p = surfacePoint(e);
-  const l = loops[gd.loop];
-  const pr = p ? project([l], p, 3) : null;
-  let a: P3, b: P3;
-  if (!pr || Math.abs(pr.s - gd.s0) < 0.3) {
-    // 点一下：整条直边
-    const ed = edgeAt(loops, gd.a);
-    if (!ed) return;
-    [a, b] = [ed.a, ed.b];
-  } else {
-    // 拖动：从按下的地方沿外沿走到松开的地方，走短的那一边（起止按外沿的方向排好）
-    const f = l.closed ? (((pr.s - gd.s0) % l.len) + l.len) % l.len : pr.s - gd.s0;
-    const forward = l.closed ? f <= l.len - f : f >= 0;
-    [a, b] = forward ? [gd.a, pr.p] : [pr.p, gd.a];
+  // 点一下：整条直边；拖动：从按下的地方沿外沿走到松开的地方
+  const route = gd.moved ? guardPreview : edgeAt(loops, gd.a);
+  if (route && route.pts.length > 1 && routeLen(route) > 0.2) {
+    snapshot();
+    const id = gd.replace ?? doc.nextId++;
+    const p0 = route.pts[0];
+    doc.elems[id] = { id, kind: 'guard', pts: route.pts.map((q) => [...q] as P3), outs: route.outs.map((o) => [...o] as [number, number]), x: p0[0], y: p0[1], z: p0[2] };
   }
-  snapshot();
-  const id = doc.nextId++;
-  doc.elems[id] = { id, kind: 'guard', a: [...a], b: [...b], x: a[0], y: a[1], z: a[2] };
   guardPreview = null;
   rebuild();
   guardHover(e);
@@ -1461,9 +1485,8 @@ function syncProps() {
       else h += rnum('angle', '角度', Math.abs(pc.angle), 15) + rnum('dz', '高差', pc.dz);
     }
   } else if (one.kind === 'guard') {
-    const r = guardRouteBox(loops, one);
-    const len = r ? r.pts.slice(1).reduce((s, q, i) => s + Math.hypot(q[0] - r.pts[i][0], q[1] - r.pts[i][1]), 0) : 0;
-    h += `<div class="title">护栏${r ? `（长 ${fmt(len)}）` : '（附近没有路面外沿）'}</div>`;
+    h += `<div class="title">护栏（长 ${fmt(routeLen(one))}）</div>`;
+    h += `<div class="row">在护栏工具（H）里拖护栏的端头改长度</div>`;
   } else if (one.kind === 'piece' && isCheckpoint(one)) {
     const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
     h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;

@@ -14,7 +14,7 @@ export function elemBounds(e: Elem): Bounds {
   }
   if (e.kind === 'piece') return { ...f, z0: e.z - 5, z1: e.z };
   if (e.kind === 'rail') { const zs = sampleRail(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - 1.2, z1: Math.max(...zs) }; }
-  if (e.kind === 'guard') return { ...f, z0: Math.min(e.a[2], e.b[2]), z1: Math.max(e.a[2], e.b[2]) + 2.6 };
+  if (e.kind === 'guard') return { ...f, z0: Math.min(...e.pts.map((p) => p[2])) - 2, z1: Math.max(...e.pts.map((p) => p[2])) + 2.6 };
   const tops = anchorRects(e).map((r) => r.top);
   const top = tops.length ? Math.max(...tops) : e.z;
   return { ...f, z0: top - 0.5, z1: top };
@@ -40,7 +40,7 @@ export function expandGroups(doc: Doc, ids: Iterable<number>): Set<number> {
 
 export function translateElem(e: Elem, d: V3) {
   e.x += d[0]; e.y += d[1]; e.z += d[2];
-  if (e.kind === 'guard') for (const p of [e.a, e.b]) { p[0] += d[0]; p[1] += d[1]; p[2] += d[2]; }
+  if (e.kind === 'guard') for (const p of e.pts) { p[0] += d[0]; p[1] += d[1]; p[2] += d[2]; }
 }
 
 /** 绕竖直轴转 90°（逆时针），转轴过 (px, py) */
@@ -60,8 +60,9 @@ export function rotateElem(e: Elem, px: number, py: number) {
     return;
   }
   if (e.kind === 'guard') {
-    for (const p of [e.a, e.b]) [p[0], p[1]] = rot(p[0], p[1]);
-    [e.x, e.y] = [e.a[0], e.a[1]];
+    for (const p of e.pts) [p[0], p[1]] = rot(p[0], p[1]);
+    e.outs = e.outs.map(([ox, oy]) => [-oy, ox]);
+    [e.x, e.y] = [e.pts[0][0], e.pts[0][1]];
     return;
   }
   [e.x, e.y] = rot(e.x, e.y);
