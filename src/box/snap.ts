@@ -25,17 +25,13 @@ export function feats(e: Elem): Feats {
     const f = footprint(e);
     return boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
   }
-  // 机关：对准方块的顶面四角、中心和四条边
+  // 机关：对准方块（代表它所在的那一格路面，5×5×5，顶面就是路面）的顶点、边中点、边，再加顶面中心
   const out: Feats = { verts: [], mids: [], edges: [] };
   for (const r of anchorRects(e)) {
-    const c: P3[] = [[r.x0, r.y0, r.top], [r.x1, r.y0, r.top], [r.x1, r.y1, r.top], [r.x0, r.y1, r.top]];
-    out.verts.push(...c);
-    out.mids.push([(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.top]);
-    for (let i = 0; i < 4; i++) {
-      const a = c[i], b = c[(i + 1) % 4];
-      out.edges.push([a, b]);
-      out.mids.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, r.top]);
-    }
+    const f = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, 5);
+    out.verts.push(...f.verts);
+    out.mids.push(...f.mids, [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.top]);
+    out.edges.push(...f.edges);
   }
   if (!out.verts.length) out.verts.push([e.x, e.y, e.z]);
   return out;

@@ -216,6 +216,23 @@ function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
   return l;
 }
 
+/** 对准方块：虚线框，顶面就是路面、往下 5 */
+function anchorBoxes(o: Obj): THREE.Object3D {
+  const segs: THREE.Vector3[] = [];
+  for (const r of anchorRects(o)) {
+    const z0 = r.top - 5, z1 = r.top + 0.03;
+    const c = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = c[i], [x2, y2] = c[(i + 1) % 4];
+      segs.push(new THREE.Vector3(x, y, z1), new THREE.Vector3(x2, y2, z1), new THREE.Vector3(x, y, z0), new THREE.Vector3(x2, y2, z0), new THREE.Vector3(x, y, z0), new THREE.Vector3(x, y, z1));
+    }
+  }
+  const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineDashedMaterial({ color: 0xffb84c, dashSize: 0.5, gapSize: 0.35, transparent: true, opacity: 0.95, depthTest: false }));
+  l.computeLineDistances();
+  l.renderOrder = 6;
+  return l;
+}
+
 let hoverId: number | null = null;
 /** 拖动时要画的东西 */
 let guides: { axis: 0 | 1 | 2; value: number; b: Bounds }[] = [];
@@ -230,6 +247,11 @@ function drawOverlay() {
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
   for (const id of sel) if (doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x4c8dff));
+  // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
+  for (const id of new Set([...hoverGroup, ...sel])) {
+    const e = doc.elems[id];
+    if (e?.kind === 'obj') overlay.add(anchorBoxes(e));
+  }
   // 按住 V：显示鼠标下元素的顶点和边中点
   if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
     const f = feats(doc.elems[hoverId]);
