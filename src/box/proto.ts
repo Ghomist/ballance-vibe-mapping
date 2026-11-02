@@ -13,7 +13,7 @@ import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, 
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
-import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, footprint, pieceLen } from './types';
+import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, pieceLen } from './types';
 
 const host = document.getElementById('view')!;
 const statusEl = document.getElementById('status')!;
@@ -277,6 +277,13 @@ let axisLine: { p: THREE.Vector3; axis: 0 | 1 | 2 } | null = null;
 let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
 let splitPreview: { a: P3; b: P3 } | null = null;
+/** Ctrl 改尺寸时顶面的测量线（on5：长度正好是 5 的整数倍） */
+let measure: { a: P3; b: P3; ax: 0 | 1; text: string; on5: boolean } | null = null;
+/** 改尺寸时长度吸附到 5 的整数倍的距离（屏幕像素） */
+const SIZE5_PX = 7;
+const measureLabel = document.createElement('div');
+Object.assign(measureLabel.style, { position: 'fixed', pointerEvents: 'none', zIndex: '2', font: '600 13px "Microsoft YaHei UI", sans-serif', padding: '2px 8px', borderRadius: '5px', transform: 'translate(-50%, -130%)', display: 'none' });
+document.body.appendChild(measureLabel);
 const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
 
 function drawOverlay() {
@@ -310,6 +317,19 @@ function drawOverlay() {
     const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: AXIS_COLOR[axisLine.axis], transparent: true, opacity: 0.9, depthTest: false }));
     l.renderOrder = 6;
     overlay.add(l);
+  }
+  measureLabel.style.display = 'none';
+  if (measure) {
+    const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
+    const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
+    const side = new THREE.Vector3(measure.ax === 0 ? 0 : 0.6, measure.ax === 0 ? 0.6 : 0, 0);
+    const segs = [A, B, A.clone().sub(side), A.clone().add(side), B.clone().sub(side), B.clone().add(side)];
+    const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color, depthTest: false }));
+    l.renderOrder = 7;
+    overlay.add(l);
+    const m = toScreen(A.clone().add(B).multiplyScalar(0.5));
+    Object.assign(measureLabel.style, { display: 'block', left: `${m.x}px`, top: `${m.y}px`, color: measure.on5 ? '#0b2a14' : '#e6ebf5', background: measure.on5 ? '#4cff8a' : 'rgba(20,26,38,.85)' });
+    measureLabel.textContent = measure.text;
   }
   if (splitPreview) {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
@@ -611,9 +631,21 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     }
     if (best) { edge += best.diff; guides.push({ axis: ax, value: edge, b: unionB(elemBounds(elem), best.ob) }); }
   }
+  // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有），顶面画测量线标出长度
+  const fixed = s < 2 ? lo : lo + len;
+  const L0 = Math.abs(edge - fixed), L5 = Math.round(L0 / 5) * 5;
+  const on5 = L5 > 0 && Math.abs(L0 - L5) < worldPerPx(p) * SIZE5_PX;
+  if (on5) { edge = fixed + (s < 2 ? L5 : -L5); guides = []; }
+  edge = Math.round(edge * 1000) / 1000;
   if (s < 2) { const n = Math.max(0.1, edge - lo); if (ax === 0) elem.sx = n; else elem.sy = n; }
   else { const e0 = Math.min(lo + len - 0.1, edge); if (ax === 0) { elem.x = e0; elem.sx = lo + len - e0; } else { elem.y = e0; elem.sy = lo + len - e0; } }
   dragInfo = `尺寸 ${fmt(elem.sx)} × ${fmt(elem.sy)}`;
+  // 测量线：沿改尺寸的方向，放在顶面中线上
+  const f = footprint(elem);
+  const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
+  const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(elem, x, y) + 0.08]; };
+  const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
+  measure = { a: P(t0), b: P(t1), ax, text: fmt(t1 - t0), on5 };
 }
 
 window.addEventListener('pointerup', (e) => {
@@ -637,7 +669,7 @@ function finishDrag() {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
   drag = null;
-  guides = []; axisLine = null; snapTarget = null; snapGrab = null; dragInfo = '';
+  guides = []; axisLine = null; snapTarget = null; snapGrab = null; dragInfo = ''; measure = null;
   rebuild();
 }
 
@@ -904,7 +936,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 's') toggleAlign();
   if (k === 'k') (splitMode ? exitSplit() : enterSplit());
   if (k === 'r') doRotate();
-  if (k === 'delete' || k === 'backspace') doDelete();
+  if (k === 'delete' || k === 'backspace' || k === 'x') doDelete();
   if (k === 'f') frameAll();
   const step = e.shiftKey ? 0.1 : 1;
   const arrows: Record<string, V3> = { arrowleft: [-step, 0, 0], arrowright: [step, 0, 0], arrowup: [0, step, 0], arrowdown: [0, -step, 0], pageup: [0, 0, step], pagedown: [0, 0, -step] };
