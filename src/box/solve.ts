@@ -130,11 +130,14 @@ interface Layer {
 let runSeq = 0;
 /** 插进平台的路（"路:平台"）：重叠的部分由平台盖住，不按后放的优先 */
 let inserted = new Set<string>();
+/** 坡插进平台（"坡:平台"）：掏空平台，或者叠在平台上 */
+let slopeOver = new Map<string, 'carve' | 'cover'>();
 
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
-  const docElems = trimSlopes(Object.values(doc.elems).filter((e) => e.kind !== 'obj'));
+  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj');
+  slopeOver = slopeOverlaps(docElems);
   const auto = autoTransitions(docElems);
   inserted = auto.inserted;
   const elems: Elem[] = [...docElems, ...bases, ...auto.pieces];
@@ -184,32 +187,44 @@ export function solve(doc: Doc): Solved {
 }
 
 /**
- * 坡的一头伸进平台（平台盖住坡的整个宽度）、并且那一头和平台一样高时：坡在平台边沿截断，
- * 截断处的高度就是平台的高度（坡度跟着变一点），这样坡和平台在边沿处正好接上。
+ * 坡的一头插进平台（这一头和平台一样高、平台盖住坡在这一头外面的那一截）时，坡的坡度和长度都不变：
+ *   高的一头插进去（carve）：坡在平台里那一截比平台低，平台在坡底下掏空，坡从槽里升上来，在坡顶接上平台；
+ *   低的一头插进去（cover）：坡在平台里那一截比平台高，直接叠在平台上；坡底下的平台不画，但平台的花纹照旧（不因此多出边框）。
  */
-function trimSlopes(elems: Elem[]): Elem[] {
+function slopeOverlaps(elems: Elem[]): Map<string, 'carve' | 'cover'> {
+  const out = new Map<string, 'carve' | 'cover'>();
   const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
-  return elems.map((e) => {
-    if (!isSlope(e)) return e;
-    const ax = e.slope.axis;
-    let lo = ax === 0 ? e.x : e.y, hi = lo + (ax === 0 ? e.sx : e.sy);
-    let zLo = e.z, zHi = e.z + e.slope.dz;
-    const [c0, c1] = ax === 0 ? [e.y, e.y + e.sy] : [e.x, e.x + e.sx];
+  for (const S of elems) {
+    if (!isSlope(S)) continue;
+    const fs = footprint(S), ax = S.slope.axis;
     for (const B of flats) {
-      const f = footprint(B);
-      const [b0, b1, e0, e1] = ax === 0 ? [f.x0, f.x1, f.y0, f.y1] : [f.y0, f.y1, f.x0, f.x1];
-      if (c0 < e0 - EPS_TOUCH || c1 > e1 + EPS_TOUCH) continue;
-      // +ax 那一头伸进平台
-      if (b0 > lo + EPS_TOUCH && b0 < hi - EPS_TOUCH && hi <= b1 + EPS_TOUCH && Math.abs(zHi - B.z) <= EPS_TOUCH) { hi = b0; zHi = B.z; }
-      // -ax 那一头伸进平台
-      else if (b1 > lo + EPS_TOUCH && b1 < hi - EPS_TOUCH && lo >= b0 - EPS_TOUCH && Math.abs(zLo - B.z) <= EPS_TOUCH) { lo = b1; zLo = B.z; }
+      const fb = footprint(B);
+      if (!overlaps(fs, fb)) continue;
+      for (const hi of [false, true]) {
+        const n = (hi ? ax : ax + 2) as Dir;
+        const ze = hi ? S.z + S.slope.dz : S.z;
+        if (Math.abs(ze - B.z) > EPS_TOUCH || !endContact(fs, n, fb)) continue;
+        // 这一头是坡的最高处 → 坡在平台里的那一截比平台低 → 掏空
+        const top = (hi && S.slope.dz > 0) || (!hi && S.slope.dz < 0);
+        out.set(`${S.id}:${B.id}`, top ? 'carve' : 'cover');
+      }
     }
-    const len0 = ax === 0 ? e.sx : e.sy;
-    if (hi - lo === len0) return e;
-    const t: Box = { ...e, z: zLo, slope: { axis: ax, dz: zHi - zLo } };
-    if (ax === 0) { t.x = lo; t.sx = hi - lo; } else { t.y = lo; t.sy = hi - lo; }
-    return t;
-  });
+  }
+  return out;
+}
+
+/**
+ * 坡的端面（矩形 f 在 d 方向的那条边）外面紧挨着矩形 g：g 贴着这条边，或者 g 从这条边往外还继续（坡头插在 g 里面）。
+ * 返回横向的重叠区间。
+ */
+function endContact(f: ReturnType<typeof footprint>, d: Dir, g: ReturnType<typeof footprint>): [number, number] | null {
+  const line = [f.x1, f.y1, f.x0, f.y0][d];
+  const [g0, g1] = d % 2 === 0 ? [g.x0, g.x1] : [g.y0, g.y1];
+  const covers = d < 2 ? g0 <= line + EPS_TOUCH && g1 > line + 0.01 : g1 >= line - EPS_TOUCH && g0 < line - 0.01;
+  if (!covers) return null;
+  const [a0, a1, b0, b1] = d % 2 === 0 ? [f.y0, f.y1, g.y0, g.y1] : [f.x0, f.x1, g.x0, g.x1];
+  const q0 = Math.max(a0, b0), q1 = Math.min(a1, b1);
+  return q1 - q0 > EPS_TOUCH ? [q0, q1] : null;
 }
 
 /**
@@ -333,10 +348,10 @@ function findFolds(layers: Layer[]) {
         }
         if (Math.abs(L.z - ze) > EPS_TOUCH) continue;
         for (const c of L.boxes) {
-          const q = faceContact(fp, n, footprint(c));
+          const q = endContact(fp, n, footprint(c));
           if (!q) continue;
           S.folds.push({ other: L, ax, line: lineS, n, q0: q[0], q1: q[1], shift: pe - lineS });
-          L.folds.push({ other: S, ax, line: pe, n: opp(n), q0: q[0], q1: q[1], shift: lineS - pe });
+          if (slopeOver.get(`${b.id}:${c.id}`) !== 'cover') L.folds.push({ other: S, ax, line: pe, n: opp(n), q0: q[0], q1: q[1], shift: lineS - pe });
         }
       }
     }
@@ -377,13 +392,15 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
   const X = cx.reps, Y = cy.reps;
   const nx = X.length - 1, ny = Y.length - 1;
   const own = new Int32Array(Math.max(0, nx * ny));
+  const virt = new Uint8Array(Math.max(0, nx * ny));
   const snapFp = (f: ReturnType<typeof footprint>) => ({ x0: cx.snap(f.x0), y0: cy.snap(f.y0), x1: cx.snap(f.x1), y1: cy.snap(f.y1) });
   const sfp = new Map<number, ReturnType<typeof footprint>>();
   for (const e of [...members, ...occluders]) sfp.set(e.id, snapFp(footprint(e)));
   const inside = (id: number, x: number, y: number) => { const f = sfp.get(id)!; return x > f.x0 && x < f.x1 && y > f.y0 && y < f.y1; };
   // 其它元素是否遮住这一格：穿过本层顶面的实体、同高度的素材件、同高度且后放的其它样式 box
-  const occluded = (x: number, y: number, cand: number) => occluders.some((o) => {
+  const occludedBy = (x: number, y: number, cand: number) => (o: Elem): boolean => {
     if (!inside(o.id, x, y)) return false;
+    if (slopeOver.has(`${o.id}:${cand}`)) return true;
     const zt = o.kind === 'box' ? boxTopAt(o, x, y) : o.z;
     const zb = zt - (o.kind === 'box' ? o.depth : 5);
     if (zt > L.z + EPS_TOUCH && zb < L.z - EPS_TOUCH) return true;
@@ -396,13 +413,22 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
       return o.id > cand;
     }
     return false;
-  });
+  };
+  /** 0：没被遮；1：被遮住，边上露出外沿；2：被叠在上面的坡盖住，边上不算外沿 */
+  const occluded = (x: number, y: number, cand: number): 0 | 1 | 2 => {
+    const hit = occluders.filter(occludedBy(x, y, cand));
+    if (!hit.length) return 0;
+    return hit.every((o) => slopeOver.get(`${o.id}:${cand}`) === 'cover') ? 2 : 1;
+  };
   for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
     const x = (X[i] + X[i + 1]) / 2, y = (Y[j] + Y[j + 1]) / 2;
     let o = 0;
     for (const p of L.pieces) if (inside(p.id, x, y)) { o = p.id; break; }
     if (!o) for (const b of L.boxes) if (inside(b.id, x, y) && (!o || b.id < o)) o = b.id;
-    if (o && L.boxes.some((b) => b.id === o) && occluded(x, y, o)) o = 0;
+    if (o && L.boxes.some((b) => b.id === o)) {
+      const oc = occluded(x, y, o);
+      if (oc) { if (oc === 2) virt[i * ny + j] = 1; o = 0; }
+    }
     own[i * ny + j] = o;
   }
   const at = (i: number, j: number) => (i < 0 || j < 0 || i >= nx || j >= ny ? 0 : own[i * ny + j]);
@@ -428,6 +454,8 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
         units.push({ ax, c, a, b, n: d, owner: o, kind: 'exp' });
         continue;
       }
+      const ni = i + DX[d], nj = j + DY[d];
+      if (ni >= 0 && nj >= 0 && ni < nx && nj < ny && virt[ni * ny + nj]) continue; // 叠着坡的那一块：照旧算作路面内部
       const m = (a + b) / 2;
       if (L.folds.some((f) => f.n === d && Math.abs(f.line - c) < EPS_TOUCH && m > f.q0 && m < f.q1)) continue;
       const bx = box(o);

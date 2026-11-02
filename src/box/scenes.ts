@@ -85,9 +85,11 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.box(0, 15, 10, 5, { style: 'sink' }); b.box(10, 15, 12.3, 5, { style: 'sink', slope: { axis: 0, dz: 3.7 } }); b.box(22.3, 15, 10, 5, { style: 'sink', z: 3.7 });
       // 平台接一条比它窄的坡，坡接坡
       b.box(50, 0, 20, 20); b.box(57.3, 20, 5, 10, { slope: { axis: 1, dz: 2.5 } }); b.box(57.3, 30, 5, 6, { z: 2.5, slope: { axis: 1, dz: 2.5 } }); b.box(55, 36, 10, 8, { z: 5 });
-      // 坡顶插进平台（坡顶和平台一样高）：在平台边沿截断接上
+      // 坡的高头插进平台（坡顶和平台一样高）：平台掏空，坡从槽里升上来
       b.box(80, 0, 5, 15, { slope: { axis: 1, dz: 5 } }); b.box(75, 12, 15, 12, { z: 5 });
       b.box(95, 0, 5, 15, { style: 'sink', slope: { axis: 1, dz: 5 } }); b.box(92, 11, 12, 12, { z: 5, style: 'sink' });
+      // 坡的低头插进平台（坡底和平台一样高）：直接叠在平台上
+      b.box(110, 0, 15, 12); b.box(115, 8, 5, 15, { slope: { axis: 1, dz: 4 } });
       return b.doc;
     },
   },

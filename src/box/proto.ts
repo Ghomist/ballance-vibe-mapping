@@ -178,7 +178,7 @@ function rebuildInner() {
   if (!drag) save();
   drawOverlay();
   updateStatus();
-  syncProps();
+  if (!drag) syncProps(); // 拖动中不重写属性面板，松手时再更新
 }
 const WIRE_MAT = new THREE.LineBasicMaterial({ color: 0x00e0ff, transparent: true, opacity: 0.45 });
 // 模型是一个个异步加载的：同一帧里加载完的合并成一次重建，不要每来一个就把整张图重算一遍
@@ -188,6 +188,13 @@ setAssetLoadedCallback(() => { if (!assetRebuild) assetRebuild = requestAnimatio
 // ---------------- 状态栏 ----------------
 
 let dragInfo = '';
+/**
+ * 吸附（自动对齐、尺寸取 5 的倍数、坡头高度）不在拖动中途把物体拽过去：物体始终跟着鼠标，
+ * 吸附后的位置用绿色框（ghosts）预先画出来，松手时才落到那里（pendingFinal）。
+ */
+let ghosts: Elem[] = [];
+let pendingFinal: (() => void) | null = null;
+let lastStatus = '';
 function updateStatus() {
   const parts: string[] = [];
   if (flashMsg && performance.now() < flashMsg.until) parts.push(flashMsg.warn ? `<span class="warn">${flashMsg.text}</span>` : `<b>${flashMsg.text}</b>`);
@@ -202,7 +209,8 @@ function updateStatus() {
     : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Alt+Shift 拖一头拉坡 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
   if (gridOn) parts.push('格栅 1');
   if (alignOn) parts.push('自动对齐');
-  statusEl.innerHTML = parts.join('　|　');
+  const html = parts.join('　|　');
+  if (html !== lastStatus) { statusEl.innerHTML = html; lastStatus = html; }
 }
 const fmt = (v: number) => String(+v.toFixed(3));
 setInterval(() => { if (flashMsg && performance.now() > flashMsg.until) { flashMsg = null; updateStatus(); } }, 500);
@@ -327,6 +335,11 @@ function drawOverlay() {
   if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
     const f = feats(doc.elems[hoverId]);
     overlay.add(marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
+  }
+  for (const g of ghosts) {
+    const hull = hullOf(g, 0x4cff8a, 0.1);
+    if (hull) overlay.add(hull);
+    overlay.add(outlineOf(g, 0x4cff8a, 0.95));
   }
   if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
   if (snapTarget) overlay.add(marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
@@ -512,6 +525,16 @@ let drag: Drag | null = null;
 
 const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
 function restore(orig: Map<number, string>) { for (const [id, s] of orig) doc.elems[id] = JSON.parse(s); }
+/** 物体放在 dRaw（跟着鼠标），自动对齐算出的 dSnap 不同时画预览、松手再落过去 */
+function moveWithSnap(orig: Map<number, string>, dRaw: V3, dSnap: V3) {
+  moveSel(orig, dRaw);
+  const diff = dSnap.map((v, i) => v - dRaw[i]) as V3;
+  if (diff.every((v) => Math.abs(v) < 1e-6)) { ghosts = []; pendingFinal = null; return; }
+  ghosts = [...orig.keys()].map((id) => { const g: Elem = JSON.parse(JSON.stringify(doc.elems[id])); translateElem(g, diff); return g; });
+  pendingFinal = () => moveSel(orig, dSnap);
+  dragInfo += '（松手对齐）';
+}
+
 function moveSel(orig: Map<number, string>, d: V3) {
   restore(orig);
   d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 不开格栅时也只保留到 0.001，免得坐标一长串小数
@@ -629,8 +652,7 @@ window.addEventListener('pointermove', (e) => {
     let d: V3 = [0, 0, 0];
     d[a] = q.getComponent(a) - drag.start.getComponent(a);
     d = gridDelta(drag.b, d, [a]);
-    d = alignDelta(drag.b, d, [a], drag.start);
-    moveSel(drag.orig, d);
+    moveWithSnap(drag.orig, d, alignDelta(drag.b, d, [a], drag.start));
     axisLine = { p: drag.start.clone().add(new THREE.Vector3(...d)), axis: a };
     liveUpdate();
     return;
@@ -643,47 +665,55 @@ window.addEventListener('pointermove', (e) => {
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
     d = gridDelta(drag.b, d, [0, 1]);
-    d = alignDelta(drag.b, d, [0, 1], p);
-    moveSel(drag.orig, d);
+    moveWithSnap(drag.orig, d, alignDelta(drag.b, d, [0, 1], p));
   } else if (drag.t === 'lift') {
     let d: V3 = [0, 0, raw.z];
     d = gridDelta(drag.b, d, [2]);
-    d = alignDelta(drag.b, d, [2], p);
-    moveSel(drag.orig, d);
+    moveWithSnap(drag.orig, d, alignDelta(drag.b, d, [2], p));
   }
   liveUpdate();
 });
 
-/** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边，格栅、自动对齐都管这条边 */
+/** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边。物体跟着鼠标（格栅照常取整）；对齐、长度取 5 的倍数先预览，松手再生效 */
 function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
   restore(d.orig);
   const elem = doc.elems[d.id] as Box, o = JSON.parse(d.orig.get(d.id)!) as Box;
   const s = d.side, ax: 0 | 1 = s % 2 === 0 ? 0 : 1;
   const lo = ax === 0 ? o.x : o.y, len = ax === 0 ? o.sx : o.sy;
-  let edge = (s < 2 ? lo + len : lo) + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
-  if (gridOn) edge = Math.round(edge);
+  let raw = (s < 2 ? lo + len : lo) + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
+  if (gridOn) raw = Math.round(raw);
+  raw = Math.round(raw * 1000) / 1000;
+  let snap = raw;
   guides = [];
   if (alignOn) {
     const thr = worldPerPx(p) * ALIGN_PX;
     let best: { diff: number; ob: Bounds } | null = null;
     for (const ob of Object.values(doc.elems).filter((x) => x.id !== elem.id).map(elemBounds)) {
-      for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - edge; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
+      for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - raw; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
     }
-    if (best) { edge += best.diff; guides.push({ axis: ax, value: edge, b: unionB(elemBounds(elem), best.ob) }); }
+    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: unionB(elemBounds(o), best.ob) }); }
   }
-  // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有），顶面画测量线标出长度
+  // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有）
   const fixed = s < 2 ? lo : lo + len;
-  const L0 = Math.abs(edge - fixed), L5 = Math.round(L0 / 5) * 5;
+  const L0 = Math.abs(raw - fixed), L5 = Math.round(L0 / 5) * 5;
   const on5 = L5 > 0 && Math.abs(L0 - L5) < worldPerPx(p) * SIZE5_PX;
-  if (on5) { edge = fixed + (s < 2 ? L5 : -L5); guides = []; }
-  edge = Math.round(edge * 1000) / 1000;
-  if (s < 2) { const n = Math.max(0.1, edge - lo); if (ax === 0) elem.sx = n; else elem.sy = n; }
-  else { const e0 = Math.min(lo + len - 0.1, edge); if (ax === 0) { elem.x = e0; elem.sx = lo + len - e0; } else { elem.y = e0; elem.sy = lo + len - e0; } }
-  dragInfo = `尺寸 ${fmt(elem.sx)} × ${fmt(elem.sy)}`;
-  // 测量线：沿改尺寸的方向，放在顶面中线上
-  const f = footprint(elem);
+  if (on5) { snap = fixed + (s < 2 ? L5 : -L5); guides = []; }
+  const setEdge = (b: Box, edge: number) => {
+    if (s < 2) { const n = Math.max(0.1, edge - lo); if (ax === 0) b.sx = n; else b.sy = n; }
+    else { const e0 = Math.min(lo + len - 0.1, edge); if (ax === 0) { b.x = e0; b.sx = lo + len - e0; } else { b.y = e0; b.sy = lo + len - e0; } }
+  };
+  setEdge(elem, raw);
+  const shown: Box = JSON.parse(JSON.stringify(elem));
+  if (Math.abs(snap - raw) > 1e-6) {
+    setEdge(shown, snap);
+    ghosts = [shown];
+    pendingFinal = () => { restore(d.orig); setEdge(doc.elems[d.id] as Box, snap); };
+  } else { ghosts = []; pendingFinal = null; }
+  dragInfo = `尺寸 ${fmt(shown.sx)} × ${fmt(shown.sy)}`;
+  // 测量线：沿改尺寸的方向，放在顶面中线上，量的是松手后的长度
+  const f = footprint(shown);
   const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
-  const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(elem, x, y) + 0.08]; };
+  const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(shown, x, y) + 0.08]; };
   const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
   measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(t1 - t0), on5 };
 }
@@ -698,6 +728,8 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
   const other = d.hi ? zLo : zHi;
   let end = (d.hi ? zHi : zLo) + (p.z - d.start.z);
   if (gridOn) end = Math.round(end);
+  end = Math.round(end * 1000) / 1000;
+  const raw = end;
   guides = [];
   // 这一头贴着的路面（端面相接）：拉到接近它的高度时吸上去，正好接上
   const fo = footprint(o);
@@ -724,10 +756,20 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
     }
     if (best) { end = best.v; guides.push({ axis: 2, value: end, b: unionB(elemBounds(o), best.ob) }); }
   }
-  end = Math.round(end * 1000) / 1000;
-  const dz = d.hi ? end - zLo : zHi - end;
-  b.z = d.hi ? zLo : end;
-  b.slope = Math.abs(dz) < 1e-6 ? undefined : { axis: d.axis, dz };
+  const setEnd = (x: Box, v: number) => {
+    const dz = d.hi ? v - zLo : zHi - v;
+    x.z = d.hi ? zLo : v;
+    x.slope = Math.abs(dz) < 1e-6 ? undefined : { axis: d.axis, dz };
+  };
+  // 物体跟着鼠标；吸附后的高度先画绿色预览，松手再生效
+  setEnd(b, raw);
+  if (Math.abs(end - raw) > 1e-6) {
+    const g: Box = JSON.parse(JSON.stringify(b));
+    setEnd(g, end);
+    ghosts = [g];
+    const snapEnd = end;
+    pendingFinal = () => { restore(d.orig); setEnd(doc.elems[d.id] as Box, snapEnd); };
+  } else { ghosts = []; pendingFinal = null; }
   // 测量线：在动的那一头，从另一头的高度竖到这一头的高度
   const f = footprint(b);
   const t = d.hi ? (d.axis === 0 ? f.x1 : f.y1) : (d.axis === 0 ? f.x0 : f.y0);
@@ -754,6 +796,9 @@ window.addEventListener('pointerup', (e) => {
 });
 
 function finishDrag() {
+  if (pendingFinal) pendingFinal();
+  pendingFinal = null;
+  ghosts = [];
   if (drag && 'orig' in drag && !(drag.t === 'move' && drag.grab)) {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
@@ -767,7 +812,7 @@ function cancelGrab() {
     for (const id of drag.orig.keys()) delete doc.elems[id];
     undo.pop();
     sel.clear();
-    drag = null; guides = []; dragInfo = '';
+    drag = null; guides = []; dragInfo = ''; ghosts = []; pendingFinal = null;
     rebuild();
   }
 }
