@@ -215,18 +215,42 @@ function marks(ps: P3[], shape: keyof typeof TEX, color: number, size: number, o
   return m;
 }
 
-function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
-  let segs: P3[] = [];
+/** 自动对齐的吸附距离（屏幕像素）：小一点，靠近了才轻轻贴上，免得拖起来一顿一顿的 */
+const ALIGN_PX = 5;
+
+/** 元素外形的 8 个角：顶面 4 个（x0y0、x1y0、x1y1、x0y1），再是底面 4 个；机关按模型的包围盒 */
+function cornersOf(e: Elem): P3[] {
   const ob = e.kind === 'obj' ? objBoxes.get(e.id) : null;
   if (ob) {
     const a = ob.min, b = ob.max;
-    const c: P3[] = [[a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z], [a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z]];
-    for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
-  } else segs = feats(e).edges.flat();
+    return [[a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z], [a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z]];
+  }
+  const v = feats(e).verts; // boxFeats：顶面 4 个、底面 4 个，同样的顺序
+  return v.length >= 8 ? v.slice(0, 8) : v;
+}
+
+function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
+  const c = cornersOf(e);
+  const segs: P3[] = [];
+  if (c.length === 8) for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
   const geo = new THREE.BufferGeometry().setFromPoints(segs.map((p) => new THREE.Vector3(...p)));
   const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
   l.renderOrder = 5;
   return l;
+}
+
+/** 选中物体的半透明包裹面 */
+function hullOf(e: Elem, color: number, opacity: number): THREE.Object3D | null {
+  const c = cornersOf(e);
+  if (c.length !== 8) return null;
+  const quads = [[0, 1, 2, 3], [4, 7, 6, 5], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]];
+  const pts: THREE.Vector3[] = [];
+  for (const [a, b, cc, d] of quads) for (const i of [a, b, cc, a, cc, d]) pts.push(new THREE.Vector3(...c[i]));
+  const m = new THREE.Mesh(new THREE.BufferGeometry().setFromPoints(pts), new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  }));
+  m.renderOrder = 3;
+  return m;
 }
 
 /** 对准方块：虚线框，顶面就是路面、往下 5 */
@@ -260,7 +284,13 @@ function drawOverlay() {
   overlay.clear();
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
-  for (const id of sel) if (doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x4c8dff));
+  for (const id of sel) {
+    const e = doc.elems[id];
+    if (!e) continue;
+    const hull = hullOf(e, 0x4c8dff, 0.16);
+    if (hull) overlay.add(hull);
+    overlay.add(outlineOf(e, 0x4c8dff));
+  }
   // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
   for (const id of new Set([...hoverGroup, ...sel])) {
     const e = doc.elems[id];
@@ -289,17 +319,37 @@ function drawOverlay() {
   }
 }
 
-/** 对齐辅助面：在对齐的那个坐标上画一块半透明的面，范围盖住对齐的两个元素 */
+/** 斜线填充的贴图（对齐辅助面用） */
+const HATCH = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 6;
+  g.beginPath();
+  for (const o of [-64, 0, 64]) { g.moveTo(o, 64); g.lineTo(o + 64, 0); }
+  g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+})();
+
+/** 对齐辅助面：在对齐的那个坐标上画一块斜线填充的面，范围盖住对齐的两个元素 */
 function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
   const { b } = gd, pad = 1.5;
-  let c: THREE.Vector3[];
-  if (gd.axis === 0) c = [[gd.value, b.y0 - pad, b.z0 - pad], [gd.value, b.y1 + pad, b.z0 - pad], [gd.value, b.y1 + pad, b.z1 + pad], [gd.value, b.y0 - pad, b.z1 + pad]].map((p) => new THREE.Vector3(...p));
-  else if (gd.axis === 1) c = [[b.x0 - pad, gd.value, b.z0 - pad], [b.x1 + pad, gd.value, b.z0 - pad], [b.x1 + pad, gd.value, b.z1 + pad], [b.x0 - pad, gd.value, b.z1 + pad]].map((p) => new THREE.Vector3(...p));
-  else c = [[b.x0 - pad, b.y0 - pad, gd.value], [b.x1 + pad, b.y0 - pad, gd.value], [b.x1 + pad, b.y1 + pad, gd.value], [b.x0 - pad, b.y1 + pad, gd.value]].map((p) => new THREE.Vector3(...p));
-  const g = new THREE.Group();
+  // 面上的两个方向（u、v）对应的世界坐标分量
+  const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
+  const lo = [b.x0 - pad, b.y0 - pad, b.z0 - pad], hi = [b.x1 + pad, b.y1 + pad, b.z1 + pad];
+  const P = (u: number, v: number) => { const p = [0, 0, 0]; p[gd.axis] = gd.value; p[ua] = u; p[va] = v; return new THREE.Vector3(...p); };
+  const c = [P(lo[ua], lo[va]), P(hi[ua], lo[va]), P(hi[ua], hi[va]), P(lo[ua], hi[va])];
+  const S = 1.6; // 每 1.6 个单位一条斜线
+  const uv = [[lo[ua], lo[va]], [hi[ua], lo[va]], [hi[ua], hi[va]], [lo[ua], hi[va]]].map(([u, v]) => [u / S, v / S]);
   const geo = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]]);
-  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: AXIS_COLOR[gd.axis], transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }));
-  const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineBasicMaterial({ color: AXIS_COLOR[gd.axis], transparent: true, opacity: 0.8, depthTest: false }));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 2, 0, 2, 3].flatMap((i) => uv[i]), 2));
+  const g = new THREE.Group();
+  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: AXIS_COLOR[gd.axis], map: HATCH, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
+  const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineDashedMaterial({ color: AXIS_COLOR[gd.axis], dashSize: 0.6, gapSize: 0.4, transparent: true, opacity: 0.9, depthTest: false }));
+  edge.computeLineDistances();
   face.renderOrder = 4; edge.renderOrder = 5;
   g.add(face, edge);
   return g;
@@ -386,7 +436,7 @@ const shiftB = (b: Bounds, d: V3): Bounds => ({ x0: b.x0 + d[0], x1: b.x1 + d[0]
 function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3): V3 {
   guides = [];
   if (!alignOn) return d;
-  const thr = worldPerPx(near) * 9;
+  const thr = worldPerPx(near) * ALIGN_PX;
   const out = [...d] as V3;
   const others = Object.values(doc.elems).filter((e) => !sel.has(e.id)).map(elemBounds);
   const vals = (x: Bounds, a: 0 | 1 | 2) => (a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0]);
@@ -554,7 +604,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
   if (gridOn) edge = Math.round(edge);
   guides = [];
   if (alignOn) {
-    const thr = worldPerPx(p) * 9;
+    const thr = worldPerPx(p) * ALIGN_PX;
     let best: { diff: number; ob: Bounds } | null = null;
     for (const ob of Object.values(doc.elems).filter((x) => x.id !== elem.id).map(elemBounds)) {
       for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - edge; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
