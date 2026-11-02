@@ -47,3 +47,47 @@
 
 /* 拖着素材往视图里放时 */
 body.placing, body.placing * { cursor: grabbing !important; }
+
+/* ---------------- 淡入淡出：面板、标签、HUD 统一用 .fade / .shown ---------------- */
+.fade { opacity: 0; transition: opacity 0.14s ease, transform 0.14s ease; }
+.fade.shown { opacity: 1; }
+#props.fade { transform: translateY(-4px); }
+#props.fade.shown { transform: none; }
+.settings-panel.fade { animation: none; transform: translateY(-6px); }
+.settings-panel.fade.shown { transform: none; }
+.marquee { opacity: 0; transition: opacity 0.1s ease; }
+.marquee.shown { opacity: 1; }
+
+/* ---------------- 漫游 HUD ---------------- */
+#fly-hud { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+#fly-hud[hidden] { display: none; }
+#fly-hud.fade { transition: opacity 0.12s ease; }
+#fly-hud::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(5, 10, 20, 0.45) 100%); }
+#fly-hud .corner { position: absolute; width: 28px; height: 28px; border: 2px solid rgba(124, 214, 255, 0.75); }
+#fly-hud .tl { top: 18px; left: 18px; border-right: none; border-bottom: none; }
+#fly-hud .tr { top: 18px; right: 18px; border-left: none; border-bottom: none; }
+#fly-hud .bl { bottom: 18px; left: 18px; border-right: none; border-top: none; }
+#fly-hud .br { bottom: 18px; right: 18px; border-left: none; border-top: none; }
+#fly-hud .cross { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; transform: translate(-50%, -50%); }
+#fly-hud .cross::before, #fly-hud .cross::after { content: ''; position: absolute; background: rgba(124, 214, 255, 0.9); box-shadow: 0 0 4px rgba(0, 0, 0, 0.6); }
+#fly-hud .cross::before { left: 10px; top: 0; width: 2px; height: 22px; }
+#fly-hud .cross::after { top: 10px; left: 0; width: 22px; height: 2px; }
+#fly-hud .panel {
+  position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); padding: 10px 14px; min-width: 230px;
+  background: rgba(14, 20, 32, 0.72); border: 1px solid rgba(124, 214, 255, 0.35); border-radius: 10px; backdrop-filter: blur(4px);
+  color: #cfe8ff; font: 12px system-ui, "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; gap: 7px; align-items: center;
+}
+#fly-hud .title { font-weight: 700; letter-spacing: 4px; color: #7cd6ff; font-size: 11px; }
+#fly-hud .keys { display: grid; grid-template-columns: repeat(4, 30px); gap: 4px; }
+#fly-hud .ud { display: flex; gap: 6px; }
+#fly-hud kbd {
+  display: inline-flex; align-items: center; justify-content: center; height: 26px; min-width: 30px; padding: 0 6px; border-radius: 5px;
+  border: 1px solid rgba(124, 214, 255, 0.35); background: rgba(124, 214, 255, 0.06); color: #cfe8ff; font: 600 11px system-ui, sans-serif;
+  transition: background 0.08s, color 0.08s, border-color 0.08s;
+}
+#fly-hud kbd.on { background: #7cd6ff; color: #0b1a2a; border-color: #7cd6ff; }
+#fly-hud .speed { display: flex; align-items: center; gap: 8px; width: 100%; }
+#fly-hud .speed .bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(124, 214, 255, 0.15); overflow: hidden; }
+#fly-hud .speed .bar i { display: block; height: 100%; background: #7cd6ff; transition: width 0.1s; }
+#fly-hud .speed b { min-width: 26px; text-align: right; color: #fff; }
+#fly-hud .tip { color: rgba(207, 232, 255, 0.6); font-size: 11px; }

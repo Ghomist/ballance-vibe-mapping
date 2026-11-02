@@ -33,6 +33,7 @@ const host = document.getElementById('viewport')!;
 const statusEl = document.getElementById('status')!;
 const hintsEl = document.getElementById('hints')!;
 const props = document.getElementById('props')!;
+props.classList.add('fade');
 const marqueeEl = document.getElementById('marquee')!;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -403,10 +404,10 @@ function syncSectorLabels() {
     if (e.kind !== 'obj' || objType(e.type)?.cat !== 'module' || e.type === 'PE_Balloon') continue;
     live.add(e.id);
     let l = secLabels.get(e.id);
-    if (!l) { l = document.createElement('div'); l.className = 'sec-label'; document.body.appendChild(l); secLabels.set(e.id, l); }
+    if (!l) { l = document.createElement('div'); l.className = 'sec-label fade'; document.body.appendChild(l); secLabels.set(e.id, l); requestAnimationFrame(() => l!.classList.add('shown')); }
     l.textContent = String(Math.min(e.sector ?? 1, sectorCount()));
   }
-  for (const [id, l] of secLabels) if (!live.has(id)) { l.remove(); secLabels.delete(id); }
+  for (const [id, l] of secLabels) if (!live.has(id)) { l.classList.remove('shown'); setTimeout(() => l.remove(), 160); secLabels.delete(id); }
 }
 function placeSectorLabels() {
   const r = host.getBoundingClientRect();
@@ -417,7 +418,7 @@ function placeSectorLabels() {
     const p = new THREE.Vector3(a ? (a.x0 + a.x1) / 2 : e.x, a ? (a.y0 + a.y1) / 2 : e.y, (a ? a.top : e.z) + 4);
     const v = p.clone().project(camera);
     const sx = (v.x + 1) / 2 * r.width + r.left, sy = (1 - v.y) / 2 * r.height + r.top;
-    l.style.display = v.z > 1 || sx < r.left || sx > r.right || sy < r.top || sy > r.bottom ? 'none' : '';
+    l.classList.toggle('shown', !(v.z > 1 || sx < r.left || sx > r.right || sy < r.top || sy > r.bottom));
     l.style.left = `${sx}px`; l.style.top = `${sy}px`;
   }
 }
@@ -542,29 +543,104 @@ let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean; plane?: Bound
 const SIZE5_PX = 7;
 const measureLabel = document.createElement('div');
 measureLabel.className = 'measure-label';
-measureLabel.style.display = 'none';
+measureLabel.classList.add('fade');
 document.body.appendChild(measureLabel);
 const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
 
-function drawOverlay() {
-  for (const layer of [overlay, selLayer]) {
-    layer.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); const mt = m.material as THREE.Material | undefined; mt?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
-    layer.clear();
+/**
+ * 叠加层的淡入淡出：每次重画时，叠加层里的东西按「键」（这是什么提示：哪个物体的选中框、哪种辅助线……）对上号，
+ * 新出现的从透明淡入，消失的留在 fadeLayer 里淡出后再释放，一直都在的直接换成新的（不闪）。
+ */
+const FADE_MS = 120;
+const fadeLayer = new THREE.Group();
+scene.add(fadeLayer);
+const fading: { obj: THREE.Object3D; t0: number; from: number; to: number }[] = [];
+const disposeObj = (o: THREE.Object3D) => o.traverse((x) => { const m = x as THREE.Mesh; if (m.geometry) m.geometry.dispose(); (m.material as THREE.Material | undefined)?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
+/** 按比例 k 设置一个物体里所有材质的不透明度（基准不透明度第一次用时记下来） */
+function setFade(o: THREE.Object3D, k: number) {
+  o.traverse((x) => {
+    const mt = (x as THREE.Mesh).material as THREE.Material | undefined;
+    if (!mt) return;
+    if (mt.userData.baseOpacity === undefined) { mt.userData.baseOpacity = mt.opacity; mt.transparent = true; }
+    mt.opacity = mt.userData.baseOpacity * k;
+  });
+}
+function tickFades(now: number) {
+  for (let i = fading.length - 1; i >= 0; i--) {
+    const f = fading[i];
+    const k = Math.min(1, (now - f.t0) / FADE_MS);
+    setFade(f.obj, f.from + (f.to - f.from) * k);
+    if (k >= 1) {
+      fading.splice(i, 1);
+      if (f.to === 0) { f.obj.parent?.remove(f.obj); disposeObj(f.obj); }
+    }
   }
+}
+let overlayKeys = new Map<string, THREE.Object3D>();
+/** 把一个提示放进叠加层，并给它一个键（同一个键的提示视为同一个东西） */
+function put(layer: THREE.Group, key: string, ...objs: THREE.Object3D[]) {
+  const g = new THREE.Group();
+  g.userData.fkey = key;
+  g.add(...objs);
+  layer.add(g);
+}
+/** DOM 面板 / 标签的淡入淡出：显示时先去掉 hidden 再加 .shown；隐藏时去掉 .shown，过渡完再 hidden */
+function showEl(el: HTMLElement, on: boolean) {
+  if (on) {
+    if (el.classList.contains('shown') && !el.hidden) return;
+    el.hidden = false;
+    clearTimeout(Number(el.dataset.fadeT));
+    requestAnimationFrame(() => el.classList.add('shown'));
+  } else {
+    if (!el.classList.contains('shown')) { if (!el.dataset.fadeT) el.hidden = true; return; }
+    el.classList.remove('shown');
+    el.dataset.fadeT = String(setTimeout(() => { if (!el.classList.contains('shown')) el.hidden = true; delete el.dataset.fadeT; }, 160));
+  }
+}
+function drawOverlay() {
+  const prev = overlayKeys;
+  const old: THREE.Object3D[] = [];
+  for (const layer of [overlay, selLayer]) { old.push(...layer.children); layer.clear(); }
+  drawOverlayInner();
+  const now = performance.now();
+  const next = new Map<string, THREE.Object3D>();
+  for (const layer of [overlay, selLayer]) for (const o of layer.children) {
+    const key = o.userData.fkey as string | undefined;
+    if (!key) continue;
+    next.set(key, o);
+    if (!prev.has(key)) { setFade(o, 0); fading.push({ obj: o, t0: now, from: 0, to: 1 }); }
+    else {
+      // 一直都在：如果它刚才还在淡入，接着淡入
+      const f = fading.find((x) => x.obj === prev.get(key) && x.to === 1);
+      if (f) { const k = Math.min(1, (now - f.t0) / FADE_MS); setFade(o, k); fading.push({ obj: o, t0: now - k * FADE_MS, from: 0, to: 1 }); }
+    }
+  }
+  for (const o of old) {
+    const key = o.userData.fkey as string | undefined;
+    const i = fading.findIndex((x) => x.obj === o);
+    if (i >= 0) fading.splice(i, 1);
+    if (key && !next.has(key)) {
+      // 消失了：留在淡出层里淡出
+      fadeLayer.add(o);
+      fading.push({ obj: o, t0: now, from: 1, to: 0 });
+    } else disposeObj(o);
+  }
+  overlayKeys = next;
+}
+function drawOverlayInner() {
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
-  for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
+  for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) put(overlay, `hover:${id}`, outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
   const selElems = anim?.preview ? anim.preview(anim.val) : [...sel].map((id) => doc.elems[id]);
   for (const e of selElems) {
     if (!e) continue;
     const c = snapping && drag ? 0x4cff8a : 0x4c8dff;
     const hull = hullOf(e, c, 0.16);
-    if (hull) selLayer.add(hull);
-    selLayer.add(outlineOf(e, c));
+    put(selLayer, `sel:${e.id}`, ...(hull ? [hull] : []), outlineOf(e, c));
   }
   // 机关的对准方块、盘点路口的虚拟路面：悬停、选中、吸附时靠近的都画出来
   for (const id of new Set([...hoverGroup, ...sel, ...(drag ? nearVirtual : [])])) {
     const e = doc.elems[id];
-    if (e && virtualCells(e).length) (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
+    if (e && virtualCells(e).length) put(sel.has(id) ? selLayer : overlay, `anchor:${id}`, anchorBoxes(e));
   }
   // 按住 V：显示鼠标下元素的顶点和边中点
   // 按住 V：有选中的东西时只显示选中物体的顶点 / 边中点（不管鼠标移到哪），否则显示鼠标下的物体
@@ -572,19 +648,19 @@ function drawOverlay() {
   for (const id of vIds) {
     if (!doc.elems[id]) continue;
     const f = feats(doc.elems[id]);
-    overlay.add(marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
+    put(overlay, `v:${id}`, marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
   }
-  if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
-  if (snapTarget) overlay.add(marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
-  for (const gd of guides) overlay.add(guideLines(gd));
+  if (snapGrab) put(overlay, 'grab', marks([snapGrab], 'dot', 0xff8a4c, 13));
+  if (snapTarget) put(overlay, `snap:${snapTarget.p.map((v) => v.toFixed(3)).join(',')}`, marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
+  for (const gd of guides) put(overlay, `guide:${gd.axis}:${gd.value.toFixed(3)}`, guideLines(gd));
   if (axisLine) {
     const d = new THREE.Vector3(...[0, 1, 2].map((i) => (i === axisLine!.axis ? 1 : 0)));
     const geo = new THREE.BufferGeometry().setFromPoints([axisLine.p.clone().addScaledVector(d, -500), axisLine.p.clone().addScaledVector(d, 500)]);
     const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: AXIS_COLOR[axisLine.axis], transparent: true, opacity: 0.9, depthTest: false }));
     l.renderOrder = 6;
-    overlay.add(l);
+    put(overlay, `axis:${axisLine.axis}`, l);
   }
-  measureLabel.style.display = 'none';
+  showEl(measureLabel, !!measure);
   if (measure) {
     const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
     const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
@@ -592,9 +668,9 @@ function drawOverlay() {
     const segs = [A, B, A.clone().sub(side), A.clone().add(side), B.clone().sub(side), B.clone().add(side)];
     const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color, depthTest: false }));
     l.renderOrder = 7;
-    overlay.add(l);
+    put(overlay, 'measure', l);
     const m = toScreen(A.clone().add(B).multiplyScalar(0.5));
-    Object.assign(measureLabel.style, { display: 'block', left: `${m.x}px`, top: `${m.y}px`, color: measure.on5 ? '#0b2a14' : '#e6ebf5', background: measure.on5 ? '#4cff8a' : 'rgba(20,26,38,.85)' });
+    Object.assign(measureLabel.style, { left: `${m.x}px`, top: `${m.y}px`, color: measure.on5 ? '#0b2a14' : '#e6ebf5', background: measure.on5 ? '#4cff8a' : 'rgba(20,26,38,.85)' });
     measureLabel.textContent = measure.text;
   }
   if (guardPreview && guardPreview.pts.length > 1) {
@@ -606,12 +682,12 @@ function drawOverlay() {
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(gm.nrm, 3));
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x4cff8a, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false }));
       m.renderOrder = 7;
-      overlay.add(m);
+      put(overlay, 'guardPreview', m);
     }
   }
   // 选中一块路面时：四条边的中点显示开口开关（实心点：封口；绿色圆环：开口），点一下切换
   if (!drag && !guardMode && !splitMode) for (const t of openToggles()) {
-    overlay.add(marks([t.p], t.open ? 'ring' : 'dot', t.open ? 0x4cff8a : t.id === openHover?.id && t.side === openHover.side ? 0xffffff : 0x9aa6bd, t.id === openHover?.id && t.side === openHover.side ? 16 : 12));
+    put(overlay, `open:${t.id}:${t.side}`, marks([t.p], t.open ? 'ring' : 'dot', t.open ? 0x4cff8a : t.id === openHover?.id && t.side === openHover.side ? 0xffffff : 0x9aa6bd, t.id === openHover?.id && t.side === openHover.side ? 16 : 12));
   }
   // 护栏工具里：每条护栏两头的把手（拖它改长度），鼠标靠近的那个放大变绿
   if (guardMode) {
@@ -619,7 +695,7 @@ function drawOverlay() {
       if (g.kind !== 'guard') continue;
       ([0, 1] as const).forEach((end) => {
         const on = guardEndHover?.id === g.id && guardEndHover.end === end;
-        overlay.add(marks([guardHandle(g, end)], 'dot', on ? 0x4cff8a : 0xffd34c, on ? 16 : 11));
+        put(overlay, `gh:${g.id}:${end}`, marks([guardHandle(g, end)], 'dot', on ? 0x4cff8a : 0xffd34c, on ? 16 : 11));
       });
     }
   }
@@ -627,7 +703,7 @@ function drawOverlay() {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
     const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffd34c, depthTest: false }));
     l.renderOrder = 6;
-    overlay.add(l, marks([splitPreview.a, splitPreview.b], 'dot', 0xffd34c, 9));
+    put(overlay, 'split', l, marks([splitPreview.a, splitPreview.b], 'dot', 0xffd34c, 9));
   }
 }
 
@@ -854,20 +930,54 @@ function liveUpdate() {
 const el = renderer.domElement;
 el.addEventListener('contextmenu', (e) => e.preventDefault());
 // ---------------- 漫游：右键按住时，鼠标转视角，WASD 前后左右，空格上升、Shift 下降 ----------------
-let fly: { keys: Set<string>; speed: number; dist: number } | null = null;
-let flySpeed = 30;
+/** 漫游：vel 是当前速度（带缓动地追目标速度），look 是还没转完的鼠标视角（每帧转掉一部分，带一点缓动） */
+let fly: { keys: Set<string>; speed: number; dist: number; vel: THREE.Vector3; look: [number, number] } | null = null;
+let flySpeed = 80;
 el.addEventListener('pointerdown', (e) => {
   if (e.button !== 2 || drag) return;
   e.preventDefault();
-  fly = { keys: new Set(), speed: flySpeed, dist: camera.position.distanceTo(controls.target) };
+  fly = { keys: new Set(), speed: flySpeed, dist: camera.position.distanceTo(controls.target), vel: new THREE.Vector3(), look: [0, 0] };
   controls.enabled = false;
   zoomGoal = null; camAnim = null;
   el.setPointerCapture(e.pointerId);
   el.requestPointerLock?.();
+  showEl(flyHud, true);
+  syncFlyHud();
   updateStatus();
 }, true);
+// 漫游时叠在画面上的 HUD：准星、四角取景框、按键（按下的亮起）、速度
+const flyHud = document.createElement('div');
+flyHud.id = 'fly-hud';
+flyHud.className = 'fade';
+flyHud.hidden = true;
+flyHud.innerHTML = `
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+  <div class="cross"></div>
+  <div class="panel">
+    <div class="title">漫游</div>
+    <div class="keys">
+      <span></span><kbd data-k="KeyW">W</kbd><span></span><kbd data-k="KeyE">E</kbd>
+      <kbd data-k="KeyA">A</kbd><kbd data-k="KeyS">S</kbd><kbd data-k="KeyD">D</kbd><kbd data-k="KeyQ">Q</kbd>
+    </div>
+    <div class="ud"><kbd data-k="Space">空格 上升</kbd><kbd data-k="ShiftLeft">Shift 下降</kbd></div>
+    <div class="speed"><span>速度</span><div class="bar"><i></i></div><b></b></div>
+    <div class="tip">滚轮调速度 · 松开右键退出</div>
+  </div>`;
+host.appendChild(flyHud);
+function syncFlyHud() {
+  if (!fly) return;
+  flyHud.querySelectorAll<HTMLElement>('kbd[data-k]').forEach((k) => {
+    const c = k.dataset.k!;
+    k.classList.toggle('on', fly!.keys.has(c) || (c === 'ShiftLeft' && fly!.keys.has('ShiftRight')));
+  });
+  // 速度条按对数刻度（2～400）
+  const f = Math.log(fly.speed / 2) / Math.log(200);
+  flyHud.querySelector<HTMLElement>('.bar i')!.style.width = `${(f * 100).toFixed(1)}%`;
+  flyHud.querySelector('.speed b')!.textContent = fly.speed.toFixed(0);
+}
 function endFly() {
   if (!fly) return;
+  showEl(flyHud, false);
   // 视图中心放回相机前方原来的距离处，之后环视、缩放照常
   const dir = camera.getWorldDirection(new THREE.Vector3());
   controls.target.copy(camera.position).addScaledVector(dir, fly.dist);
@@ -882,33 +992,41 @@ window.addEventListener('pointerup', (e) => { if (e.button === 2) endFly(); }, t
 window.addEventListener('blur', endFly);
 window.addEventListener('pointermove', (e) => {
   if (!fly) return;
-  // 鼠标转视角：水平绕世界 Z 轴，竖直绕相机右方向（不翻过头顶）
+  // 鼠标转视角：先记下要转多少，每帧转掉一部分（tickFly）
   const k = 0.0025;
-  const dir = camera.getWorldDirection(new THREE.Vector3());
-  const yaw = -e.movementX * k, pitch = -e.movementY * k;
-  dir.applyAxisAngle(new THREE.Vector3(0, 0, 1), yaw);
-  const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
-  const d2 = dir.clone().applyAxisAngle(right, pitch);
-  if (Math.abs(d2.z) < 0.995) dir.copy(d2);
-  camera.lookAt(camera.position.clone().add(dir));
+  fly.look[0] += -e.movementX * k;
+  fly.look[1] += -e.movementY * k;
 }, true);
 // 漫游时键盘只管移动（不触发别的快捷键）
 window.addEventListener('keydown', (e) => {
   if (!fly) return;
   const k = e.code;
-  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ', 'KeyE'].includes(k)) fly.keys.add(k);
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ', 'KeyE'].includes(k)) { fly.keys.add(k); syncFlyHud(); }
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
-window.addEventListener('keyup', (e) => { if (fly) { fly.keys.delete(e.code); e.stopImmediatePropagation(); } }, true);
+window.addEventListener('keyup', (e) => { if (fly) { fly.keys.delete(e.code); syncFlyHud(); e.stopImmediatePropagation(); } }, true);
 renderer.domElement.addEventListener('wheel', (e) => {
   if (!fly) return;
   // 漫游时滚轮调速度
   e.preventDefault(); e.stopImmediatePropagation();
   fly.speed = THREE.MathUtils.clamp(fly.speed * Math.exp(-e.deltaY * 0.0015), 2, 400);
+  syncFlyHud();
   updateStatus();
 }, { passive: false, capture: true });
 function tickFly(dt: number) {
   if (!fly) return;
+  // 视角：转掉剩下的一部分（约 50 ms 追上）；水平绕世界 Z 轴，竖直绕相机右方向（不翻过头顶）
+  const kl = 1 - Math.exp(-dt / 0.05);
+  const yaw = fly.look[0] * kl, pitch = fly.look[1] * kl;
+  fly.look[0] -= yaw; fly.look[1] -= pitch;
+  if (yaw || pitch) {
+    const dir = camera.getWorldDirection(new THREE.Vector3());
+    dir.applyAxisAngle(new THREE.Vector3(0, 0, 1), yaw);
+    const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
+    const d2 = dir.clone().applyAxisAngle(right, pitch);
+    if (Math.abs(d2.z) < 0.995) dir.copy(d2);
+    camera.lookAt(camera.position.clone().add(dir));
+  }
   const f = camera.getWorldDirection(new THREE.Vector3());
   const r = new THREE.Vector3().crossVectors(f, camera.up).normalize();
   const m = new THREE.Vector3();
@@ -919,8 +1037,11 @@ function tickFly(dt: number) {
   if (k.has('KeyA')) m.sub(r);
   if (k.has('Space') || k.has('KeyE')) m.z += 1;
   if (k.has('ShiftLeft') || k.has('ShiftRight') || k.has('KeyQ')) m.z -= 1;
-  if (m.lengthSq() === 0) return;
-  camera.position.addScaledVector(m.normalize(), fly.speed * dt);
+  // 移动：速度带缓动地追目标速度（约 100 ms 起步 / 停下）
+  const goal = m.lengthSq() ? m.normalize().multiplyScalar(fly.speed) : m;
+  fly.vel.lerp(goal, 1 - Math.exp(-dt / 0.1));
+  if (fly.vel.lengthSq() < 1e-6) return;
+  camera.position.addScaledVector(fly.vel, dt);
 }
 
 el.addEventListener('pointerdown', (e) => {
@@ -1377,11 +1498,12 @@ function cancelGrab() {
 function showMarquee(x0: number, y0: number, x1: number, y1: number) {
   // 框是画在视图里的（position: absolute），换成相对视图的坐标
   const r = host.getBoundingClientRect();
-  marqueeEl.classList.add('open');
+  marqueeEl.classList.add('open', 'shown');
   Object.assign(marqueeEl.style, { left: `${Math.min(x0, x1) - r.left}px`, top: `${Math.min(y0, y1) - r.top}px`, width: `${Math.abs(x1 - x0)}px`, height: `${Math.abs(y1 - y0)}px` });
 }
 function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEvent) {
-  marqueeEl.classList.remove('open');
+  marqueeEl.classList.remove('shown');
+  setTimeout(() => { if (!marqueeEl.classList.contains('shown')) marqueeEl.classList.remove('open'); }, 120);
   drag = null;
   const [x0, x1] = [Math.min(d.sx, e.clientX), Math.max(d.sx, e.clientX)], [y0, y1] = [Math.min(d.sy, e.clientY), Math.max(d.sy, e.clientY)];
   if (x1 - x0 < 4 && y1 - y0 < 4) { if (!d.add) sel.clear(); drawOverlay(); syncProps(); updateStatus(); return; }
@@ -1876,9 +1998,9 @@ window.addEventListener('keydown', () => updateStatus());
 
 function syncProps() {
   const one = sel.size === 1 ? doc.elems[[...sel][0]] : null;
-  if (!one) { props.hidden = true; return; }
+  if (!one) { showEl(props, false); return; }
   if (props.dataset.id === String(one.id) && props.contains(document.activeElement)) return;
-  props.hidden = false;
+  showEl(props, true);
   props.dataset.id = String(one.id);
   const num = (k: string, label: string, v: number) => `<label>${label}</label><input data-k="${k}" type="number" step="0.1" value="${+v.toFixed(4)}">`;
   let h = '';
@@ -2062,6 +2184,7 @@ applyTheme(prefs.theme);
 document.getElementById('theme')!.addEventListener('click', (e) => { applyTheme(prefs.theme === 'dark' ? 'light' : 'dark'); (e.currentTarget as HTMLButtonElement).blur(); });
 
 const settingsPanel = document.getElementById('settings-panel')!;
+settingsPanel.classList.add('fade');
 const SETTING_FIELDS: { key: keyof MapSettings; label: string; hint: string; step: number }[] = [
   { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（默认 2.6）', step: 0.05 },
   { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（默认 2）', step: 0.05 },
@@ -2097,15 +2220,16 @@ function renderSettings() {
   segClick('module-view', (v) => { modelView = v === 'model'; prefs.modelView = modelView; savePrefs(); renderLib(); rebuild(); });
   segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
   settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; savePrefs(); rebuild(); renderSettings(); });
-  settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => { settingsPanel.hidden = true; });
+  settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => showEl(settingsPanel, false));
 }
 window.addEventListener('pointerdown', (e) => {
   const t = e.target as Element;
-  if (!settingsPanel.hidden && !settingsPanel.contains(t) && !t.closest?.('#settings')) settingsPanel.hidden = true;
+  if (settingsPanel.classList.contains('shown') && !settingsPanel.contains(t) && !t.closest?.('#settings')) showEl(settingsPanel, false);
 });
 document.getElementById('settings')!.addEventListener('click', (e) => {
-  settingsPanel.hidden = !settingsPanel.hidden;
-  if (!settingsPanel.hidden) renderSettings();
+  const open = !settingsPanel.classList.contains('shown');
+  if (open) renderSettings();
+  showEl(settingsPanel, open);
   (e.currentTarget as HTMLButtonElement).blur();
 });
 
@@ -2183,6 +2307,7 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
 });
 renderer.setAnimationLoop(() => {
   frameNo++;
+  if (fading.length) tickFades(performance.now());
   if (fly) tickFly(Math.min(0.05, (performance.now() - lastFrame) / 1000));
   const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
