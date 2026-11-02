@@ -109,6 +109,8 @@ interface Fold {
   q0: number; q1: number;
   /** 另一层的展开坐标 = 本层 + shift（沿 ax） */
   shift: number;
+  /** 只表示「这一段不是外沿」，不把另一层的外沿带进本层的距离场（坡接素材件的接口时，素材件所在层用这个） */
+  noField?: boolean;
 }
 
 interface Layer {
@@ -380,7 +382,7 @@ function findFolds(layers: Layer[]) {
           if (!q || S.folds.some((f) => f.n === n && Math.abs(f.q0 - q[0]) < EPS && Math.abs(f.q1 - q[1]) < EPS)) continue;
           S.folds.push({ other: L, ax, line: lineS, n, q0: q[0], q1: q[1], shift: pe - lineS });
           // 素材件所在的层：接口那一面也不算外沿
-          L.folds.push({ other: S, ax, line: pe, n: opp(n), q0: q[0], q1: q[1], shift: lineS - pe });
+          L.folds.push({ other: S, ax, line: pe, n: opp(n), q0: q[0], q1: q[1], shift: lineS - pe, noField: true });
         }
         if (L.style !== S.style) continue;
         if (L.slope) {
@@ -676,6 +678,7 @@ const linVal = (l: Lin, p: V2) => l.k[0] * p[0] + l.k[1] * p[1] + l.k[2];
 function fieldSegs(L: Layer): FSeg[] {
   const out: FSeg[] = L.runs.map((r) => ({ r, ax: r.ax, c: r.c, a: r.a, b: r.b, t: [0, 0] }));
   for (const f of L.folds) {
+    if (f.noField) continue;
     // 另一层在折线另一侧 BAND 以内的外沿，平移到本层的展开坐标里
     const Y = f.other, pos = f.n === 0 || f.n === 1;
     const lineY = f.line + f.shift;
@@ -764,7 +767,7 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       for (const ln of segLines(e)) {
         const next: BP[] = [];
         for (const b of bps) {
-          const s = b.x1 > ix0 && b.x0 < ix1 && b.y1 > iy0 && b.y0 < iy1 ? splitPoly(b.p, ln) : null;
+          const s = b.x1 > ix0 - 1e-6 && b.x0 < ix1 + 1e-6 && b.y1 > iy0 - 1e-6 && b.y0 < iy1 + 1e-6 ? splitPoly(b.p, ln) : null;
           if (s) next.push(bp(s[0]), bp(s[1])); else next.push(b);
         }
         bps = next;
@@ -790,7 +793,8 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       const cen = centroid(poly);
       // 只有离这一块不超过 BAND 的外沿可能成为最近的
       const b = boxes.get(poly)!;
-      const cands = near.filter((e) => rectDist(b, e) <= BAND + 1e-9);
+      // 只看离这一块严格小于 BAND 的外沿：刚好 BAND 远的整块都已经到了路面内部（花纹到头了），带进来反而可能用错端点那一侧的函数
+      const cands = near.filter((e) => rectDist(b, e) < BAND - 1e-9);
       resolve(poly, [clampLin, ...cands.map((e) => segLin(e, cen))], emit, 0);
     }
   }

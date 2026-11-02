@@ -23,6 +23,13 @@
           <div id="scene-list"></div>
         </div>
       </span>
+      <span class="dropdown">
+        <button id="export" class="ghost">导出<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+        <div class="dropdown-menu left" id="export-menu">
+          <button data-format="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
+          <button data-format="json"><span>导出场景描述</span><small>JSON，配合 scripts/blender/build_scene.py</small></button>
+        </div>
+      </span>
       <div class="sep"></div>
       <div class="group">
         <button id="undo" class="icon" title="撤销（Ctrl+Z）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
@@ -73,14 +80,6 @@
     </div>
 
     <div class="tb-right">
-      <span class="dropdown">
-        <button id="export" class="primary">导出<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
-        <div class="dropdown-menu" id="export-menu">
-          <button data-format="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
-          <button data-format="json"><span>导出场景描述</span><small>JSON，配合 scripts/blender/build_scene.py</small></button>
-        </div>
-      </span>
-      <div class="sep"></div>
       <button id="theme" class="ghost" title="切换亮色 / 暗色">
         <svg class="moon" viewBox="0 0 16 16"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z" /></svg>
         <svg class="sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M3 13l1.1-1.1M11.9 4.1L13 3" /></svg>
