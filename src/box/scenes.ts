@@ -15,11 +15,13 @@ class B {
     return id;
   }
   /** 机关：对准方块中心放在 (ax, ay)，对准方块顶面在 top */
+  /** 之后放的机关归到第几小节 */
+  sector = 1;
   obj(type: string, ax: number, ay: number, top: number, rot: Dir = 0) {
     const a = objType(type)?.anchor ?? [0, 0, 0];
     const c = [1, 0, -1, 0][rot], s = [0, 1, 0, -1][rot];
     const id = this.doc.nextId++;
-    this.doc.elems[id] = { id, kind: 'obj', type, x: ax + this.ox - (a[0] * c - a[1] * s), y: ay + this.oy - (a[0] * s + a[1] * c), z: top - a[2], rot };
+    this.doc.elems[id] = { id, kind: 'obj', type, x: ax + this.ox - (a[0] * c - a[1] * s), y: ay + this.oy - (a[0] * s + a[1] * c), z: top - a[2], rot, sector: objType(type)?.cat === 'module' && type !== 'PE_Balloon' ? this.sector : undefined };
     return id;
   }
   /** 钢轨：起点、朝向（度）和各段；z 是双轨最顶端（接路面时等于路面顶面） */
@@ -62,6 +64,7 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.box(r0, 0, 15, 5); b.obj('P_Modul_18', r0 + 17.5, 2.5, 0); b.box(r0 + 20, 0, 15, 5);
       const c = r0 + 35 + CHECK_PORT;
       b.piece('check', c, 2.5, 0);
+      b.sector = 2;
       const r1 = c + CHECK_PORT;
       b.box(r1, 0, 10, 5); b.box(r1 + 10, 0, 15, 5, { slope: { axis: 0, dz: 5 } });
       const px = r1 + 23;

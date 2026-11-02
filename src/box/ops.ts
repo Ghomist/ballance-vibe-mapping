@@ -1,5 +1,5 @@
 // 文档上的编辑操作：旋转、合并、切分、复制、绑定、包围盒
-import { Box, Dir, Doc, Elem, anchorRects, boxTopAt, footprint } from './types';
+import { Box, Dir, Doc, Elem, anchorRects, assetBounds, boxTopAt, footprint } from './types';
 import { sampleRail } from '../model/rail';
 
 export type V3 = [number, number, number];
@@ -13,6 +13,7 @@ export function elemBounds(e: Elem): Bounds {
     return { ...f, z0: Math.min(...tops) - e.depth, z1: Math.max(...tops) };
   }
   if (e.kind === 'piece') return { ...f, z0: e.z - 5, z1: e.z };
+  if (e.kind === 'asset') return assetBounds(e);
   if (e.kind === 'rail') { const zs = sampleRail(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - 1.2, z1: Math.max(...zs) }; }
   if (e.kind === 'guard') return { ...f, z0: Math.min(...e.pts.map((p) => p[2])) - 2, z1: Math.max(...e.pts.map((p) => p[2])) + 2.6 };
   const tops = anchorRects(e).map((r) => r.top);

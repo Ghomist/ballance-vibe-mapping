@@ -44,20 +44,30 @@
       </div>
       <div class="sep"></div>
       <div class="group">
-        <button id="merge" class="icon" title="合并选中的路面（Ctrl+J）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg></button>
-        <button id="group" class="icon" title="绑定成一个整体（Ctrl+G）；解除绑定 Ctrl+Shift+G"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg></button>
-        <button id="ungroup" class="icon" title="解除绑定（Ctrl+Shift+G）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg></button>
-        <button id="dup" class="icon" title="复制，跟着鼠标走，点击放下（Ctrl+D）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg></button>
-        <button id="rot" class="icon" title="旋转 90°（R）"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3" /></svg></button>
-        <button id="del" class="icon" title="删除（X / Delete）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button>
+        <button id="merge" class="ghost op" title="把选中的几块路面合成一块（同样式、同高度、拼起来是矩形）（Ctrl+J）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg>合并</button>
+        <button id="group" class="ghost op" title="把选中的东西绑定成一个整体（Ctrl+G）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg>绑定</button>
+        <button id="ungroup" class="ghost op" title="解除绑定（Ctrl+Shift+G）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg>解绑</button>
+        <button id="dup" class="ghost op" title="复制，跟着鼠标走，点击放下（Ctrl+D）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg>复制</button>
+        <button id="rot" class="ghost op" title="旋转 90°（R）"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3" /></svg>旋转</button>
+        <button id="del" class="ghost op" title="删除（X / Delete）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg>删除</button>
       </div>
       <div class="sep"></div>
       <div class="group">
         <button id="grid" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（默认 1，设置里可改）（G）">
           <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg>格栅
         </button>
-        <button id="align" class="toggle" title="自动对齐：边、中线、顶面靠近别的物体时对齐（S）">
+        <button id="align" class="toggle active" title="自动对齐：边、中线、顶面靠近别的物体时对齐（S）">
           <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg>对齐
+        </button>
+      </div>
+      <div class="sep"></div>
+      <div class="group">
+        <span class="dropdown">
+          <button id="sector" title="新放的机关归到哪个小节（放盘点时自动切到它的小节）"><span id="sector-label">第 1 小节</span><svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+          <div class="dropdown-menu left" id="sector-menu"></div>
+        </span>
+        <button id="sector-eye" class="toggle icon" title="在机关上显示所属小节">
+          <svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" /><circle cx="8" cy="8" r="2" /></svg>
         </button>
       </div>
     </div>

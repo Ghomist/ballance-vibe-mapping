@@ -13,6 +13,7 @@ import { buildRail } from '../geom/rail';
 import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState, sampleRail } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
+import { ASSET_INFO, assetInfo } from './asset-info';
 import { thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
@@ -84,7 +85,10 @@ const snapG = (v: number) => Math.round(v / prefs.gridStep) * prefs.gridStep;
 let doc: Doc = (() => { try { const s = localStorage.getItem(STORE); if (s) return JSON.parse(s) as Doc; } catch { /* 读不了就用测试场景 */ } return SCENES[0].build(); })();
 let sel = new Set<number>();
 let gridOn = false;
-let alignOn = false;
+let alignOn = true; // 自动对齐默认开着，格栅默认关着
+/** 新放的机关归到第几小节（顶栏的下拉框；放盘点时自动切到它的小节） */
+let placeSector = 1;
+let showSectors = false;
 let wireOn = false;
 let modelView = prefs.modelView;
 let vHeld = false;
@@ -183,6 +187,15 @@ function rebuildInner() {
     addGroup(id, g);
     if (doc.elems[id]?.kind === 'piece' && g.children.length) objBoxes.set(id, new THREE.Box3().setFromObject(g));
   }
+  // 特殊路面（资产库模型）
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'asset') continue;
+    const g = new THREE.Group();
+    const pieces = getAsset('asset', e.name) ?? [];
+    addMeshes(g, pieces, e.id, (m) => { m.position.set(e.x, e.y, e.z); m.rotation.z = (e.rot * Math.PI) / 2; });
+    addGroup(e.id, g);
+    if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
+  }
   // 机关、装饰、挡块
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'obj') continue;
@@ -258,6 +271,7 @@ function rebuildInner() {
     objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
   }
   if (!drag) save();
+  syncSectorLabels();
   drawOverlay();
   updateStatus();
   if (!drag) syncProps(); // 拖动中不重写属性面板，松手时再更新
@@ -333,7 +347,72 @@ function currentHints(): Hint[] {
   else hs.push(H(['LMB'], '选择 / 框选'), H(['F'], '看全部'));
   return hs;
 }
+/** 顶栏的编辑按钮：只有选中的东西能做这件事时才亮 */
+function syncOps() {
+  const es = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  const set = (id: string, on: boolean) => { (document.getElementById(id) as HTMLButtonElement).disabled = !on; };
+  set('merge', es.length >= 2 && es.every((e) => e.kind === 'box' && !e.slope && e.style === (es[0] as Box).style));
+  set('group', es.length >= 2 && !(es.every((e) => e.group !== undefined && e.group === es[0].group)));
+  set('ungroup', es.some((e) => e.group !== undefined));
+  for (const id of ['dup', 'rot', 'del']) set(id, es.length > 0);
+}
+// ---- 小节（和上一版一样：顶栏选当前小节，新放的机关归到这个小节；不自动推断）----
+const checksSorted = () => Object.values(doc.elems).filter((e): e is Extract<Elem, { kind: 'piece' }> => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
+const sectorCount = () => 1 + checksSorted().length;
+const sectorOfCheck = (id: number) => { const c = checksSorted(); const p = c.find((x) => x.id === id); return p?.sector ?? c.indexOf(p!) + 2; };
+const sectorBtn = document.getElementById('sector')!, sectorMenu = document.getElementById('sector-menu')!, sectorEye = document.getElementById('sector-eye')!;
+let lastSectorKey = '';
+function syncSector() {
+  const n = sectorCount();
+  if (placeSector > n) placeSector = n;
+  const key = `${n}:${placeSector}`;
+  if (key === lastSectorKey) return;
+  lastSectorKey = key;
+  document.getElementById('sector-label')!.textContent = `第 ${placeSector} 小节`;
+  sectorMenu.innerHTML = Array.from({ length: n }, (_, i) => `<button data-s="${i + 1}" class="${i + 1 === placeSector ? 'on' : ''}"><span>第 ${i + 1} 小节</span><small>${i === 0 ? '从起点开始' : `从第 ${i} 个盘点开始`}</small></button>`).join('');
+}
+sectorBtn.addEventListener('click', (e) => { e.stopPropagation(); sectorMenu.classList.toggle('open'); sectorBtn.blur(); });
+sectorMenu.addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-s]');
+  if (!b) return;
+  placeSector = +b.dataset.s!;
+  // 选中了机关时，顺便把它们改到这个小节
+  const mods = [...sel].map((id) => doc.elems[id]).filter((x): x is Obj => x?.kind === 'obj' && objType(x.type)?.cat === 'module' && x.type !== 'PE_Balloon');
+  if (mods.length) { snapshot(); for (const o of mods) o.sector = placeSector; flash(`已把 ${mods.length} 个机关改到第 ${placeSector} 小节`); rebuild(); }
+  sectorMenu.classList.remove('open');
+  syncSector();
+});
+window.addEventListener('pointerdown', (e) => { if (!sectorMenu.contains(e.target as Node) && !sectorBtn.contains(e.target as Node)) sectorMenu.classList.remove('open'); });
+sectorEye.addEventListener('click', () => { showSectors = !showSectors; sectorEye.classList.toggle('active', showSectors); sectorEye.blur(); syncSectorLabels(); });
+/** 机关上的小节编号（顶栏的眼睛打开时显示） */
+const secLabels = new Map<number, HTMLDivElement>();
+function syncSectorLabels() {
+  const live = new Set<number>();
+  if (showSectors) for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'obj' || objType(e.type)?.cat !== 'module' || e.type === 'PE_Balloon') continue;
+    live.add(e.id);
+    let l = secLabels.get(e.id);
+    if (!l) { l = document.createElement('div'); l.className = 'sec-label'; document.body.appendChild(l); secLabels.set(e.id, l); }
+    l.textContent = String(Math.min(e.sector ?? 1, sectorCount()));
+  }
+  for (const [id, l] of secLabels) if (!live.has(id)) { l.remove(); secLabels.delete(id); }
+}
+function placeSectorLabels() {
+  const r = host.getBoundingClientRect();
+  for (const [id, l] of secLabels) {
+    const e = doc.elems[id];
+    if (e?.kind !== 'obj') continue;
+    const a = anchorRects(e)[0];
+    const p = new THREE.Vector3(a ? (a.x0 + a.x1) / 2 : e.x, a ? (a.y0 + a.y1) / 2 : e.y, (a ? a.top : e.z) + 4);
+    const v = p.clone().project(camera);
+    const sx = (v.x + 1) / 2 * r.width + r.left, sy = (1 - v.y) / 2 * r.height + r.top;
+    l.style.display = v.z > 1 || sx < r.left || sx > r.right || sy < r.top || sy > r.bottom ? 'none' : '';
+    l.style.left = `${sx}px`; l.style.top = `${sy}px`;
+  }
+}
 function updateStatus() {
+  syncOps();
+  syncSector();
   const parts: string[] = [];
   if (flashMsg && performance.now() < flashMsg.until) parts.push(flashMsg.warn ? `<span class="warn">${flashMsg.text}</span>` : `<b>${flashMsg.text}</b>`);
   if (dragInfo) parts.push(`<b>${dragInfo}</b>`);
@@ -380,7 +459,7 @@ const ALIGN_PX = 5;
 
 /** 元素外形的 8 个角：顶面 4 个（x0y0、x1y0、x1y1、x0y1），再是底面 4 个；机关按模型的包围盒 */
 function cornersOf(e: Elem): P3[] {
-  const ob = e.kind === 'obj' || e.kind === 'guard' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
+  const ob = e.kind === 'obj' || e.kind === 'guard' || e.kind === 'asset' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
   if (ob) {
     const a = ob.min, b = ob.max;
     return [[a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z], [a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z]];
@@ -1228,7 +1307,11 @@ function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEv
 function newElems(type: string): Elem[] {
   const id = doc.nextId++;
   if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
-  if (type.startsWith('obj:')) return [{ id, kind: 'obj', type: type.slice(4), x: 0, y: 0, z: 0, rot: 0 }];
+  if (type.startsWith('obj:')) {
+    const t = type.slice(4);
+    return [{ id, kind: 'obj', type: t, x: 0, y: 0, z: 0, rot: 0, sector: objType(t)?.cat === 'module' && t !== 'PE_Balloon' ? placeSector : undefined }];
+  }
+  if (type.startsWith('asset:')) return [{ id, kind: 'asset', name: type.slice(6), x: 0, y: 0, z: 0, rot: 0 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
   if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
   if (type === 'rail-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: SPIRAL_RADIUS, angle: 360, dz: SPIRAL_SCREW }] }];
@@ -1237,6 +1320,7 @@ function newElems(type: string): Elem[] {
 
 /** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
 function handleOf(e: Elem): P3 {
+  if (e.kind === 'asset') { const b = elemBounds(e); return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1]; }
   if (e.kind === 'rail') return [e.x, e.y, e.z];
   if (isCheckpoint(e)) return [e.x, e.y, e.z];
   if (e.kind === 'obj') {
@@ -1285,10 +1369,10 @@ function placeMove(e: PointerEvent) {
   const under = h ? doc.elems[h.id] : null;
   for (const [id, js] of orig) {
     const o = JSON.parse(js) as Elem;
-    if (o.kind !== 'obj' && o.kind !== 'rail') continue;
+    if (o.kind !== 'obj' && o.kind !== 'rail' && o.kind !== 'asset') continue;
     const axis = under?.kind === 'box' ? (under.slope ? under.slope.axis : under.sx >= under.sy ? 0 : 1) : 0;
     if (o.kind === 'rail') o.heading = ((axis + drag.rotOff) % 4) * 90;
-    else o.rot = ((axis + (o.type === 'P_Modul_01' ? 1 : 0) + drag.rotOff) % 4) as Dir;
+    else o.rot = ((axis + (o.kind === 'obj' && o.type === 'P_Modul_01' ? 1 : 0) + drag.rotOff) % 4) as Dir;
     orig.set(id, JSON.stringify(o));
   }
   restore(orig);
@@ -1307,6 +1391,8 @@ function placeMove(e: PointerEvent) {
     for (const v of [...f.verts, ...f.mids]) {
       const s = toScreen(v);
       const t = findTarget(s.x, s.y, ids, 16);
+      // 只吸差不多一样高的点：屏幕上挨着的点可能在路面底下（侧面、底边），吸过去会把东西埋进路里
+      if (t && Math.abs(t.p[2] - v[2]) > 1) continue;
       if (t && (!best || t.d < best.d)) best = { from: v, to: t.p, d: t.d, kind: t.kind };
     }
   }
@@ -1330,6 +1416,9 @@ function placeEnd(e: PointerEvent) {
     for (const id of ids) translateElem(doc.elems[id], [g(controls.target.x - (b.x1 - b.x0) / 2) - b.x0, g(controls.target.y - (b.y1 - b.y0) / 2) - b.y0, 0]);
     sel = new Set(ids);
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
+  // 放了小节盘点：顶栏的小节切到它激活的那个小节
+  const placed = drag.ids?.map((id) => doc.elems[id]).find((x) => x?.kind === 'piece' && x.type === 'check');
+  if (placed) placeSector = sectorOfCheck(placed.id);
   anim = null; snapping = false;
   drag = null; snapTarget = null;
   rebuild();
@@ -1365,6 +1454,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
       { type: 'rail-spiral', label: '螺旋', hint: '属性里调圈数、半径', icon: svgThumb(`<path d="M32 52 C10 50 10 36 32 36 C54 36 54 22 32 22 C14 22 14 12 32 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
     ],
   },
+  { id: 'special', label: '特殊路面', items: ASSET_INFO.map((a) => ({ type: `asset:${a.name}`, label: a.label, hint: `${a.group === 'wood' ? '木制' : '特殊路块'} · ${a.name}` })) },
   { id: 'module', label: '机关', items: OBJ_TYPES.filter((t) => t.cat === 'module').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
   { id: 'deco', label: '装饰', items: OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })) },
 ];
@@ -1394,9 +1484,9 @@ ${it.hint}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></d
 function fillThumbs() {
   for (const c of libGrid.querySelectorAll<HTMLElement>('.lib-card')) {
     const t = c.dataset.type!;
-    if (!t.startsWith('obj:')) continue;
+    if (!t.startsWith('obj:') && !t.startsWith('asset:')) continue;
     const box = c.querySelector<HTMLElement>('.thumb')!;
-    const url = thumbnail(t.slice(4), modelView ? 'model' : 'placeholder');
+    const url = thumbnail(t.slice(t.indexOf(':') + 1), modelView ? 'model' : 'placeholder');
     if (url) { box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); }
   }
 }
@@ -1732,6 +1822,10 @@ function syncProps() {
   } else if (one.kind === 'piece') {
     h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
     h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
+  } else if (one.kind === 'asset') {
+    h += `<div class="title">${assetInfo(one.name)?.label ?? one.name}</div>`;
+    h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', 'z', one.z);
+    h += `<label>朝向</label><select data-k="rot">${[0, 1, 2, 3].map((r) => `<option value="${r}"${r === one.rot ? ' selected' : ''}>${r * 90}°</option>`).join('')}</select>`;
   } else {
     const t = objType(one.type);
     h += `<div class="title">${t?.label ?? one.type}</div>`;
@@ -1740,6 +1834,7 @@ function syncProps() {
     const extra: string[] = [];
     if (stopperMesh({ id: 0, cat: 'module', type: one.type, x: 0, y: 0, z: 0, rot: 0 })) extra.push(`<label><input type="checkbox" data-flag="noStopper"${one.noStopper ? '' : ' checked'}>挡块</label>`);
     if (baseSpec(one.type)) extra.push(`<label><input type="checkbox" data-flag="noBase"${one.noBase ? '' : ' checked'}>专属路块</label>`);
+    if (t?.cat === 'module' && one.type !== 'PE_Balloon') h += `<label>小节</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
     if (extra.length) h += `<div class="row">${extra.join('')}</div>`;
   }
   props.innerHTML = h;
@@ -1759,7 +1854,8 @@ props.addEventListener('change', (ev) => {
     else if (k === 'dz' && e.slope) e.slope.dz = +t.value;
     else if (k === 'sx' || k === 'sy' || k === 'depth') e[k] = Math.max(0.1, +t.value);
   }
-  if ((e.kind === 'obj' || e.kind === 'piece') && k === 'rot') e.rot = +t.value as Dir;
+  if ((e.kind === 'obj' || e.kind === 'piece' || e.kind === 'asset') && k === 'rot') e.rot = +t.value as Dir;
+  if (e.kind === 'obj' && k === 'sector') e.sector = +t.value;
   if (e.kind === 'piece' && k === 'spawn') e.spawn = t.value === '' ? undefined : +t.value;
   if (e.kind === 'rail') {
     if (k === 'heading') e.heading = +t.value;
@@ -2026,6 +2122,7 @@ renderer.setAnimationLoop(() => {
   if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
   controls.update();
   renderer.render(scene, camera);
+  if (secLabels.size) placeSectorLabels();
 });
 
 // 截图脚本用

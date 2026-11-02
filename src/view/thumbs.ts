@@ -23,7 +23,8 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
   const key = `${type}:${fake ?? ''}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const pieces = fake ? getAsset('fake', fake) : getAsset(t?.cat === 'deco' ? 'asset' : 'element', type);
+  // 不在机关列表里的（特殊路面等）是资产库模型
+  const pieces = fake ? getAsset('fake', fake) : getAsset(!t || t.cat === 'deco' ? 'asset' : 'element', type);
   if (!pieces || !texturesReady(pieces)) return null;
   const fix = (fake && FAKE_FIX[fake]) || {};
   const scene = new THREE.Scene();
@@ -35,7 +36,7 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
   for (const pc of pieces) {
     // 占位符本身是半透明的，预览用不透明的同色材质看得更清楚
     const src = pc.material as THREE.MeshLambertMaterial;
-    const mat = t?.cat === 'deco' || fake ? pc.material : new THREE.MeshLambertMaterial({ color: src.color, emissive: src.color, emissiveIntensity: 0.15 });
+    const mat = !t || t.cat === 'deco' || fake ? pc.material : new THREE.MeshLambertMaterial({ color: src.color, emissive: src.color, emissiveIntensity: 0.15 });
     const mesh = new THREE.Mesh(pc.geometry, mat);
     // 和视图里一样摆好机关模型（倾斜、转向、上下挪）
     mesh.rotation.order = 'ZYX';

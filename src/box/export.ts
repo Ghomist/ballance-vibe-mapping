@@ -81,15 +81,11 @@ export function exportBoxScene(doc: Doc): SceneDesc {
     }
   }
 
-  // ---- 机关与装饰 ----
-  // 小节：离机关（对准方块）最近的盘点（起点算第 1 小节）；以后可以按路面连通关系判断
-  const cps = [start, ...checks].filter((p): p is Piece => !!p);
-  const nearSector = (o: Obj) => {
-    const a = anchorRects(o)[0];
-    const [x, y] = a ? [(a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2] : [o.x, o.y];
-    if (!cps.length) return 1;
-    return sectorOf(cps.reduce((b, c) => (Math.hypot(c.x - x, c.y - y) < Math.hypot(b.x - x, b.y - y) ? c : b)));
-  };
+  // ---- 特殊路面（资产库模型） ----
+  for (const e of elems) if (e.kind === 'asset') assets.push({ asset: e.name, kind: assetKind(e.name), pos: [r5(e.x), r5(e.y), r5(e.z)], rotZ: e.rot * 90 });
+
+  // ---- 机关与装饰：小节按机关自己记的（放的时候取顶栏选的小节，属性面板里可改），超出就算最后一个小节 ----
+  const nearSector = (o: Obj) => Math.min(Math.max(1, o.sector ?? 1), sectors);
   for (const o of objs) {
     const t = objType(o.type);
     if (!t) { warnings.push(`未知物件类型 ${o.type}`); continue; }

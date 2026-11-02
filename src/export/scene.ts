@@ -64,9 +64,10 @@ export const FLOOR_MATERIALS = [
 
 const ASSET_KIND: Record<string, SceneAsset['kind']> = {
   BarrierRail_1Edge: 'rail', BarrierRail_3Edge: 'rail', BarrierRail_3Edge_N: 'rail', BarrierRail_3Edge_S: 'rail', RailTip: 'rail',
+  RailCrossing: 'rail', MonorailCrossing: 'rail',
 };
 export const assetKind = (name: string): SceneAsset['kind'] =>
-  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider)/.test(name) ? 'floor' : 'deco');
+  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider|Wood|Modul_|ConcaveWood|ConvexWood|Level9_WoodBarrier|Turnstile)/.test(name) ? 'floor' : 'deco');
 
 export function exportScene(m: Model): SceneDesc {
   const warnings: string[] = [];

@@ -39,5 +39,11 @@
 /* 测量线上的数字 */
 .measure-label { position: fixed; pointer-events: none; z-index: 6; font: 600 12px system-ui, "Microsoft YaHei", sans-serif; padding: 2px 8px; border-radius: 5px; transform: translate(-50%, -130%); }
 
+/* 顶栏的编辑按钮：图标 + 文字，不能用时变暗 */
+#toolbar button.op:disabled { opacity: 0.35; }
+@media (max-width: 1280px) { #toolbar button.op { font-size: 0; gap: 0; padding: 0 7px; } }
+/* 机关上的小节编号 */
+.sec-label { position: fixed; z-index: 3; pointer-events: none; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 9px; background: rgba(20, 24, 32, 0.78); border: 1px solid rgba(255, 170, 80, 0.6); color: #ffd2a0; font: 600 11px system-ui, sans-serif; }
+
 /* 拖着素材往视图里放时 */
 body.placing, body.placing * { cursor: grabbing !important; }

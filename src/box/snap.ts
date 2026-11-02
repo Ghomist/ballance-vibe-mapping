@@ -1,5 +1,5 @@
 // 吸附用的几何特征：顶点、边的中点、边
-import { Elem, anchorRects, boxTopAt, footprint, virtualCells } from './types';
+import { Elem, anchorRects, assetBounds, boxTopAt, footprint, virtualCells } from './types';
 import { advance, type RailState } from '../model/rail';
 
 export type P3 = [number, number, number];
@@ -32,6 +32,7 @@ export function feats(e: Elem): Feats {
     }
     return out;
   }
+  if (e.kind === 'asset') { const b = assetBounds(e); return boxFeats(() => [b.z1, 0], b.x0, b.y0, b.x1, b.y1, b.z1 - b.z0); }
   if (e.kind === 'guard') return { verts: [e.pts[0], e.pts[e.pts.length - 1]], mids: [], edges: [] };
   if (e.kind === 'rail') {
     // 钢轨（一段）：两头的中心点、两头左右两根轨的顶端；中间点；直轨的中线

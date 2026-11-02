@@ -3,6 +3,7 @@
 import { objType } from '../model/objects';
 import { PREFAB_PORT } from '../model/types';
 import { type RailPiece, sampleRail } from '../model/rail';
+import { assetInfo } from './asset-info';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -83,6 +84,8 @@ export interface Obj extends ElemBase {
   rot: Dir;
   noStopper?: boolean;
   noBase?: boolean;
+  /** 机关属于第几小节（放的时候取顶栏选的小节） */
+  sector?: number;
 }
 
 /** 钢轨：从起点 (x, y, z) 朝 heading（度）出发，由若干段（直线 / 圆弧 / 螺旋）首尾相接；z 是双轨最顶端的高度 */
@@ -110,7 +113,27 @@ export interface GuardElem extends ElemBase {
   z: number;
 }
 
-export type Elem = Box | Piece | Obj | RailElem | GuardElem;
+/** 特殊路面：资产库里形状固定的模型（木制路面、特殊路块、钢轨交叉），按资产原点摆放，只能按 90° 旋转 */
+export interface AssetElem extends ElemBase {
+  kind: 'asset';
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  rot: Dir;
+}
+
+export type Elem = Box | Piece | Obj | RailElem | GuardElem | AssetElem;
+
+/** 特殊路面的包围盒（世界坐标）：本地包围盒按朝向转过去 */
+export function assetBounds(e: AssetElem): Rect & { z0: number; z1: number } {
+  const inf = assetInfo(e.name);
+  const mn = inf?.min ?? [-2.5, -2.5, -2.5], mx = inf?.max ?? [2.5, 2.5, 2.5];
+  const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
+  const xs: number[] = [], ys: number[] = [];
+  for (const x of [mn[0], mx[0]]) for (const y of [mn[1], mx[1]]) { xs.push(e.x + x * c - y * s); ys.push(e.y + x * s + y * c); }
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), z0: e.z + mn[2], z1: e.z + mx[2] };
+}
 
 export interface Doc {
   elems: Record<number, Elem>;
@@ -143,6 +166,7 @@ export function anchorRects(o: Obj): (Rect & { top: number })[] {
 
 /** 元素在平面上的范围 */
 export function footprint(e: Elem): Rect {
+  if (e.kind === 'asset') { const b = assetBounds(e); return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; }
   if (e.kind === 'guard') return { x0: Math.min(...e.pts.map((p) => p[0])) - 0.5, y0: Math.min(...e.pts.map((p) => p[1])) - 0.5, x1: Math.max(...e.pts.map((p) => p[0])) + 0.5, y1: Math.max(...e.pts.map((p) => p[1])) + 0.5 };
   if (e.kind === 'rail') {
     const ps = sampleRail(e);
