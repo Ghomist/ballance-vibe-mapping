@@ -134,7 +134,7 @@ let inserted = new Set<string>();
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
-  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj');
+  const docElems = trimSlopes(Object.values(doc.elems).filter((e) => e.kind !== 'obj'));
   const auto = autoTransitions(docElems);
   inserted = auto.inserted;
   const elems: Elem[] = [...docElems, ...bases, ...auto.pieces];
@@ -181,6 +181,35 @@ export function solve(doc: Doc): Solved {
     else meshPiece(p, layers, out);
   }
   return { meshes: out, bases: baseParts, owner: auto.owner };
+}
+
+/**
+ * 坡的一头伸进平台（平台盖住坡的整个宽度）、并且那一头和平台一样高时：坡在平台边沿截断，
+ * 截断处的高度就是平台的高度（坡度跟着变一点），这样坡和平台在边沿处正好接上。
+ */
+function trimSlopes(elems: Elem[]): Elem[] {
+  const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
+  return elems.map((e) => {
+    if (!isSlope(e)) return e;
+    const ax = e.slope.axis;
+    let lo = ax === 0 ? e.x : e.y, hi = lo + (ax === 0 ? e.sx : e.sy);
+    let zLo = e.z, zHi = e.z + e.slope.dz;
+    const [c0, c1] = ax === 0 ? [e.y, e.y + e.sy] : [e.x, e.x + e.sx];
+    for (const B of flats) {
+      const f = footprint(B);
+      const [b0, b1, e0, e1] = ax === 0 ? [f.x0, f.x1, f.y0, f.y1] : [f.y0, f.y1, f.x0, f.x1];
+      if (c0 < e0 - EPS_TOUCH || c1 > e1 + EPS_TOUCH) continue;
+      // +ax 那一头伸进平台
+      if (b0 > lo + EPS_TOUCH && b0 < hi - EPS_TOUCH && hi <= b1 + EPS_TOUCH && Math.abs(zHi - B.z) <= EPS_TOUCH) { hi = b0; zHi = B.z; }
+      // -ax 那一头伸进平台
+      else if (b1 > lo + EPS_TOUCH && b1 < hi - EPS_TOUCH && lo >= b0 - EPS_TOUCH && Math.abs(zLo - B.z) <= EPS_TOUCH) { lo = b1; zLo = B.z; }
+    }
+    const len0 = ax === 0 ? e.sx : e.sy;
+    if (hi - lo === len0) return e;
+    const t: Box = { ...e, z: zLo, slope: { axis: ax, dz: zHi - zLo } };
+    if (ax === 0) { t.x = lo; t.sx = hi - lo; } else { t.y = lo; t.sy = hi - lo; }
+    return t;
+  });
 }
 
 /**
@@ -642,11 +671,28 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
     if (!isBox(r.owner)) continue;
     const near = segs.filter((e) => rectDist(r, e) <= BAND + 1e-9);
     let polys: Poly[] = [[[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]]];
-    for (const e of near) for (const ln of segLines(e)) {
-      const next: Poly[] = [];
-      for (const p of polys) { const s = splitPoly(p, ln); if (s) next.push(...s); else next.push(p); }
-      polys = next;
+    // 每条外沿的转折线只在它附近（BAND 以内）起作用：包围盒离得远的块不用切
+    type BP = { p: Poly; x0: number; x1: number; y0: number; y1: number };
+    const bp = (p: Poly): BP => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const q of p) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+      return { p, x0, x1, y0, y1 };
+    };
+    let bps: BP[] = polys.map(bp);
+    for (const e of near) {
+      const ix0 = (e.ax === 0 ? e.a : e.c) - BAND, ix1 = (e.ax === 0 ? e.b : e.c) + BAND;
+      const iy0 = (e.ax === 0 ? e.c : e.a) - BAND, iy1 = (e.ax === 0 ? e.c : e.b) + BAND;
+      for (const ln of segLines(e)) {
+        const next: BP[] = [];
+        for (const b of bps) {
+          const s = b.x1 > ix0 && b.x0 < ix1 && b.y1 > iy0 && b.y0 < iy1 ? splitPoly(b.p, ln) : null;
+          if (s) next.push(bp(s[0]), bp(s[1])); else next.push(b);
+        }
+        bps = next;
+      }
     }
+    polys = bps.map((b) => b.p);
+    const boxes = new Map(bps.map((b) => [b.p, b]));
     const clampLin: Lin = { k: [0, 0, BAND], run: null, vAx: 0, t: [0, 0], clamp: true };
     const m = mb(r.owner);
     const tv = tops.get(r.owner) ?? (tops.set(r.owner, []), tops.get(r.owner)!);
@@ -663,7 +709,10 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
     };
     for (const poly of polys) {
       const cen = centroid(poly);
-      resolve(poly, [clampLin, ...near.map((e) => segLin(e, cen))], emit, 0);
+      // 只有离这一块不超过 BAND 的外沿可能成为最近的
+      const b = boxes.get(poly)!;
+      const cands = near.filter((e) => rectDist(b, e) <= BAND + 1e-9);
+      resolve(poly, [clampLin, ...cands.map((e) => segLin(e, cen))], emit, 0);
     }
   }
 

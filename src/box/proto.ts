@@ -95,22 +95,20 @@ function clearWorld() {
 const elemGroups = new Map<number, THREE.Group[]>();
 const addGroup = (id: number, g: THREE.Group) => { world.add(g); const l = elemGroups.get(id); if (l) l.push(g); else elemGroups.set(id, [g]); };
 
-/**
- * 拖动中：文档里已经是目标位置（target），画面上的物体按缓动从 shown 追上去；
- * 整张图的重算最多每 REBUILD_MS 一次（solved 是上次重算时的位置），两次之间只平移选中物体的网格。
- */
-let live: { ids: Set<number>; target: V3; shown: V3; solved: V3 } | null = null;
-const REBUILD_MS = 90;
-const EASE = 0.38;
-let lastRebuildAt = 0;
+/** 拖动中：鼠标事件只改文档，每帧画之前重算一次（一帧里来几个事件也只算一次），画面始终是最新的状态 */
 let rebuildWanted = false;
 
 let rebuildCount = 0;
+const rebuildTimes: number[] = [];
 function rebuild() {
+  const tStart = performance.now();
+  rebuildInner();
+  rebuildTimes.push(performance.now() - tStart);
+  if (rebuildTimes.length > 200) rebuildTimes.shift();
+}
+function rebuildInner() {
   rebuildCount++;
-  lastRebuildAt = performance.now();
   rebuildWanted = false;
-  if (live) live.solved = [...live.target];
   clearWorld();
   elemGroups.clear();
   pickables = [];
@@ -177,7 +175,7 @@ function rebuild() {
     addGroup(e.id, g);
     if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
   }
-  save();
+  if (!drag) save();
   drawOverlay();
   updateStatus();
   syncProps();
@@ -519,15 +517,11 @@ function moveSel(orig: Map<number, string>, d: V3) {
   d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 不开格栅时也只保留到 0.001，免得坐标一长串小数
   for (const id of orig.keys()) translateElem(doc.elems[id], d);
   dragInfo = `移动 ${fmt(d[0])}, ${fmt(d[1])}, ${fmt(d[2])}`;
-  if (!live) live = { ids: new Set(orig.keys()), target: [0, 0, 0], shown: [0, 0, 0], solved: [0, 0, 0] };
-  live.target = d;
 }
 
-/** 拖动中的刷新：叠加层马上更新，整张图的重算交给动画循环去节流 */
+/** 拖动中的刷新：交给动画循环，在下一帧画之前重算（重算里会顺带更新叠加层和状态栏） */
 function liveUpdate() {
   rebuildWanted = true;
-  drawOverlay();
-  updateStatus();
 }
 
 const el = renderer.domElement;
@@ -713,7 +707,10 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
     const g = footprint(x);
     const near = [g.x0, g.y0, g.x1, g.y1][dEnd];
     const [a0, a1, b0, b1] = d.axis === 0 ? [fo.y0, fo.y1, g.y0, g.y1] : [fo.x0, fo.x1, g.x0, g.x1];
-    return Math.abs(near - line) < 0.01 && Math.min(a1, b1) - Math.max(a0, b0) > 0.01;
+    // 端面贴着它，或者这一头伸进了它里面（坡顶插进平台）
+    const [g0, g1] = d.axis === 0 ? [g.x0, g.x1] : [g.y0, g.y1];
+    const inside = line > g0 + 0.01 && line < g1 + 0.01;
+    return (Math.abs(near - line) < 0.01 || inside) && Math.min(a1, b1) - Math.max(a0, b0) > 0.01;
   });
   const meet = touching.map((x) => { const g = footprint(x); const [px, py] = d.axis === 0 ? [line, (g.y0 + g.y1) / 2] : [(g.x0 + g.x1) / 2, line]; return boxTopAt(x, px, py); })
     .filter((z) => Math.abs(z - end) < worldPerPx(p) * SIZE5_PX).sort((u, v) => Math.abs(u - end) - Math.abs(v - end))[0];
@@ -761,7 +758,6 @@ function finishDrag() {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
   drag = null;
-  live = null;
   guides = []; axisLine = null; snapTarget = null; snapGrab = null; dragInfo = ''; measure = null;
   rebuild();
 }
@@ -771,7 +767,7 @@ function cancelGrab() {
     for (const id of drag.orig.keys()) delete doc.elems[id];
     undo.pop();
     sel.clear();
-    drag = null; live = null; guides = []; dragInfo = '';
+    drag = null; guides = []; dragInfo = '';
     rebuild();
   }
 }
@@ -1129,20 +1125,7 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.opacity = '1';
 });
 renderer.setAnimationLoop(() => {
-  if (live) {
-    // 缓动：画面上的位置每帧追上目标的一部分
-    const sh = live.shown;
-    for (let i = 0; i < 3; i++) { sh[i] += (live.target[i] - sh[i]) * EASE; if (Math.abs(live.target[i] - sh[i]) < 1e-3) sh[i] = live.target[i]; }
-  }
-  if (rebuildWanted && performance.now() - lastRebuildAt > REBUILD_MS) rebuild();
-  // 两次重算之间：选中物体的网格按「画面位置 - 上次重算时的位置」平移，选中框按「画面位置 - 目标位置」平移
-  const off = live ? live.shown.map((v, i) => v - live!.solved[i]) : [0, 0, 0];
-  for (const [id, gs] of elemGroups) {
-    const moving = !!live?.ids.has(id);
-    for (const g of gs) g.position.set(moving ? off[0] : 0, moving ? off[1] : 0, moving ? off[2] : 0);
-  }
-  if (live) selLayer.position.set(live.shown[0] - live.target[0], live.shown[1] - live.target[1], live.shown[2] - live.target[2]);
-  else selLayer.position.set(0, 0, 0);
+  if (rebuildWanted) rebuild();
   if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
   controls.update();
   renderer.render(scene, camera);
@@ -1158,6 +1141,7 @@ renderer.setAnimationLoop(() => {
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },
   get rebuilds() { return rebuildCount; },
+  get rebuildTimes() { return rebuildTimes; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
 };
