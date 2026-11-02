@@ -1,4 +1,4 @@
-// box 制图原型：路面、素材件、机关的放置与编辑
+// Ballance Vibe Mapping 编辑器（box 版）：路面、素材件、机关、钢轨、护栏的放置与编辑
 //   左键：点选 / 框选（Shift 加选）/ 拖动；Shift 拖动沿轴移动；Alt 拖动改高度；Ctrl 拖动改尺寸
 //   按住 V 拖动：抓住顶点或边中点，吸附到别的元素的顶点、边中点或边上
 //   格栅（G）：位置和尺寸吸附到步长 1；对齐（S）：边、中线、顶面靠近时对齐并画出辅助面
@@ -13,17 +13,24 @@ import { buildRail } from '../geom/rail';
 import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState, sampleRail } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
+import { thumbnail } from '../view/thumbs';
+import { setTextureLoadedCallback } from '../view/assets';
+import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
+/** 全图设置：文档里改过的项覆盖默认值 */
+const mapSettings = (): MapSettings => ({ ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
 import { type Loop, pathAlong, project, projectNear } from '../model/outline';
-import { exportBoxNmo } from './export';
+import { exportBoxNmo, exportBoxScene } from './export';
+import type { MapSettings } from '../model/types';
 import { Box, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
 
-const host = document.getElementById('view')!;
+const host = document.getElementById('viewport')!;
 const statusEl = document.getElementById('status')!;
+const hintsEl = document.getElementById('hints')!;
 const props = document.getElementById('props')!;
 const marqueeEl = document.getElementById('marquee')!;
 
@@ -53,10 +60,8 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(-0.4, -0.7, 1);
 scene.add(sun);
 
-const gridHelper = new THREE.GridHelper(400, 400, 0x3a4560, 0x2a3245);
-gridHelper.rotation.x = Math.PI / 2;
-gridHelper.position.z = -5.02;
-scene.add(gridHelper);
+const gridGroup = createGrid();
+scene.add(gridGroup);
 
 const world = new THREE.Group();
 const overlay = new THREE.Group();
@@ -67,12 +72,21 @@ scene.add(world, overlay, selLayer);
 // ---------------- 状态 ----------------
 
 const STORE = 'bvm.box.doc';
+/** 本机偏好：素材库在哪一侧、格栅步长、机关显示方式、主题 */
+interface Prefs { side: 'left' | 'right'; gridStep: number; modelView: boolean; theme: 'dark' | 'light'; tab: string }
+const prefs: Prefs = (() => {
+  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road' };
+  try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
+})();
+const savePrefs = () => { try { localStorage.setItem('bvm.box.prefs', JSON.stringify(prefs)); } catch { /* 存不了就算了 */ } };
+/** 按格栅步长取整 */
+const snapG = (v: number) => Math.round(v / prefs.gridStep) * prefs.gridStep;
 let doc: Doc = (() => { try { const s = localStorage.getItem(STORE); if (s) return JSON.parse(s) as Doc; } catch { /* 读不了就用测试场景 */ } return SCENES[0].build(); })();
 let sel = new Set<number>();
 let gridOn = false;
 let alignOn = false;
 let wireOn = false;
-let modelView = true;
+let modelView = prefs.modelView;
 let vHeld = false;
 let splitMode = false;
 /** 护栏工具：点路面外沿放一整条直边的护栏，按住拖动沿外沿放一段 */
@@ -211,7 +225,7 @@ function rebuildInner() {
   // 护栏：钢管 + 两头的铆钉
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'guard') continue;
-    const gm = guardFromRoute({ pts: e.pts, outs: e.outs }, DEFAULT_SETTINGS);
+    const gm = guardFromRoute({ pts: e.pts, outs: e.outs }, mapSettings());
     if (!gm) continue;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(gm.pos, 3));
@@ -293,6 +307,32 @@ function drive(raw: number[], snap: number[] | null, apply: (v: number[]) => voi
   }
 }
 let lastStatus = '';
+let lastHints = '';
+type Hint = { keys: string[]; label: string };
+const MOUSE: Record<string, string> = { LMB: 'l', MMB: 'm', RMB: 'r', Wheel: 'm' };
+const mouseIcon = (b: string) => {
+  const fill = (k: string) => (MOUSE[b] === k ? 'currentColor' : 'none');
+  return `<svg class="mouse" viewBox="0 0 10 14" width="10" height="14"><rect x="0.6" y="0.6" width="8.8" height="12.8" rx="4.4" fill="none" stroke="currentColor" stroke-width="1"/>`
+    + `<path d="M5 0.6 V5.5" stroke="currentColor" stroke-width="0.8"/>`
+    + `<path d="M5 0.6 A4.4 4.4 0 0 0 0.6 5 V5.5 H5 Z" fill="${fill('l')}" opacity="0.9"/>`
+    + `<path d="M5 0.6 A4.4 4.4 0 0 1 9.4 5 V5.5 H5 Z" fill="${fill('r')}" opacity="0.9"/>`
+    + (b === 'MMB' || b === 'Wheel' ? '<rect x="4" y="2" width="2" height="3" rx="1" fill="currentColor"/>' : '')
+    + '</svg>';
+};
+const keyHtml = (k: string) => (k in MOUSE ? mouseIcon(k) : `<kbd>${k}</kbd>`);
+/** 当前情况下的按键提示（Blender 式） */
+function currentHints(): Hint[] {
+  const H = (keys: string[], label: string): Hint => ({ keys, label });
+  if (drag?.t === 'place') return [H(['LMB'], '松开放下'), H(['R'], '旋转'), H(['RMB'], '取消')];
+  if (drag) return [H(['LMB'], '松开完成'), H(['G'], gridOn ? '格栅：开' : '格栅：关'), H(['S'], alignOn ? '对齐：开' : '对齐：关')];
+  if (guardMode) return [H(['LMB'], '点路边：放整条直边'), H(['LMB'], '沿路边拖：放一段'), H(['LMB'], '拖把手：改长度'), H(['Esc'], '退出')];
+  if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(['Tab'], '换方向'), H(['Esc'], '退出')];
+  if (vHeld) return [H(['V', 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
+  const hs = [H(['MMB'], '环视'), H(['RMB'], '平移'), H(['Wheel'], '缩放')];
+  if (sel.size) hs.push(H(['LMB'], '移动'), H(['Shift', 'LMB'], '沿轴'), H(['Alt', 'LMB'], '高度'), H(['Ctrl', 'LMB'], '尺寸'), H(['Alt', 'Shift', 'LMB'], '拉坡'), H(['V'], '吸附'), H(['F'], '聚焦'), H(['X'], '删除'));
+  else hs.push(H(['LMB'], '选择 / 框选'), H(['F'], '看全部'));
+  return hs;
+}
 function updateStatus() {
   const parts: string[] = [];
   if (flashMsg && performance.now() < flashMsg.until) parts.push(flashMsg.warn ? `<span class="warn">${flashMsg.text}</span>` : `<b>${flashMsg.text}</b>`);
@@ -300,15 +340,11 @@ function updateStatus() {
   if (sel.size) {
     const b = boundsOf(doc, sel);
     parts.push(`选中 ${sel.size} 个 · ${fmt(b.x1 - b.x0)} × ${fmt(b.y1 - b.y0)} · 顶面 ${fmt(b.z1)}`);
-  }
-  parts.push(`${Object.keys(doc.elems).length} 个元素 · ${lastSolve.tris} 个三角形 · 求解 ${lastSolve.ms.toFixed(1)} ms`);
-  parts.push(guardMode ? '护栏：点路边放一整条直边 · 沿路边拖动放一段（可跨拐角）· 拖护栏端头改长度 · Esc / 右键退出' : splitMode
-    ? '切分：点路面在鼠标处切开 · Tab 换方向 · Esc / 右键退出'
-    : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Alt+Shift 拖一头拉坡 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
-  if (gridOn) parts.push('格栅 1');
-  if (alignOn) parts.push('自动对齐');
-  const html = parts.join('　|　');
+  } else parts.push(`${Object.keys(doc.elems).length} 个元素`);
+  const html = parts.join('　·　');
   if (html !== lastStatus) { statusEl.innerHTML = html; lastStatus = html; }
+  const hs = currentHints().map((h) => `<span class="hint">${h.keys.map(keyHtml).join('')}<span>${h.label}</span></span>`).join('');
+  if (hs !== lastHints) { hintsEl.innerHTML = hs; lastHints = hs; }
 }
 const fmt = (v: number) => String(+v.toFixed(3));
 setInterval(() => { if (flashMsg && performance.now() > flashMsg.until) { flashMsg = null; updateStatus(); } }, 500);
@@ -415,7 +451,8 @@ let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean; plane?: Bound
 /** 改尺寸时长度吸附到 5 的整数倍的距离（屏幕像素） */
 const SIZE5_PX = 7;
 const measureLabel = document.createElement('div');
-Object.assign(measureLabel.style, { position: 'fixed', pointerEvents: 'none', zIndex: '2', font: '600 13px "Microsoft YaHei UI", sans-serif', padding: '2px 8px', borderRadius: '5px', transform: 'translate(-50%, -130%)', display: 'none' });
+measureLabel.className = 'measure-label';
+measureLabel.style.display = 'none';
 document.body.appendChild(measureLabel);
 const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
 
@@ -472,7 +509,7 @@ function drawOverlay() {
   }
   if (guardPreview && guardPreview.pts.length > 1) {
     // 预览就是放下后的护栏本身（同一套几何：往外偏、拐角圆弧、两头立柱），半透明绿色
-    const gm = guardFromRoute(guardPreview, DEFAULT_SETTINGS);
+    const gm = guardFromRoute(guardPreview, mapSettings());
     if (gm) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(gm.pos, 3));
@@ -615,7 +652,7 @@ function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target
 function gridDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[] = [0, 1, 2]): V3 {
   if (!gridOn) return d;
   const lo = [b.x0, b.y0, b.z1];
-  return d.map((v, i) => (axes.includes(i as 0 | 1 | 2) ? Math.round(lo[i] + v) - lo[i] : v)) as V3;
+  return d.map((v, i) => (axes.includes(i as 0 | 1 | 2) ? snapG(lo[i] + v) - lo[i] : v)) as V3;
 }
 
 const unionB = (a: Bounds, b: Bounds): Bounds => ({ x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), z0: Math.min(a.z0, b.z0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1), z1: Math.max(a.z1, b.z1) });
@@ -913,7 +950,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
   const lo = ax === 0 ? o.x : o.y, len = ax === 0 ? o.sx : o.sy;
   const start = s < 2 ? lo + len : lo;
   let raw = start + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
-  if (gridOn) raw = Math.round(raw);
+  if (gridOn) raw = snapG(raw);
   raw = Math.round(raw * 1000) / 1000;
   let snap: number | null = null;
   guides = [];
@@ -964,7 +1001,7 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
   const other = d.hi ? zLo : zHi;
   const start = d.hi ? zHi : zLo;
   let raw = start + (p.z - d.start.z);
-  if (gridOn) raw = Math.round(raw);
+  if (gridOn) raw = snapG(raw);
   raw = Math.round(raw * 1000) / 1000;
   const thr = worldPerPx(p) * SIZE5_PX;
   guides = [];
@@ -1024,7 +1061,7 @@ function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
   const end = advance({ x: o.x, y: o.y, z: o.z, heading: o.heading }, pc);
   const start = o.z + pc.dz;
   let raw = start + (p.z - d.start.z);
-  if (gridOn) raw = Math.round(raw);
+  if (gridOn) raw = snapG(raw);
   raw = Math.round(raw * 1000) / 1000;
   const thr = worldPerPx(p) * SIZE5_PX;
   const cands: number[] = [o.z];
@@ -1075,7 +1112,7 @@ function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
   if (l.closed && Math.abs(s - d.sFixed) > l.len - 0.2) s = d.sFixed + sgn * (l.len - 0.2);
   d.sNear = s;
   let len = Math.abs(s - d.sFixed);
-  if (gridOn) len = Math.max(1, Math.round(len));
+  if (gridOn) len = Math.max(prefs.gridStep, snapG(len));
   const raw = d.sFixed + sgn * len;
   const thr = worldPerPx(p) * SIZE5_PX;
   const cands: number[] = [];
@@ -1109,7 +1146,7 @@ function railLenTo(d: Extract<Drag, { t: 'railLen' }>, p: THREE.Vector3) {
   const straight = !!last && last.angle === 0;
   const base = straight ? last.len : 0;
   let raw = Math.max(0.5, base + along);
-  if (gridOn) raw = Math.max(1, Math.round(raw));
+  if (gridOn) raw = Math.max(prefs.gridStep, snapG(raw));
   raw = Math.round(raw * 1000) / 1000;
   const L5 = Math.round(raw / 5) * 5;
   const snap = L5 > 0 && Math.abs(raw - L5) < worldPerPx(p) * SIZE5_PX ? L5 : null;
@@ -1164,11 +1201,13 @@ function cancelGrab() {
 // ---------------- 框选 ----------------
 
 function showMarquee(x0: number, y0: number, x1: number, y1: number) {
-  marqueeEl.hidden = false;
-  Object.assign(marqueeEl.style, { left: `${Math.min(x0, x1)}px`, top: `${Math.min(y0, y1)}px`, width: `${Math.abs(x1 - x0)}px`, height: `${Math.abs(y1 - y0)}px` });
+  // 框是画在视图里的（position: absolute），换成相对视图的坐标
+  const r = host.getBoundingClientRect();
+  marqueeEl.classList.add('open');
+  Object.assign(marqueeEl.style, { left: `${Math.min(x0, x1) - r.left}px`, top: `${Math.min(y0, y1) - r.top}px`, width: `${Math.abs(x1 - x0)}px`, height: `${Math.abs(y1 - y0)}px` });
 }
 function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEvent) {
-  marqueeEl.hidden = true;
+  marqueeEl.classList.remove('open');
   drag = null;
   const [x0, x1] = [Math.min(d.sx, e.clientX), Math.max(d.sx, e.clientX)], [y0, y1] = [Math.min(d.sy, e.clientY), Math.max(d.sy, e.clientY)];
   if (x1 - x0 < 4 && y1 - y0 < 4) { if (!d.add) sel.clear(); drawOverlay(); syncProps(); updateStatus(); return; }
@@ -1211,14 +1250,13 @@ function handleOf(e: Elem): P3 {
 function startPlace(type: string) {
   if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
   drag = { t: 'place', ids: null, type, moved: false, rotOff: 0 };
+  document.body.classList.add('placing');
 }
 function placeMove(e: PointerEvent) {
   if (drag?.t !== 'place') return;
-  const r = el.getBoundingClientRect();
-  const over = e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom;
+  const over = document.elementFromPoint(e.clientX, e.clientY) === el;
   if (!over) return;
   drag.moved = true;
-  palette.hidden = true;
   if (drag.ids === null) {
     snapshot();
     const es = newElems(drag.type);
@@ -1260,7 +1298,7 @@ function placeMove(e: PointerEvent) {
   let pz = p.z;
   if (first.kind === 'obj' && baseSpec(first.type)?.kind !== 'fence' && baseSpec(first.type) && under?.kind === 'box' && under.style !== 'normal' && !under.slope) pz = under.z - SINK_DEPTH;
   let raw: V3 = [p.x - hd[0], p.y - hd[1], pz - hd[2]];
-  if (gridOn) { const b = boundsOf(doc, ids); raw = [Math.round(b.x0 + raw[0]) - b.x0, Math.round(b.y0 + raw[1]) - b.y0, raw[2]]; }
+  if (gridOn) { const b = boundsOf(doc, ids); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
   // 自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就吸过去（磁吸，松手对准）
   moveSel(orig, raw);
   let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
@@ -1279,8 +1317,8 @@ function placeMove(e: PointerEvent) {
 }
 function placeEnd(e: PointerEvent) {
   if (drag?.t !== 'place') return;
-  const r = el.getBoundingClientRect();
-  const over = e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom;
+  const over = document.elementFromPoint(e.clientX, e.clientY) === el;
+  document.body.classList.remove('placing');
   if (!drag.moved && !over) {
     // 点击按钮：放到视图中心
     snapshot();
@@ -1288,36 +1326,114 @@ function placeEnd(e: PointerEvent) {
     for (const n of es) doc.elems[n.id] = n;
     const ids = es.map((n) => n.id);
     const b = boundsOf(doc, ids);
-    const g = (v: number) => (gridOn ? Math.round(v) : v);
+    const g = (v: number) => (gridOn ? snapG(v) : v);
     for (const id of ids) translateElem(doc.elems[id], [g(controls.target.x - (b.x1 - b.x0) / 2) - b.x0, g(controls.target.y - (b.y1 - b.y0) / 2) - b.y0, 0]);
     sel = new Set(ids);
-    palette.hidden = true;
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
   anim = null; snapping = false;
   drag = null; snapTarget = null;
   rebuild();
 }
-for (const b of document.querySelectorAll<HTMLButtonElement>('.add')) {
-  b.addEventListener('pointerdown', (e) => { e.preventDefault(); startPlace(b.dataset.add!); });
-}
+// ---------------- 素材库（侧边，可左可右；分标签） ----------------
 
-// 机关面板
+/** 素材库里的一项：type 是 newElems 认的类型名 */
+interface LibItem { type: string; label: string; hint: string; icon?: string }
+const svgThumb = (body: string) => `<svg viewBox="0 0 64 64">${body}</svg>`;
+// 路面 / 素材件 / 钢轨的简图（等轴测的小方块），机关和装饰用模型渲染的预览图
+const ROAD_TOP = '#c9b48a', ROAD_SIDE = '#8a7558', SINK = '#9c8665', RAIL = '#aab4c2';
+const slab = (top: string, inner?: string) => svgThumb(`<path d="M8 30 L32 18 L56 30 L32 42 Z" fill="${top}"/><path d="M8 30 L32 42 L32 52 L8 40 Z" fill="${ROAD_SIDE}"/><path d="M56 30 L32 42 L32 52 L56 40 Z" fill="#76634a"/>${inner ?? ''}`);
+const LIB: { id: string; label: string; items: LibItem[] }[] = [
+  {
+    id: 'road', label: '路面', items: [
+      { type: 'normal', label: '平路', hint: 'Ctrl 拖改尺寸，Alt+Shift 拖一头做坡', icon: slab(ROAD_TOP, '<path d="M14 30 L32 21 L50 30 L32 39 Z" fill="#d8c8a2"/>') },
+      { type: 'sink', label: '凹路', hint: '凹槽路面', icon: slab(ROAD_TOP, `<path d="M16 30 L32 22 L48 30 L32 38 Z" fill="${SINK}"/>`) },
+      { type: 'ribbon', label: '细边框凹路', hint: '细边框凹槽平台', icon: slab(ROAD_TOP, '<path d="M12 30 L32 20 L52 30 L32 40 Z" fill="#b29d79"/>') },
+      { type: 'transition', label: '平凹转换', hint: '长 5，一头平路一头凹路', icon: slab(ROAD_TOP, `<path d="M20 36 L44 24 L50 27 L26 39 Z" fill="${SINK}"/>`) },
+      { type: 'transition-narrow', label: '窄转换', hint: '长 2.5，凹路接细边框平台', icon: slab(ROAD_TOP, `<path d="M26 33 L44 24 L48 26 L30 35 Z" fill="${SINK}"/>`) },
+    ],
+  },
+  {
+    id: 'cp', label: '盘点', items: [
+      { type: 'start', label: '起点', hint: '四火，全图一个', icon: svgThumb('<ellipse cx="32" cy="34" rx="22" ry="12" fill="#a99a86"/><ellipse cx="32" cy="32" rx="14" ry="7" fill="#e3a35a"/><path d="M28 30 L32 10 L36 30 Z" fill="#f0b46e"/>') },
+      { type: 'check', label: '小节', hint: '两火，按放置顺序编小节号', icon: svgThumb('<ellipse cx="32" cy="34" rx="20" ry="11" fill="#a99a86"/><ellipse cx="32" cy="32" rx="12" ry="6" fill="#e3a35a"/><path d="M14 32 L18 14 L22 32 Z M42 32 L46 14 L50 32 Z" fill="#f0b46e"/>') },
+    ],
+  },
+  {
+    id: 'rail', label: '钢轨', items: [
+      { type: 'rail', label: '直轨', hint: 'Ctrl 拖改长度，Shift+Alt 做坡', icon: svgThumb(`<path d="M8 40 L48 20 M16 44 L56 24" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
+      { type: 'rail-curve', label: '弯轨', hint: '属性里调半径、角度', icon: svgThumb(`<path d="M10 46 Q10 18 40 14 M18 50 Q18 26 46 22" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
+      { type: 'rail-spiral', label: '螺旋', hint: '属性里调圈数、半径', icon: svgThumb(`<path d="M32 52 C10 50 10 36 32 36 C54 36 54 22 32 22 C14 22 14 12 32 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
+    ],
+  },
+  { id: 'module', label: '机关', items: OBJ_TYPES.filter((t) => t.cat === 'module').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
+  { id: 'deco', label: '装饰', items: OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })) },
+];
 const palette = document.getElementById('palette')!;
-palette.innerHTML = (['module', 'deco'] as const).map((cat) => `<div class="cat">${cat === 'module' ? '机关' : '装饰'}</div>`
-  + OBJ_TYPES.filter((t) => t.cat === cat).map((t) => `<div class="item" data-type="${t.type}" title="拖进视图放置">${t.label}${baseSpec(t.type) ? ' · 带专属路块' : ''}</div>`).join('')).join('');
-palette.addEventListener('pointerdown', (e) => {
-  const it = (e.target as HTMLElement).closest<HTMLElement>('.item');
-  if (!it) return;
+palette.innerHTML = `
+  <div class="lib-head">
+    <span class="title">素材库</span>
+    <button class="fold" id="lib-fold" title="收起 / 展开"><svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg></button>
+  </div>
+  <div class="lib-tabs">${LIB.map((g) => `<button data-tab="${g.id}">${g.label}<small>${g.items.length}</small></button>`).join('')}</div>
+  <div class="lib-search"><input type="search" placeholder="搜索名称或代号…" /></div>
+  <div class="lib-body"><div class="lib-grid"></div><div class="lib-empty" hidden>没有匹配的素材</div></div>
+  <div class="lib-foot">按住卡片拖到场景里放下（拖动中 R 旋转、右键取消）· 点一下放到视图中心</div>`;
+const libGrid = palette.querySelector<HTMLElement>('.lib-grid')!;
+const libEmpty = palette.querySelector<HTMLElement>('.lib-empty')!;
+const libSearch = palette.querySelector<HTMLInputElement>('.lib-search input')!;
+function renderLib() {
+  const q = libSearch.value.trim().toLowerCase();
+  // 搜索时跨所有标签找；不搜索时只显示当前标签
+  const items = q ? LIB.flatMap((g) => g.items).filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q)) : (LIB.find((g) => g.id === prefs.tab) ?? LIB[0]).items;
+  palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => b.classList.toggle('on', !q && b.dataset.tab === prefs.tab));
+  libGrid.innerHTML = items.map((it) => `<div class="lib-card" data-type="${it.type}" title="${it.label}
+${it.hint}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></div>`).join('');
+  libEmpty.hidden = items.length > 0;
+  fillThumbs();
+}
+function fillThumbs() {
+  for (const c of libGrid.querySelectorAll<HTMLElement>('.lib-card')) {
+    const t = c.dataset.type!;
+    if (!t.startsWith('obj:')) continue;
+    const box = c.querySelector<HTMLElement>('.thumb')!;
+    const url = thumbnail(t.slice(4), modelView ? 'model' : 'placeholder');
+    if (url) { box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); }
+  }
+}
+palette.querySelector('.lib-tabs')!.addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-tab]');
+  if (!b) return;
+  prefs.tab = b.dataset.tab!; savePrefs();
+  libSearch.value = '';
+  renderLib();
+});
+libSearch.addEventListener('input', renderLib);
+libGrid.addEventListener('pointerdown', (e) => {
+  const c = (e.target as Element).closest<HTMLElement>('.lib-card');
+  if (!c || e.button !== 0) return;
   e.preventDefault();
-  startPlace(`obj:${it.dataset.type}`);
+  startPlace(c.dataset.type!);
 });
-const modsBtn = document.getElementById('mods')!;
-modsBtn.addEventListener('click', () => {
-  const r = modsBtn.getBoundingClientRect();
-  palette.style.left = `${r.left}px`;
-  palette.hidden = !palette.hidden;
-});
-window.addEventListener('pointerdown', (e) => { if (!palette.contains(e.target as Node) && e.target !== modsBtn) palette.hidden = true; });
+palette.querySelector('#lib-fold')!.addEventListener('click', () => palette.classList.toggle('folded'));
+setAssetLoadedCallback(fillThumbs);
+setTextureLoadedCallback(fillThumbs);
+/** 素材库在左边还是右边；属性面板放在另一边 */
+function applySide() {
+  palette.classList.toggle('left', prefs.side === 'left');
+  props.classList.toggle('right', prefs.side === 'left');
+}
+applySide();
+renderLib();
+// 拖放中右键：取消
+window.addEventListener('pointerdown', (e) => {
+  if (e.button === 2 && drag?.t === 'place') {
+    e.preventDefault(); e.stopPropagation();
+    if (drag.ids) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
+    anim = null; snapping = false; drag = null; snapTarget = null;
+    document.body.classList.remove('placing');
+    rebuild();
+  }
+}, true);
 
 // ---------------- 切分 ----------------
 
@@ -1327,7 +1443,7 @@ function splitAt(e: { clientX: number; clientY: number }): { id: number; axis: 0
   if (!h || b?.kind !== 'box') return null;
   const axis: 0 | 1 = splitAxis ?? (b.sx >= b.sy ? 0 : 1);
   let t = h.p.getComponent(axis);
-  t = gridOn ? Math.round(t) : Math.round(t * 1000) / 1000;
+  t = gridOn ? snapG(t) : Math.round(t * 1000) / 1000;
   return { id: h.id, axis, t };
 }
 function splitHover(e: { clientX: number; clientY: number }) {
@@ -1385,7 +1501,7 @@ function openToggleAt(e: { clientX: number; clientY: number }) {
 function guardHandle(g: Extract<Elem, { kind: 'guard' }>, end: 0 | 1): P3 {
   const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
   const o = end === 0 ? g.outs[0] : g.outs[g.outs.length - 1];
-  const st = DEFAULT_SETTINGS;
+  const st = mapSettings();
   return [p[0] + o[0] * st.guardOffset, p[1] + o[1] * st.guardOffset, p[2] + st.guardTop];
 }
 let guardEndHover: { id: number; end: 0 | 1 } | null = null;
@@ -1451,11 +1567,17 @@ function guardUp(e: PointerEvent) {
   rebuild();
   guardHover(e);
 }
-function enterGuard() { exitSplit(); guardMode = true; document.getElementById('guard')!.classList.add('on'); sel.clear(); drawOverlay(); updateStatus(); }
-function exitGuard() { if (!guardMode) return; guardMode = false; guardPreview = null; guardDrag = null; dragInfo = ''; document.getElementById('guard')!.classList.remove('on'); drawOverlay(); updateStatus(); }
+const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools button')];
+const syncTools = () => { const t = guardMode ? 'guard' : splitMode ? 'split' : 'select'; toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === t)); };
+function setTool(t: string) {
+  if (t === 'guard') enterGuard(); else if (t === 'split') enterSplit(); else { exitGuard(); exitSplit(); }
+}
+toolButtons.forEach((b) => b.addEventListener('click', () => { setTool(b.dataset.tool!); b.blur(); }));
+function enterGuard() { exitSplit(); guardMode = true; sel.clear(); syncTools(); drawOverlay(); updateStatus(); }
+function exitGuard() { if (!guardMode) return; guardMode = false; guardPreview = null; guardDrag = null; dragInfo = ''; el.style.cursor = ''; syncTools(); drawOverlay(); updateStatus(); }
 
-function enterSplit() { splitMode = true; splitAxis = null; document.getElementById('split')!.classList.add('on'); sel.clear(); drawOverlay(); updateStatus(); }
-function exitSplit() { if (!splitMode) return; splitMode = false; splitPreview = null; dragInfo = ''; document.getElementById('split')!.classList.remove('on'); drawOverlay(); updateStatus(); }
+function enterSplit() { exitGuard(); splitMode = true; splitAxis = null; sel.clear(); syncTools(); drawOverlay(); updateStatus(); }
+function exitSplit() { if (!splitMode) return; splitMode = false; splitPreview = null; dragInfo = ''; syncTools(); drawOverlay(); updateStatus(); }
 
 // ---------------- 命令 ----------------
 
@@ -1482,7 +1604,7 @@ function doRotate() {
   const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
   for (const id of sel) rotateElem(doc.elems[id], cx, cy);
   // 开着格栅时，转完的最小角仍落在格栅上
-  if (gridOn) { const nb = boundsOf(doc, sel); for (const id of sel) translateElem(doc.elems[id], [Math.round(nb.x0) - nb.x0, Math.round(nb.y0) - nb.y0, 0]); }
+  if (gridOn) { const nb = boundsOf(doc, sel); for (const id of sel) translateElem(doc.elems[id], [snapG(nb.x0) - nb.x0, snapG(nb.y0) - nb.y0, 0]); }
   rebuild();
 }
 function doDelete() {
@@ -1516,8 +1638,6 @@ function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); doc = J
 const lastMouse = { clientX: 0, clientY: 0 };
 window.addEventListener('pointermove', (e) => { lastMouse.clientX = e.clientX; lastMouse.clientY = e.clientY; }, true);
 
-document.getElementById('split')!.addEventListener('click', () => (splitMode ? exitSplit() : enterSplit()));
-document.getElementById('guard')!.addEventListener('click', () => (guardMode ? exitGuard() : enterGuard()));
 document.getElementById('merge')!.addEventListener('click', doMerge);
 document.getElementById('group')!.addEventListener('click', doGroup);
 document.getElementById('ungroup')!.addEventListener('click', doUngroup);
@@ -1525,22 +1645,20 @@ document.getElementById('dup')!.addEventListener('click', () => { const r = el.g
 document.getElementById('rot')!.addEventListener('click', doRotate);
 document.getElementById('del')!.addEventListener('click', doDelete);
 const gridBtn = document.getElementById('grid')!;
-const toggleGrid = () => { gridOn = !gridOn; gridBtn.classList.toggle('on', gridOn); updateStatus(); };
-gridBtn.addEventListener('click', toggleGrid);
+const toggleGrid = () => { gridOn = !gridOn; gridBtn.classList.toggle('active', gridOn); flash(gridOn ? `格栅：开（步长 ${prefs.gridStep}）` : '格栅：关'); };
+gridBtn.addEventListener('click', () => { toggleGrid(); gridBtn.blur(); });
 const alignBtn = document.getElementById('align')!;
-const toggleAlign = () => { alignOn = !alignOn; alignBtn.classList.toggle('on', alignOn); updateStatus(); };
-alignBtn.addEventListener('click', toggleAlign);
-const wireBtn = document.getElementById('wire')!;
-wireBtn.addEventListener('click', () => { wireOn = !wireOn; wireBtn.classList.toggle('on', wireOn); rebuild(); });
-const viewBtn = document.getElementById('view-mode')!;
-viewBtn.addEventListener('click', () => { modelView = !modelView; viewBtn.textContent = modelView ? '机关模型' : '占位符'; rebuild(); });
+const toggleAlign = () => { alignOn = !alignOn; alignBtn.classList.toggle('active', alignOn); flash(alignOn ? '自动对齐：开' : '自动对齐：关'); };
+alignBtn.addEventListener('click', () => { toggleAlign(); alignBtn.blur(); });
+document.getElementById('undo')!.addEventListener('click', () => undoOnce());
+document.getElementById('redo')!.addEventListener('click', () => redoOnce());
 
 window.addEventListener('keydown', (e) => {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT') return;
   const k = e.key.toLowerCase();
   if (k === 'v' && !vHeld) { vHeld = true; drawOverlay(); }
-  if (k === 'escape') { cancelGrab(); exitSplit(); exitGuard(); }
+  if (k === 'escape') { cancelGrab(); exitSplit(); exitGuard(); closeMenus(); }
   if (k === 'tab' && splitMode) { e.preventDefault(); splitAxis = splitAxis === null ? 1 : ((1 - splitAxis) as 0 | 1); splitHover(lastMouse); }
   if (e.ctrlKey) {
     if (k === 'z') undoOnce();
@@ -1548,21 +1666,26 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'j') { e.preventDefault(); doMerge(); }
     else if (k === 'g') { e.preventDefault(); if (e.shiftKey) doUngroup(); else doGroup(); }
     else if (k === 'd') { e.preventDefault(); doDuplicate(lastMouse); }
+    else if (k === 's') { e.preventDefault(); saveFile(); }
+    else if (k === 'o') { e.preventDefault(); fileInput.click(); }
     else if (k === 'a') { e.preventDefault(); sel = new Set(Object.keys(doc.elems).map(Number)); drawOverlay(); syncProps(); updateStatus(); }
     return;
   }
   if (k === 'g') toggleGrid();
   if (k === 's') toggleAlign();
-  if (k === 'k') (splitMode ? exitSplit() : enterSplit());
-  if (k === 'h') (guardMode ? exitGuard() : enterGuard());
+  if (k === 'k' || k === '3') (splitMode ? exitSplit() : enterSplit());
+  if (k === 'h' || k === '2') (guardMode ? exitGuard() : enterGuard());
+  if (k === '1') setTool('select');
   if (k === 'r') { if (drag?.t === 'place') { drag.rotOff++; placeMove(lastMouse as PointerEvent); } else doRotate(); }
   if (k === 'delete' || k === 'backspace' || k === 'x') doDelete();
-  if (k === 'f') frameAll();
+  if (k === 'f') frameSelection();
   const step = e.shiftKey ? 0.1 : 1;
   const arrows: Record<string, V3> = { arrowleft: [-step, 0, 0], arrowright: [step, 0, 0], arrowup: [0, step, 0], arrowdown: [0, -step, 0], pageup: [0, 0, step], pagedown: [0, 0, -step] };
   if (arrows[k]) { e.preventDefault(); nudge(arrows[k]); }
 });
-window.addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'v') { vHeld = false; drawOverlay(); } });
+window.addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'v') { vHeld = false; drawOverlay(); } updateStatus(); });
+// 修饰键变化时刷新按键提示
+window.addEventListener('keydown', () => updateStatus());
 
 // ---------------- 属性面板 ----------------
 
@@ -1684,7 +1807,6 @@ function download(name: string, data: BlobPart, type: string) {
 }
 function saveFile() { download('map.bvmbox', JSON.stringify({ format: 'bvm-box', version: 1, doc }), 'application/json'); flash('已保存 map.bvmbox'); }
 const fileInput = document.getElementById('file') as HTMLInputElement;
-document.getElementById('open')!.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', async () => {
   const f = fileInput.files?.[0];
   fileInput.value = '';
@@ -1700,22 +1822,110 @@ fileInput.addEventListener('change', async () => {
     flash(`已打开 ${f.name}`);
   } catch (e) { flash(`打开失败：${(e as Error).message}`, true); }
 });
-document.getElementById('save')!.addEventListener('click', saveFile);
-document.getElementById('export')!.addEventListener('click', async () => {
-  try {
-    flash('正在生成 NMO…');
-    const { data, warnings } = await exportBoxNmo(doc);
-    download('map.nmo', data as BlobPart, 'application/octet-stream');
-    flash(warnings.length ? `已导出 map.nmo（${warnings.join('；')}）` : '已导出 map.nmo', warnings.length > 0);
-  } catch (e) { flash(`导出失败：${(e as Error).message}`, true); console.error(e); }
+// 下拉菜单：文件、导出
+const fileMenu = document.getElementById('file-menu')!, exportMenu = document.getElementById('export-menu')!;
+const fileBtn = document.getElementById('file-btn')!, exportBtn = document.getElementById('export')!;
+function closeMenus() { fileMenu.classList.remove('open'); exportMenu.classList.remove('open'); }
+fileBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
+exportBtn.addEventListener('click', (e) => { e.stopPropagation(); fileMenu.classList.remove('open'); exportMenu.classList.toggle('open'); exportBtn.blur(); });
+window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !exportMenu.contains(t) && t !== fileBtn && t !== exportBtn) closeMenus(); });
+document.getElementById('scene-list')!.innerHTML = SCENES.map((sc, i) => `<button data-scene="${i}"><span>${sc.name}</span></button>`).join('');
+fileMenu.addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button');
+  if (!b) return;
+  closeMenus();
+  if (b.dataset.scene !== undefined) { setScene(+b.dataset.scene); return; }
+  const act = b.dataset.act;
+  if (act === 'new') { if (Object.keys(doc.elems).length && !confirm('清空当前地图？（可以撤销）')) return; setScene(-1); }
+  else if (act === 'open') fileInput.click();
+  else if (act === 'save') saveFile();
 });
-window.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); } });
+exportMenu.addEventListener('click', async (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-format]');
+  if (!b) return;
+  closeMenus();
+  const desc = exportBoxScene(doc);
+  if (desc.warnings.length && !confirm(`${desc.warnings.join('\n')}\n\n仍然导出？`)) return;
+  if (b.dataset.format === 'json') { download('map.scene.json', JSON.stringify(desc), 'application/json'); flash('已导出 map.scene.json'); return; }
+  try {
+    flash('正在生成 .nmo…');
+    exportBtn.setAttribute('disabled', '');
+    const { data } = await exportBoxNmo(doc);
+    download('map.nmo', data as BlobPart, 'application/octet-stream');
+    flash('已导出 map.nmo');
+  } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
+  finally { exportBtn.removeAttribute('disabled'); }
+});
+
+// ---------------- 主题、设置 ----------------
+
+function applyTheme(t: 'dark' | 'light') {
+  prefs.theme = t; savePrefs();
+  document.documentElement.dataset.theme = t;
+  const g = GRID_THEMES[t];
+  (scene.background as THREE.Color).set(g.bg);
+  themeGrid(gridGroup, g);
+  document.querySelector('#theme .theme-label')!.textContent = t === 'dark' ? '暗色' : '亮色';
+}
+applyTheme(prefs.theme);
+document.getElementById('theme')!.addEventListener('click', (e) => { applyTheme(prefs.theme === 'dark' ? 'light' : 'dark'); (e.currentTarget as HTMLButtonElement).blur(); });
+
+const settingsPanel = document.getElementById('settings-panel')!;
+const SETTING_FIELDS: { key: keyof MapSettings; label: string; hint: string; step: number }[] = [
+  { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（默认 2.6）', step: 0.05 },
+  { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（默认 2）', step: 0.05 },
+  { key: 'guardOffset', label: '护栏离路边', hint: '管中心在路边外侧多远', step: 0.05 },
+  { key: 'guardRadius', label: '护栏管半径', hint: '', step: 0.01 },
+  { key: 'nailDepth', label: '铆钉深度', hint: '铆钉顶部在路面以下', step: 0.05 },
+];
+function renderSettings() {
+  const st = mapSettings();
+  const seg = (id: string, opts: [string, string][], cur: string) => `<span class="seg-toggle" id="${id}">${opts.map(([v, n]) => `<button data-v="${v}" class="${v === cur ? 'on' : ''}">${n}</button>`).join('')}</span>`;
+  settingsPanel.innerHTML = '<h3>全图设置</h3>'
+    + SETTING_FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${st[f.key]}"></label>`).join('')
+    + '<h3 class="sub">编辑</h3>'
+    + `<label><span>格栅步长<small>打开格栅时位置和尺寸的步长（默认 1）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${prefs.gridStep}"></label>`
+    + '<h3 class="sub">界面</h3>'
+    + `<label class="stack"><span>素材库位置<small>属性面板在另一边</small></span>${seg('lib-side', [['left', '左边'], ['right', '右边']], prefs.side)}</label>`
+    + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
+    + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
+    + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
+  settingsPanel.querySelectorAll<HTMLInputElement>('input[data-key]').forEach((inp) => inp.addEventListener('change', () => {
+    const v = Number(inp.value);
+    if (!Number.isFinite(v)) return;
+    snapshot();
+    doc.settings = { ...(doc.settings ?? {}), [inp.dataset.key!]: v };
+    rebuild();
+  }));
+  settingsPanel.querySelector<HTMLInputElement>('#grid-step')!.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v) && v > 0) { prefs.gridStep = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.gridStep);
+  });
+  const segClick = (id: string, fn: (v: string) => void) => settingsPanel.querySelectorAll<HTMLButtonElement>(`#${id} button`).forEach((b) => b.addEventListener('click', () => { fn(b.dataset.v!); renderSettings(); }));
+  segClick('lib-side', (v) => { prefs.side = v as 'left' | 'right'; savePrefs(); applySide(); });
+  segClick('module-view', (v) => { modelView = v === 'model'; prefs.modelView = modelView; savePrefs(); renderLib(); rebuild(); });
+  segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
+  settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; savePrefs(); rebuild(); renderSettings(); });
+  settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => { settingsPanel.hidden = true; });
+}
+window.addEventListener('pointerdown', (e) => {
+  const t = e.target as Element;
+  if (!settingsPanel.hidden && !settingsPanel.contains(t) && !t.closest?.('#settings')) settingsPanel.hidden = true;
+});
+document.getElementById('settings')!.addEventListener('click', (e) => {
+  settingsPanel.hidden = !settingsPanel.hidden;
+  if (!settingsPanel.hidden) renderSettings();
+  (e.currentTarget as HTMLButtonElement).blur();
+});
+
+// 意见与反馈：点击时顺便复制群号
+document.getElementById('feedback')!.addEventListener('click', async () => {
+  const id = '1005399899';
+  try { await navigator.clipboard.writeText(id); flash(`已复制群号 ${id}`); } catch { flash(`QQ 群号：${id}`); }
+});
 
 // ---------------- 场景与视图 ----------------
 
-const sceneSel = document.getElementById('scene') as HTMLSelectElement;
-sceneSel.innerHTML = '<option value="" hidden>测试场景…</option>' + SCENES.map((s, i) => `<option value="${i}">${s.name}</option>`).join('') + '<option value="-1">空白</option>';
-sceneSel.addEventListener('change', () => { setScene(+sceneSel.value); sceneSel.value = ''; sceneSel.blur(); });
 function setScene(i: number) {
   snapshot();
   doc = i < 0 ? { elems: {}, nextId: 1 } : SCENES[i].build();
@@ -1724,6 +1934,27 @@ function setScene(i: number) {
   rebuild();
 }
 
+/** 平滑移动视图：视图中心移到 center，观察距离改成 dist（视线方向不变） */
+let camAnim: { dT: THREE.Vector3; dP: THREE.Vector3; k: number } | null = null;
+function moveCamera(center: THREE.Vector3, dist: number) {
+  const t = controls.target;
+  const off = camera.position.clone().sub(t).setLength(dist);
+  camAnim = { dT: center.clone().sub(t), dP: center.clone().add(off).sub(camera.position), k: 0 };
+  zoomGoal = null;
+}
+/** F：聚焦到选中的东西（按画出来的包围盒，距离 = 尺寸 × 1.4，限制在 20～800）；没选中时看全部 */
+function frameSelection() {
+  const ids = sel.size ? [...sel] : Object.keys(doc.elems).map(Number);
+  if (!ids.length) { flash('场景是空的'); return; }
+  const box = new THREE.Box3();
+  for (const id of ids) {
+    for (const g of elemGroups.get(id) ?? []) box.expandByObject(g);
+    const b = elemBounds(doc.elems[id]);
+    if (!elemGroups.get(id)?.length) box.union(new THREE.Box3(new THREE.Vector3(b.x0, b.y0, b.z0), new THREE.Vector3(b.x1, b.y1, b.z1)));
+  }
+  const size = box.getSize(new THREE.Vector3()).length();
+  moveCamera(box.getCenter(new THREE.Vector3()), THREE.MathUtils.clamp(size * 1.4, 20, 800));
+}
 function frameAll() {
   const ids = sel.size ? [...sel] : Object.keys(doc.elems).map(Number);
   if (!ids.length) return;
@@ -1742,8 +1973,16 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
-frameAll();
+(() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('bvm.box.view') ?? 'null');
+    if (v) { camera.position.fromArray(v.p); controls.target.fromArray(v.t); controls.update(); return; }
+  } catch { /* 用默认视角 */ }
+  frameAll();
+})();
+setInterval(() => { try { localStorage.setItem('bvm.box.view', JSON.stringify({ p: camera.position.toArray(), t: controls.target.toArray() })); } catch { /* 存不了就算了 */ } }, 1500);
 rebuild();
+updateStatus();
 // 路面贴图加载好之前先不显示（最多等 1.5 秒），免得先闪一下纯色的路面
 renderer.domElement.style.opacity = '0';
 Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).then(() => {
@@ -1753,6 +1992,14 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
 renderer.setAnimationLoop(() => {
   const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
+  if (camAnim) {
+    const a = camAnim, ease = (x: number) => 1 - (1 - x) ** 3;
+    const k1 = Math.min(a.k + dt / 0.28, 1), f = ease(k1) - ease(a.k);
+    a.k = k1;
+    controls.target.addScaledVector(a.dT, f);
+    camera.position.addScaledVector(a.dP, f);
+    if (k1 >= 1) camAnim = null;
+  }
   if (zoomGoal !== null) {
     const dir = camera.position.clone().sub(controls.target);
     const cur = dir.length();
@@ -1786,7 +2033,7 @@ renderer.setAnimationLoop(() => {
   setScene,
   view: (pos: number[], target: number[]) => { camera.position.set(pos[0], pos[1], pos[2]); controls.target.set(target[0], target[1], target[2]); controls.update(); },
   project: (p: number[]) => { const s = toScreen([p[0], p[1], p[2]]); return { x: s.x, y: s.y }; },
-  wire: (on: boolean) => { wireOn = on; wireBtn.classList.toggle('on', on); rebuild(); },
+  wire: (on: boolean) => { wireOn = on; rebuild(); },
   select: (ids: number[]) => { sel = new Set(ids); drawOverlay(); syncProps(); },
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },

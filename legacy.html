@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ballance Vibe Mapping</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div class="tb-left">
+      <div class="brand"><span class="logo"></span>BVM</div>
+      <div class="group">
+        <button id="new" class="ghost" title="新建地图">新建</button>
+        <button id="open" class="ghost" title="打开 .bvm 工程">打开</button>
+        <button id="save" class="ghost" title="保存 .bvm 工程">保存</button>
+      </div>
+      <div class="sep"></div>
+      <div class="group">
+        <button id="undo" class="icon" title="撤销（Ctrl+Z）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
+        <button id="redo" class="icon" title="重做（Ctrl+Y）"><svg viewBox="0 0 16 16"><path d="M11 4l3 3-3 3M14 7H6.5a4 4 0 0 0 0 8H9" /></svg></button>
+      </div>
+    </div>
+
+    <div class="tb-center">
+      <div class="seg" id="tools">
+        <button data-tool="edit" title="路块（1）">
+          <svg viewBox="0 0 16 16"><path d="M8 2.2l5.6 2.8v6L8 13.8 2.4 11V5z M2.4 5L8 7.8 13.6 5 M8 7.8v6" /></svg>路块<kbd>1</kbd>
+        </button>
+        <button data-tool="rail" title="钢轨（2）">
+          <svg viewBox="0 0 16 16"><path d="M2 12C6 12 10 9 14 4 M2 9.5C5.5 9.5 9 7 12.5 2.5" /></svg>钢轨<kbd>2</kbd>
+        </button>
+        <button data-tool="guard" title="护栏（3）">
+          <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg>护栏<kbd>3</kbd>
+        </button>
+      </div>
+      <div class="sep"></div>
+      <div class="group">
+        <button id="grid" class="toggle" title="格栅对齐：一切对齐格栅间距的倍数（默认 2.5，可在设置里改）（G）">
+          <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg>格栅对齐
+        </button>
+        <button id="snap" class="toggle" title="自动对齐：靠近其它元素时吸附（S）">
+          <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg>自动对齐
+        </button>
+      </div>
+      <div class="sep"></div>
+      <div class="group">
+        <span class="dropdown">
+          <button id="sector" title="新放的机关归到哪个小节（放盘点时自动切到它的小节）"><span id="sector-label">第 1 小节</span><svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+          <div class="dropdown-menu left" id="sector-menu"></div>
+        </span>
+        <button id="sector-eye" class="toggle icon" title="在机关上显示所属小节">
+          <svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" /><circle cx="8" cy="8" r="2" /></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="tb-right">
+      <span class="dropdown">
+        <button id="export" class="primary">导出<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+        <div class="dropdown-menu" id="export-menu">
+          <button data-format="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
+          <button data-format="blend"><span>导出 Blender 文件</span><small>.blend，需要本机 Blender + BBP</small></button>
+          <button data-format="json"><span>导出场景描述</span><small>JSON，配合 scripts/blender/build_scene.py</small></button>
+        </div>
+      </span>
+      <div class="sep"></div>
+      <button id="theme" class="ghost" title="切换亮色 / 暗色">
+        <svg class="moon" viewBox="0 0 16 16"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z" /></svg>
+        <svg class="sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M3 13l1.1-1.1M11.9 4.1L13 3" /></svg>
+        <span class="theme-label">暗色</span>
+      </button>
+      <button id="settings" class="ghost" title="全图设置">
+        <svg viewBox="0 0 16 16"><path d="M2.5 4h4M9.5 4h4M2.5 8h7M12.5 8h1M2.5 12h2M7.5 12h6" /><circle cx="8" cy="4" r="1.5" /><circle cx="11" cy="8" r="1.5" /><circle cx="6" cy="12" r="1.5" /></svg>设置
+      </button>
+      <input type="file" id="file" accept=".bvm,.json" hidden />
+    </div>
+  </header>
+  <main id="viewport">
+    <aside id="palette"></aside>
+    <div id="settings-panel" class="settings-panel" hidden></div>
+  </main>
+  <footer id="statusbar">
+    <div id="hints"></div>
+    <div id="status"></div>
+    <div class="links">
+      <a id="feedback" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=1005399899&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 1005399899 反馈意见">
+        <svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>意见与反馈
+      </a>
+      <a href="https://github.com/ghomist/ballance-vibe-mapping" target="_blank" rel="noopener" title="GitHub 仓库">
+        <svg viewBox="0 0 16 16" class="gh"><path d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.15.46-.33v-1.2c-1.9.41-2.3-.8-2.3-.8-.31-.79-.76-1-.76-1-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.61 1.04 1.6.74 1.99.57.06-.44.24-.74.43-.91-1.51-.17-3.1-.76-3.1-3.37 0-.75.27-1.36.7-1.83-.07-.17-.3-.86.07-1.8 0 0 .57-.18 1.87.7a6.5 6.5 0 0 1 3.4 0c1.3-.88 1.87-.7 1.87-.7.37.94.14 1.63.07 1.8.44.47.7 1.08.7 1.83 0 2.62-1.6 3.2-3.11 3.37.24.21.46.62.46 1.25v1.85c0 .18.12.4.47.33A6.8 6.8 0 0 0 8 1.2z" /></svg>GitHub
+      </a>
+    </div>
+  </footer>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

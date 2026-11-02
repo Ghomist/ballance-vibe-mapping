@@ -115,6 +115,8 @@ export type Elem = Box | Piece | Obj | RailElem | GuardElem;
 export interface Doc {
   elems: Record<number, Elem>;
   nextId: number;
+  /** 全图设置（护栏尺寸等）：只存改过的项，其余用默认值 */
+  settings?: Partial<import('../model/types').MapSettings>;
 }
 
 export const emptyDoc = (): Doc => ({ elems: {}, nextId: 1 });

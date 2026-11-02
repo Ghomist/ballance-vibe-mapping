@@ -51,7 +51,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   const nails: SceneAsset[] = [];
   for (const g of elems) {
     if (g.kind !== 'guard') continue;
-    const gm = guardFromRoute({ pts: g.pts, outs: g.outs }, DEFAULT_SETTINGS);
+    const gm = guardFromRoute({ pts: g.pts, outs: g.outs }, { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
     if (!gm || !gm.pos.length) continue;
     meshes.push({ name: `A_Rail_BVM_Guard_${String(++gi).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: gm.pos.map(r5) }] });
     for (const n of gm.nails) nails.push({ asset: n.name, kind: 'deco', pos: n.pos.map(r5) as [number, number, number], rotZ: n.rotZ });
