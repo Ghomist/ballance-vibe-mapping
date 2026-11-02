@@ -13,6 +13,7 @@ import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, 
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
+import { exportBoxNmo } from './export';
 import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen } from './types';
 
 const host = document.getElementById('view')!;
@@ -1176,6 +1177,43 @@ props.addEventListener('change', (ev) => {
   props.dataset.id = '';
   rebuild();
 });
+
+// ---------------- 文件 ----------------
+
+function download(name: string, data: BlobPart, type: string) {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function saveFile() { download('map.bvmbox', JSON.stringify({ format: 'bvm-box', version: 1, doc }), 'application/json'); flash('已保存 map.bvmbox'); }
+const fileInput = document.getElementById('file') as HTMLInputElement;
+document.getElementById('open')!.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files?.[0];
+  fileInput.value = '';
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (data.format !== 'bvm-box') throw new Error('不是 box 版工程文件');
+    snapshot();
+    doc = data.doc;
+    sel.clear();
+    frameAll();
+    rebuild();
+    flash(`已打开 ${f.name}`);
+  } catch (e) { flash(`打开失败：${(e as Error).message}`, true); }
+});
+document.getElementById('save')!.addEventListener('click', saveFile);
+document.getElementById('export')!.addEventListener('click', async () => {
+  try {
+    flash('正在生成 NMO…');
+    const { data, warnings } = await exportBoxNmo(doc);
+    download('map.nmo', data as BlobPart, 'application/octet-stream');
+    flash(warnings.length ? `已导出 map.nmo（${warnings.join('；')}）` : '已导出 map.nmo', warnings.length > 0);
+  } catch (e) { flash(`导出失败：${(e as Error).message}`, true); console.error(e); }
+});
+window.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); } });
 
 // ---------------- 场景与视图 ----------------
 
