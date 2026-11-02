@@ -404,7 +404,8 @@ function anchorBoxes(o: Elem): THREE.Object3D {
 
 let hoverId: number | null = null;
 /** 拖动时要画的东西 */
-let guides: { axis: 0 | 1 | 2; value: number; b: Bounds }[] = [];
+/** 对齐：沿 axis 在 value 处对齐；m 是正在操作的物体（对齐后的位置），o 是对齐到的物体 */
+let guides: { axis: 0 | 1 | 2; value: number; m: Bounds; o: Bounds }[] = [];
 let axisLine: { p: THREE.Vector3; axis: 0 | 1 | 2 } | null = null;
 let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
@@ -448,7 +449,7 @@ function drawOverlay() {
   }
   if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
   if (snapTarget) overlay.add(marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
-  for (const gd of guides) overlay.add(guidePlane(gd));
+  for (const gd of guides) overlay.add(guideLines(gd));
   if (axisLine) {
     const d = new THREE.Vector3(...[0, 1, 2].map((i) => (i === axisLine!.axis ? 1 : 0)));
     const geo = new THREE.BufferGeometry().setFromPoints([axisLine.p.clone().addScaledVector(d, -500), axisLine.p.clone().addScaledVector(d, 500)]);
@@ -484,33 +485,41 @@ function drawOverlay() {
   }
 }
 
-/** 对齐辅助面：在对齐的那个坐标上画一块半透明的面，边缘渐变淡出，像一堵虚拟的墙 */
-function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
-  // 半透明纯色：和正在操作的物体一样大的部分不透明度一致，再往外 FADE 个单位渐变到全透明（没有边框）
-  const { b } = gd, FADE = 1, ALPHA = 0.22;
-  const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
-  const lo = [b.x0, b.y0, b.z0], hi = [b.x1, b.y1, b.z1];
-  const P = (u: number, v: number): number[] => { const p = [0, 0, 0]; p[gd.axis] = gd.value; p[ua] = u; p[va] = v; return p; };
-  const u0 = lo[ua], u1 = hi[ua], v0 = lo[va], v1 = hi[va];
-  const inner = [P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)];
-  const outer = [P(u0 - FADE, v0 - FADE), P(u1 + FADE, v0 - FADE), P(u1 + FADE, v1 + FADE), P(u0 - FADE, v1 + FADE)];
-  const col = new THREE.Color(0x4cff8a);
-  const pos: number[] = [], rgba: number[] = [];
-  const v = (p: number[], a: number) => { pos.push(...p); rgba.push(col.r, col.g, col.b, a); };
-  // 中间：两个三角形
-  for (const k of [0, 1, 2, 0, 2, 3]) v(inner[k], ALPHA);
-  // 四条渐变边：内圈不透明、外圈透明
-  for (let k = 0; k < 4; k++) {
-    const n = (k + 1) % 4;
-    v(inner[k], ALPHA); v(outer[k], 0); v(outer[n], 0);
-    v(inner[k], ALPHA); v(outer[n], 0); v(inner[n], ALPHA);
+/**
+ * 对齐提示：只用线条，不画面。
+ *   两个物体在对齐面上的那条边画成实线（各自的高度），再用一条虚线把它们连起来、两头各伸出 1；
+ *   高度对齐时，两个物体在那个高度的顶面轮廓画实线，中心之间连一条虚线。
+ */
+function guideLines(gd: { axis: 0 | 1 | 2; value: number; m: Bounds; o: Bounds }): THREE.Object3D {
+  const g = new THREE.Group();
+  const C = 0x4cff8a;
+  const solid: THREE.Vector3[] = [], dashed: THREE.Vector3[] = [];
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  const { m, o } = gd;
+  if (gd.axis === 2) {
+    const z = gd.value + 0.04;
+    for (const b of [m, o]) {
+      const c = [V(b.x0, b.y0, z), V(b.x1, b.y0, z), V(b.x1, b.y1, z), V(b.x0, b.y1, z)];
+      for (let i = 0; i < 4; i++) solid.push(c[i], c[(i + 1) % 4]);
+    }
+    dashed.push(V((m.x0 + m.x1) / 2, (m.y0 + m.y1) / 2, z), V((o.x0 + o.x1) / 2, (o.y0 + o.y1) / 2, z));
+  } else {
+    // 对齐面是 x = value（axis 0）或 y = value（axis 1）；w 是面上的另一个水平方向
+    const P = (w: number, z: number) => (gd.axis === 0 ? V(gd.value, w, z) : V(w, gd.value, z));
+    const lo = (b: Bounds) => (gd.axis === 0 ? b.y0 : b.x0), hi = (b: Bounds) => (gd.axis === 0 ? b.y1 : b.x1);
+    for (const b of [m, o]) solid.push(P(lo(b), b.z1 + 0.04), P(hi(b), b.z1 + 0.04), P(lo(b), b.z1 + 0.04), P(lo(b), b.z0), P(hi(b), b.z1 + 0.04), P(hi(b), b.z0));
+    const z = Math.max(m.z1, o.z1) + 0.04;
+    const w0 = Math.min(lo(m), lo(o)) - 1, w1 = Math.max(hi(m), hi(o)) + 1;
+    dashed.push(P(w0, z), P(w1, z));
+    // 高度不同时，矮的那个的顶边往上连一条竖的虚线
+    for (const b of [m, o]) if (b.z1 + 0.04 < z - 0.01) { const w = (lo(b) + hi(b)) / 2; dashed.push(P(w, b.z1 + 0.04), P(w, z)); }
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(rgba, 4));
-  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
-  face.renderOrder = 4;
-  return face;
+  const sl = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(solid), new THREE.LineBasicMaterial({ color: C, depthTest: false }));
+  const dl = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(dashed), new THREE.LineDashedMaterial({ color: C, dashSize: 0.5, gapSize: 0.35, depthTest: false }));
+  dl.computeLineDistances();
+  sl.renderOrder = dl.renderOrder = 7;
+  g.add(sl, dl);
+  return g;
 }
 
 // ---------------- 拾取与投影 ----------------
@@ -614,7 +623,7 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
     hits.push({ a, value: best.value, ob: best.ob });
   }
   // 辅助面盖住正在操作的物体和对齐到的物体，一眼看出是和谁对齐
-  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: unionB(shiftB(b, out), h.ob) });
+  for (const h of hits) guides.push({ axis: h.a, value: h.value, m: shiftB(b, out), o: h.ob });
   return out;
 }
 
@@ -632,7 +641,7 @@ function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
     }
   }
   if (!best) { guides = []; return null; }
-  guides = [{ axis: 2, value: best.v, b: unionB(shiftB(b, [0, 0, best.v - b.z1]), best.ob) }];
+  guides = [{ axis: 2, value: best.v, m: shiftB(b, [0, 0, best.v - b.z1]), o: best.ob }];
   return best.v - b.z1;
 }
 
@@ -867,7 +876,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     for (const ob of Object.values(doc.elems).filter((x) => x.id !== o.id).map(elemBounds)) {
       for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - raw; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
     }
-    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: unionB(elemBounds(o), best.ob) }); }
+    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, m: elemBounds(o), o: best.ob }); }
   }
   // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有）
   const fixed = s < 2 ? lo : lo + len;
@@ -938,7 +947,7 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
       const diff = ob.z1 - raw;
       if (Math.abs(diff) < worldPerPx(p) * ALIGN_PX && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, v: ob.z1, ob };
     }
-    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: unionB(elemBounds(o), best.ob) }); }
+    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, m: elemBounds(o), o: best.ob }); }
   }
   const final = snap ?? raw;
   const setEnd = (x: Box, v: number) => {
