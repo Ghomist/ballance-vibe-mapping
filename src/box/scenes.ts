@@ -149,6 +149,13 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.box(95, 0, 5, 15, { style: 'sink', slope: { axis: 1, dz: 5 } }); b.box(92, 11, 12, 12, { z: 5, style: 'sink' });
       // 坡的低头插进平台（坡底和平台一样高）：直接叠在平台上
       b.box(110, 0, 15, 12); b.box(115, 8, 5, 15, { slope: { axis: 1, dz: 4 } });
+      // 坡接平凹转换：平路 → 平凹转换 → 凹路坡 → 平凹转换 → 平路
+      b.at(0, 60);
+      b.box(0, 0, 15, 5); b.piece('transition', 17.5, 2.5, 2); b.box(20, 0, 15, 5, { style: 'sink', slope: { axis: 0, dz: 4 } });
+      b.piece('transition', 37.5, 2.5, 0, 4); b.box(40, 0, 15, 5, { z: 4 });
+      // 不同样式的坡接平台：凹路坡接平路平台、平路坡接凹槽平台（自动嵌转换件）
+      b.box(60, -5, 5, 15, { style: 'sink', slope: { axis: 1, dz: 4 } }); b.box(55, 10, 15, 12, { z: 4 });
+      b.box(80, -5, 5, 15, { slope: { axis: 1, dz: 4 } }); b.box(75, 10, 15, 12, { z: 4, style: 'sink' });
       return b.doc;
     },
   },

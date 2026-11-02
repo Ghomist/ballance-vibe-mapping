@@ -265,15 +265,24 @@ function endContact(f: ReturnType<typeof footprint>, d: Dir, g: ReturnType<typeo
  */
 function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, number>; inserted: Set<string> } {
   const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
+  const roads = elems.filter((e): e is Box => e.kind === 'box');
   const placed = elems.filter((e): e is Piece => e.kind === 'piece');
   const pieces: Piece[] = [];
   const owner = new Map<number, number>();
   const inserted = new Set<string>();
-  for (const A of flats) for (const B of flats) {
-    if (A === B || A.style === B.style || A.style === 'ribbon' || Math.abs(A.z - B.z) > EPS_TOUCH) continue;
+  for (const A of roads) for (const B of flats) {
+    if (A === B || A.style === B.style || A.style === 'ribbon') continue;
+    // 路在接平台那一头的高度（平路就是 z；坡只能用沿坡方向的两头去接）
+    const endZ = (d: Dir) => {
+      if (!isSlope(A)) return A.z;
+      if (d % 2 !== A.slope.axis) return NaN;
+      return d < 2 ? A.z + A.slope.dz : A.z;
+    };
+    if (!isSlope(A) && Math.abs(A.z - B.z) > EPS_TOUCH) continue;
     const type = A.style === 'sink' ? (B.style === 'normal' ? 'transition-half' : 'transition-narrow') : 'ramp';
     const fa = footprint(A), fb = footprint(B);
     for (const d of [0, 1, 2, 3] as Dir[]) {
+      if (!(Math.abs(endZ(d) - B.z) <= EPS_TOUCH)) continue;
       // 路沿 d 方向进入平台：平台在 d 的对面那条边（line）上接路
       const ax = d % 2;
       const [a0, a1, b0, b1] = ax === 0 ? [fa.x0, fa.x1, fb.x0, fb.x1] : [fa.y0, fa.y1, fb.y0, fb.y1];
@@ -361,7 +370,19 @@ function findFolds(layers: Layer[]) {
       const ze = hi ? b.z + b.slope!.dz : b.z;
       const lineS = S.dev(ax === 0 ? pe : fp.x0, ax === 0 ? fp.y0 : pe)[ax];
       for (const L of layers) {
-        if (L === S || L.style !== S.style) continue;
+        if (L === S) continue;
+        // 素材件（平凹转换、窄转换、专属路块、盘点）的接口贴着坡的端头：接口样式和坡一样就接上（素材件可能在别的样式的层里）
+        if (!L.slope && Math.abs(L.z - ze) <= EPS_TOUCH) for (const c of L.pieces) {
+          if (L.embedded.has(c.id)) continue;
+          const face = pieceFace(c, opp(n));
+          if (face.t !== 'port' || face.style !== S.style) continue;
+          const q = faceContact(fp, n, footprint(c));
+          if (!q || S.folds.some((f) => f.n === n && Math.abs(f.q0 - q[0]) < EPS && Math.abs(f.q1 - q[1]) < EPS)) continue;
+          S.folds.push({ other: L, ax, line: lineS, n, q0: q[0], q1: q[1], shift: pe - lineS });
+          // 素材件所在的层：接口那一面也不算外沿
+          L.folds.push({ other: S, ax, line: pe, n: opp(n), q0: q[0], q1: q[1], shift: lineS - pe });
+        }
+        if (L.style !== S.style) continue;
         if (L.slope) {
           // 斜坡接斜坡：同轴、对面的端面在同一条线上、高度一致
           const c = L.slope;
@@ -868,7 +889,9 @@ function meshPiece(p: Piece, layers: Layer[], out: Map<number, ElemMeshOut>) {
     const face = pieceFace(p, d);
     if (face.t === 'wall') continue;
     const st = face.style;
-    const joined = layers.some((Ly) => Ly.style === st && Math.abs(Ly.z - p.z) < EPS_TOUCH && Ly.boxes.some((b) => faceContact(fp, d, footprint(b)) || overlaps(fp, footprint(b))));
+    const cx = [fp.x1, fp.y1, fp.x0, fp.y0][d], cm = d % 2 === 0 ? (fp.y0 + fp.y1) / 2 : (fp.x0 + fp.x1) / 2;
+    const [qx, qy] = d % 2 === 0 ? [cx, cm] : [cm, cx];
+    const joined = layers.some((Ly) => Ly.style === st && Ly.boxes.some((b) => Math.abs(boxTopAt(b, qx, qy) - p.z) < EPS_TOUCH && (faceContact(fp, d, footprint(b)) || overlaps(fp, footprint(b)))));
     if (joined) continue;
     const top = lx === 0 ? cz : fz;
     const notch = lx === 0 && !ramp ? SINK_DEPTH : 0;
