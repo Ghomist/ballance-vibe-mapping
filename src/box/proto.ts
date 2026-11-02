@@ -189,11 +189,24 @@ setAssetLoadedCallback(() => { if (!assetRebuild) assetRebuild = requestAnimatio
 
 let dragInfo = '';
 /**
- * 吸附（自动对齐、尺寸取 5 的倍数、坡头高度）不在拖动中途把物体拽过去：物体始终跟着鼠标，
- * 吸附后的位置用绿色框（ghosts）预先画出来，松手时才落到那里（pendingFinal）。
+ * 拖动的缓动与磁吸：鼠标给出原始值 raw，能吸附时给出吸附值 snap。
+ *   画面上的值 val 每帧朝 goal 走一部分（EASE，缓动）；
+ *   能吸附时 goal = snap + (raw - snap) × MAGNET：物体被轻轻吸向标准点，鼠标在附近小幅晃动时物体基本停在标准点上；
+ *   松手时落到 final（能吸附就是 snap，正好对准）。所有拖动（移动、沿轴、改高度、V 吸附、改尺寸、拉坡、拖放）都走这一套。
  */
-let ghosts: Elem[] = [];
-let pendingFinal: (() => void) | null = null;
+interface Anim { val: number[]; goal: number[]; final: number[]; apply: (v: number[]) => void }
+let anim: Anim | null = null;
+/** 当前是否处在吸附范围内（选中框变成绿色） */
+let snapping = false;
+const EASE = 0.35;
+const MAGNET = 0.22;
+function drive(raw: number[], snap: number[] | null, apply: (v: number[]) => void, init: number[]) {
+  const goal = snap ? snap.map((v, i) => v + (raw[i] - v) * MAGNET) : raw;
+  if (!anim) anim = { val: [...init], goal, final: snap ?? raw, apply };
+  else Object.assign(anim, { goal, final: snap ?? raw, apply });
+  snapping = !!snap;
+  rebuildWanted = true;
+}
 let lastStatus = '';
 function updateStatus() {
   const parts: string[] = [];
@@ -322,9 +335,10 @@ function drawOverlay() {
   for (const id of sel) {
     const e = doc.elems[id];
     if (!e) continue;
-    const hull = hullOf(e, 0x4c8dff, 0.16);
+    const c = snapping && drag ? 0x4cff8a : 0x4c8dff;
+    const hull = hullOf(e, c, 0.16);
     if (hull) selLayer.add(hull);
-    selLayer.add(outlineOf(e, 0x4c8dff));
+    selLayer.add(outlineOf(e, c));
   }
   // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
   for (const id of new Set([...hoverGroup, ...sel])) {
@@ -335,11 +349,6 @@ function drawOverlay() {
   if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
     const f = feats(doc.elems[hoverId]);
     overlay.add(marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
-  }
-  for (const g of ghosts) {
-    const hull = hullOf(g, 0x4cff8a, 0.1);
-    if (hull) overlay.add(hull);
-    overlay.add(outlineOf(g, 0x4cff8a, 0.95));
   }
   if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
   if (snapTarget) overlay.add(marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
@@ -519,27 +528,24 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; ids: number[] | null; type: string; moved: boolean }
+  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean }
   | { t: 'click'; id: number; sx: number; sy: number; orig: Map<number, string>; b: Bounds; start: THREE.Vector3 };
 let drag: Drag | null = null;
 
 const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
 function restore(orig: Map<number, string>) { for (const [id, s] of orig) doc.elems[id] = JSON.parse(s); }
-/** 物体放在 dRaw（跟着鼠标），自动对齐算出的 dSnap 不同时画预览、松手再落过去 */
+/** 拖动整体平移：鼠标位置 dRaw，自动对齐给出 dSnap（和 dRaw 一样时表示没吸上） */
 function moveWithSnap(orig: Map<number, string>, dRaw: V3, dSnap: V3) {
-  moveSel(orig, dRaw);
-  const diff = dSnap.map((v, i) => v - dRaw[i]) as V3;
-  if (diff.every((v) => Math.abs(v) < 1e-6)) { ghosts = []; pendingFinal = null; return; }
-  ghosts = [...orig.keys()].map((id) => { const g: Elem = JSON.parse(JSON.stringify(doc.elems[id])); translateElem(g, diff); return g; });
-  pendingFinal = () => moveSel(orig, dSnap);
-  dragInfo += '（松手对齐）';
+  const on = dSnap.some((v, i) => Math.abs(v - dRaw[i]) > 1e-6);
+  drive(dRaw, on ? dSnap : null, (v) => moveSel(orig, v as V3), [0, 0, 0]);
+  const f = on ? dSnap : dRaw;
+  dragInfo = `移动 ${fmt(f[0])}, ${fmt(f[1])}, ${fmt(f[2])}${on ? '（对齐）' : ''}`;
 }
 
 function moveSel(orig: Map<number, string>, d: V3) {
   restore(orig);
-  d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 不开格栅时也只保留到 0.001，免得坐标一长串小数
+  d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 只保留到 0.001，免得坐标一长串小数
   for (const id of orig.keys()) translateElem(doc.elems[id], d);
-  dragInfo = `移动 ${fmt(d[0])}, ${fmt(d[1])}, ${fmt(d[2])}`;
 }
 
 /** 拖动中的刷新：交给动画循环，在下一帧画之前重算（重算里会顺带更新叠加层和状态栏） */
@@ -622,11 +628,12 @@ window.addEventListener('pointermove', (e) => {
     const p = planeHit(e, drag.plane);
     if (!p) return;
     const tg = findTarget(e.clientX, e.clientY, sel);
-    const to: P3 = tg ? tg.p : [p.x, p.y, drag.grab[2]];
-    moveSel(drag.orig, [to[0] - drag.grab[0], to[1] - drag.grab[1], to[2] - drag.grab[2]]);
+    const g = drag.grab;
+    const raw: V3 = [p.x - g[0], p.y - g[1], 0];
+    drive(raw, tg ? [tg.p[0] - g[0], tg.p[1] - g[1], tg.p[2] - g[2]] : null, (v) => moveSel((drag as { orig: Map<number, string> }).orig, v as V3), [0, 0, 0]);
     snapTarget = tg;
-    snapGrab = to;
-    liveUpdate();
+    snapGrab = tg ? null : [p.x, p.y, g[2]];
+    dragInfo = tg ? `吸附到${tg.kind === 'v' ? '顶点' : tg.kind === 'm' ? '边中点' : '边上'}` : '';
     return;
   }
   if (drag.t === 'axis') {
@@ -659,8 +666,8 @@ window.addEventListener('pointermove', (e) => {
   }
   const p = planeHit(e, drag.plane);
   if (!p) return;
-  if (drag.t === 'size') { resizeTo(drag, p); liveUpdate(); return; }
-  if (drag.t === 'tilt') { tiltTo(drag, p); liveUpdate(); return; }
+  if (drag.t === 'size') { resizeTo(drag, p); return; }
+  if (drag.t === 'tilt') { tiltTo(drag, p); return; }
   const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
@@ -674,21 +681,21 @@ window.addEventListener('pointermove', (e) => {
   liveUpdate();
 });
 
-/** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边。物体跟着鼠标（格栅照常取整）；对齐、长度取 5 的倍数先预览，松手再生效 */
+/** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边。对齐、长度取 5 的倍数都是磁吸（缓动 + 松手对准） */
 function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
-  restore(d.orig);
-  const elem = doc.elems[d.id] as Box, o = JSON.parse(d.orig.get(d.id)!) as Box;
+  const o = JSON.parse(d.orig.get(d.id)!) as Box;
   const s = d.side, ax: 0 | 1 = s % 2 === 0 ? 0 : 1;
   const lo = ax === 0 ? o.x : o.y, len = ax === 0 ? o.sx : o.sy;
-  let raw = (s < 2 ? lo + len : lo) + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
+  const start = s < 2 ? lo + len : lo;
+  let raw = start + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
   if (gridOn) raw = Math.round(raw);
   raw = Math.round(raw * 1000) / 1000;
-  let snap = raw;
+  let snap: number | null = null;
   guides = [];
   if (alignOn) {
     const thr = worldPerPx(p) * ALIGN_PX;
     let best: { diff: number; ob: Bounds } | null = null;
-    for (const ob of Object.values(doc.elems).filter((x) => x.id !== elem.id).map(elemBounds)) {
+    for (const ob of Object.values(doc.elems).filter((x) => x.id !== o.id).map(elemBounds)) {
       for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - raw; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
     }
     if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: unionB(elemBounds(o), best.ob) }); }
@@ -702,81 +709,85 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     if (s < 2) { const n = Math.max(0.1, edge - lo); if (ax === 0) b.sx = n; else b.sy = n; }
     else { const e0 = Math.min(lo + len - 0.1, edge); if (ax === 0) { b.x = e0; b.sx = lo + len - e0; } else { b.y = e0; b.sy = lo + len - e0; } }
   };
-  setEdge(elem, raw);
-  const shown: Box = JSON.parse(JSON.stringify(elem));
-  if (Math.abs(snap - raw) > 1e-6) {
-    setEdge(shown, snap);
-    ghosts = [shown];
-    pendingFinal = () => { restore(d.orig); setEdge(doc.elems[d.id] as Box, snap); };
-  } else { ghosts = []; pendingFinal = null; }
-  dragInfo = `尺寸 ${fmt(shown.sx)} × ${fmt(shown.sy)}`;
-  // 测量线：沿改尺寸的方向，放在顶面中线上，量的是松手后的长度
-  const f = footprint(shown);
-  const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
-  const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(shown, x, y) + 0.08]; };
-  const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
-  measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(t1 - t0), on5 };
+  const finalLen = Math.abs((snap ?? raw) - fixed);
+  drive([raw], snap === null ? null : [snap], (v) => {
+    restore(d.orig);
+    const b = doc.elems[d.id] as Box;
+    setEdge(b, Math.round(v[0] * 1000) / 1000);
+    // 测量线：沿改尺寸的方向，放在顶面中线上；数字是松手后的长度
+    const f = footprint(b);
+    const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
+    const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(b, x, y) + 0.08]; };
+    const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
+    measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(finalLen), on5: snap !== null };
+  }, [start]);
+  const w = ax === 0 ? o.sy : o.sx;
+  dragInfo = `尺寸 ${ax === 0 ? `${fmt(finalLen)} × ${fmt(w)}` : `${fmt(w)} × ${fmt(finalLen)}`}`;
 }
 
-/** Alt+Shift 拖动：抬高 / 压低路面的一头。格栅开着时高度取整；对齐开着时吸到别的路面的顶面；放平时吸回水平 */
+/**
+ * Alt+Shift 拖动：抬高 / 压低路面的一头。磁吸（缓动 + 松手对准）的高度：贴着 / 插进去的路面的高度、
+ * 和另一头一样高（放平）、高差是 5 的整数倍、开着对齐时别的路面的顶面。格栅开着时高度取整。
+ */
 function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
-  restore(d.orig);
-  const b = doc.elems[d.id] as Box, o = JSON.parse(d.orig.get(d.id)!) as Box;
+  const o = JSON.parse(d.orig.get(d.id)!) as Box;
   const len = d.axis === 0 ? o.sx : o.sy;
   const odz = o.slope && o.slope.axis === d.axis ? o.slope.dz : 0;
   const zLo = o.z, zHi = o.z + odz;
   const other = d.hi ? zLo : zHi;
-  let end = (d.hi ? zHi : zLo) + (p.z - d.start.z);
-  if (gridOn) end = Math.round(end);
-  end = Math.round(end * 1000) / 1000;
-  const raw = end;
+  const start = d.hi ? zHi : zLo;
+  let raw = start + (p.z - d.start.z);
+  if (gridOn) raw = Math.round(raw);
+  raw = Math.round(raw * 1000) / 1000;
+  const thr = worldPerPx(p) * SIZE5_PX;
   guides = [];
-  // 这一头贴着的路面（端面相接）：拉到接近它的高度时吸上去，正好接上
+  // 这一头贴着的路面（端面相接），或者这一头插进去的路面（坡顶插进平台）
   const fo = footprint(o);
   const dEnd = (d.hi ? d.axis : d.axis + 2) as Dir;
   const line = [fo.x1, fo.y1, fo.x0, fo.y0][dEnd];
-  const touching = Object.values(doc.elems).filter((x): x is Box => x.kind === 'box' && x.id !== b.id).filter((x) => {
+  const touching = Object.values(doc.elems).filter((x): x is Box => x.kind === 'box' && x.id !== o.id).filter((x) => {
     const g = footprint(x);
     const near = [g.x0, g.y0, g.x1, g.y1][dEnd];
     const [a0, a1, b0, b1] = d.axis === 0 ? [fo.y0, fo.y1, g.y0, g.y1] : [fo.x0, fo.x1, g.x0, g.x1];
-    // 端面贴着它，或者这一头伸进了它里面（坡顶插进平台）
     const [g0, g1] = d.axis === 0 ? [g.x0, g.x1] : [g.y0, g.y1];
     const inside = line > g0 + 0.01 && line < g1 + 0.01;
     return (Math.abs(near - line) < 0.01 || inside) && Math.min(a1, b1) - Math.max(a0, b0) > 0.01;
   });
   const meet = touching.map((x) => { const g = footprint(x); const [px, py] = d.axis === 0 ? [line, (g.y0 + g.y1) / 2] : [(g.x0 + g.x1) / 2, line]; return boxTopAt(x, px, py); })
-    .filter((z) => Math.abs(z - end) < worldPerPx(p) * SIZE5_PX).sort((u, v) => Math.abs(u - end) - Math.abs(v - end))[0];
-  if (meet !== undefined) end = meet;
-  else if (Math.abs(end - other) < worldPerPx(p) * SIZE5_PX) end = other; // 吸回水平
+    .filter((z) => Math.abs(z - raw) < thr).sort((u, v) => Math.abs(u - raw) - Math.abs(v - raw))[0];
+  const k5 = Math.round((raw - other) / 5);
+  let snap: number | null = null;
+  let label = '';
+  if (meet !== undefined) { snap = meet; label = ' · 接上'; }
+  else if (Math.abs(raw - other) < thr) { snap = other; label = ' · 水平'; }
+  else if (k5 !== 0 && Math.abs(raw - other - k5 * 5) < thr) snap = other + k5 * 5;
   else if (alignOn) {
     let best: { diff: number; v: number; ob: Bounds } | null = null;
-    for (const ob of Object.values(doc.elems).filter((x) => x.id !== b.id).map(elemBounds)) {
-      const diff = ob.z1 - end;
+    for (const ob of Object.values(doc.elems).filter((x) => x.id !== o.id).map(elemBounds)) {
+      const diff = ob.z1 - raw;
       if (Math.abs(diff) < worldPerPx(p) * ALIGN_PX && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, v: ob.z1, ob };
     }
-    if (best) { end = best.v; guides.push({ axis: 2, value: end, b: unionB(elemBounds(o), best.ob) }); }
+    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: unionB(elemBounds(o), best.ob) }); }
   }
+  const final = snap ?? raw;
   const setEnd = (x: Box, v: number) => {
     const dz = d.hi ? v - zLo : zHi - v;
     x.z = d.hi ? zLo : v;
     x.slope = Math.abs(dz) < 1e-6 ? undefined : { axis: d.axis, dz };
   };
-  // 物体跟着鼠标；吸附后的高度先画绿色预览，松手再生效
-  setEnd(b, raw);
-  if (Math.abs(end - raw) > 1e-6) {
-    const g: Box = JSON.parse(JSON.stringify(b));
-    setEnd(g, end);
-    ghosts = [g];
-    const snapEnd = end;
-    pendingFinal = () => { restore(d.orig); setEnd(doc.elems[d.id] as Box, snapEnd); };
-  } else { ghosts = []; pendingFinal = null; }
-  // 测量线：在动的那一头，从另一头的高度竖到这一头的高度
-  const f = footprint(b);
-  const t = d.hi ? (d.axis === 0 ? f.x1 : f.y1) : (d.axis === 0 ? f.x0 : f.y0);
-  const mid = d.axis === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
-  const [x, y] = d.axis === 0 ? [t, mid] : [mid, t];
-  measure = { a: [x, y, other], b: [x, y, end], tick: d.axis === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: meet !== undefined ? `高差 ${fmt(end - other)} · 接上` : `高差 ${fmt(end - other)}`, on5: meet !== undefined };
-  dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(end - other))}`;
+  drive([raw], snap === null ? null : [snap], (v) => {
+    restore(d.orig);
+    const b = doc.elems[d.id] as Box;
+    const cur = Math.round(v[0] * 1000) / 1000;
+    setEnd(b, cur);
+    // 测量线：在动的那一头，从另一头的高度竖到这一头的高度；数字是松手后的高差
+    const f = footprint(b);
+    const t = d.hi ? (d.axis === 0 ? f.x1 : f.y1) : (d.axis === 0 ? f.x0 : f.y0);
+    const mid = d.axis === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
+    const [x, y] = d.axis === 0 ? [t, mid] : [mid, t];
+    measure = { a: [x, y, other], b: [x, y, cur], tick: d.axis === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: `高差 ${fmt(final - other)}${label}`, on5: snap !== null };
+  }, [start]);
+  dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(final - other))}`;
 }
 
 window.addEventListener('pointerup', (e) => {
@@ -796,10 +807,11 @@ window.addEventListener('pointerup', (e) => {
 });
 
 function finishDrag() {
-  if (pendingFinal) pendingFinal();
-  pendingFinal = null;
-  ghosts = [];
-  if (drag && 'orig' in drag && !(drag.t === 'move' && drag.grab)) {
+  // 松手：落到最终位置（能吸附就正好对准）
+  if (anim) anim.apply(anim.final);
+  anim = null;
+  snapping = false;
+  if (drag && 'orig' in drag && drag.orig && !(drag.t === 'move' && drag.grab)) {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
   drag = null;
@@ -812,7 +824,7 @@ function cancelGrab() {
     for (const id of drag.orig.keys()) delete doc.elems[id];
     undo.pop();
     sel.clear();
-    drag = null; guides = []; dragInfo = ''; ghosts = []; pendingFinal = null;
+    drag = null; guides = []; dragInfo = ''; anim = null; snapping = false;
     rebuild();
   }
 }
@@ -872,15 +884,20 @@ function placeMove(e: PointerEvent) {
     const es = newElems(drag.type);
     for (const n of es) doc.elems[n.id] = n;
     drag.ids = es.map((n) => n.id);
+    drag.orig = origOf(drag.ids);
     sel = new Set(drag.ids);
   }
   const ids = new Set(drag.ids);
+  const orig = drag.orig!;
   // 鼠标下的路面顶面（或地面）
   const h = pick(e, ids);
   const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  restore(orig);
   const hd = handleOf(doc.elems[drag.ids[0]]);
-  for (const id of ids) translateElem(doc.elems[id], [p.x - hd[0], p.y - hd[1], p.z - hd[2]]);
-  // 拖拽放置时自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就贴上去
+  let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
+  if (gridOn) { const b = boundsOf(doc, ids); raw = [Math.round(b.x0 + raw[0]) - b.x0, Math.round(b.y0 + raw[1]) - b.y0, raw[2]]; }
+  // 自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就吸过去（磁吸，松手对准）
+  moveSel(orig, raw);
   let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
   for (const id of ids) {
     const f = feats(doc.elems[id]);
@@ -890,10 +907,9 @@ function placeMove(e: PointerEvent) {
       if (t && (!best || t.d < best.d)) best = { from: v, to: t.p, d: t.d, kind: t.kind };
     }
   }
-  if (best) for (const id of ids) translateElem(doc.elems[id], [best.to[0] - best.from[0], best.to[1] - best.from[1], best.to[2] - best.from[2]]);
-  else if (gridOn) { const b = boundsOf(doc, ids); for (const id of ids) translateElem(doc.elems[id], [Math.round(b.x0) - b.x0, Math.round(b.y0) - b.y0, 0]); }
+  const snap: V3 | null = best ? [raw[0] + best.to[0] - best.from[0], raw[1] + best.to[1] - best.from[1], raw[2] + best.to[2] - best.from[2]] : null;
+  drive(raw, snap, (v) => moveSel(orig, v as V3), raw);
   snapTarget = best ? { p: best.to, kind: best.kind } : null;
-  liveUpdate();
 }
 function placeEnd(e: PointerEvent) {
   if (drag?.t !== 'place') return;
@@ -911,6 +927,8 @@ function placeEnd(e: PointerEvent) {
     sel = new Set(ids);
     palette.hidden = true;
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
+  else if (anim) anim.apply(anim.final);
+  anim = null; snapping = false;
   drag = null; snapTarget = null;
   rebuild();
 }
@@ -1170,6 +1188,14 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.opacity = '1';
 });
 renderer.setAnimationLoop(() => {
+  if (anim) {
+    let moving = false;
+    for (let i = 0; i < anim.val.length; i++) {
+      const dv = anim.goal[i] - anim.val[i];
+      if (Math.abs(dv) > 1e-4) { anim.val[i] += dv * EASE; moving = true; } else anim.val[i] = anim.goal[i];
+    }
+    if (moving || rebuildWanted) { anim.apply(anim.val); rebuildWanted = true; }
+  }
   if (rebuildWanted) rebuild();
   if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
   controls.update();
