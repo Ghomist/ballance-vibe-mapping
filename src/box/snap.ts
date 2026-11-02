@@ -32,6 +32,7 @@ export function feats(e: Elem): Feats {
     }
     return out;
   }
+  if (e.kind === 'guard') return { verts: [e.a, e.b], mids: [], edges: [] };
   if (e.kind === 'rail') {
     // 钢轨（一段）：两头的中心点、两头左右两根轨的顶端；中间点；直轨的中线
     const out: Feats = { verts: [], mids: [], edges: [] };

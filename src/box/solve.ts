@@ -11,6 +11,7 @@
 //    得到的每一小块上距离都是一个线性函数，顶点上算出的 UV、高度插值后是精确的。
 //    每个 box 只在自己的格子里生成网格，但距离场看的是整片路面，所以接缝两边算出来的结果完全一致。
 import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
+import { type Edge as OEdge, type Loop, loopsFromEdges, push as pushEdge } from '../model/outline';
 import {
   BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Piece, SINK_DEPTH, Style,
   basePiece, boxTopAt, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
@@ -25,6 +26,8 @@ export interface Solved {
   assets: Map<number, AssetPart[]>;
   /** 自动生成的转换件（负数 id）→ 它嵌进去的那块路面 */
   owner: Map<number, number>;
+  /** 路面外沿连成的环（顶面高度，朝外在右手边）：护栏沿它走 */
+  loops: Loop[];
 }
 
 const EPS = 1e-7;
@@ -136,7 +139,7 @@ let slopeOver = new Map<string, 'carve' | 'cover'>();
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
-  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj' && e.kind !== 'rail');
+  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj' && e.kind !== 'rail' && e.kind !== 'guard');
   slopeOver = slopeOverlaps(docElems);
   const auto = autoTransitions(docElems);
   inserted = auto.inserted;
@@ -185,7 +188,16 @@ export function solve(doc: Doc): Solved {
     else if (p.type === 'start' || p.type === 'check') assets.set(p.id, checkpointParts(p, layers, p.sector ?? checks.indexOf(p) + 2));
     else meshPiece(p, layers, out);
   }
-  return { meshes: out, assets, owner: auto.owner };
+  // 外沿：每层的边（展开坐标）换回世界坐标，跨层（坡和平路）首尾相接的自然连成一个环
+  const oedges: OEdge[] = [];
+  // 盘点路面的侧边不算（实际的模型是圆盘，比 5 宽的带子大）：外沿在盘点处断开，护栏不会穿过盘点
+  const cp = new Set(pieces.filter((p) => p.type === 'start' || p.type === 'check').map((p) => p.id));
+  for (const L of layers) for (const r of L.edges) {
+    if (r.kind !== 'exp' || cp.has(r.owner)) continue;
+    const P = (t: number) => L.world(...((r.ax === 0 ? [t, r.c] : [r.c, t]) as [number, number]), 0) as [number, number, number];
+    pushEdge(oedges, P(r.a), P(r.b), [DX[r.n], DY[r.n]]);
+  }
+  return { meshes: out, assets, owner: auto.owner, loops: loopsFromEdges(oedges) };
 }
 
 /**

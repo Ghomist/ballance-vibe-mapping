@@ -16,12 +16,12 @@ export interface Loop {
   len: number;
 }
 
-interface Edge { a: P3; b: P3; out: [number, number] }
+export interface Edge { a: P3; b: P3; out: [number, number] }
 
 const k3 = (p: P3) => `${p[0].toFixed(2)},${p[1].toFixed(2)},${p[2].toFixed(2)}`;
 
 /** 加一条边，并定向为朝外在右手边 */
-function push(out: Edge[], a: P3, b: P3, o: [number, number]) {
+export function push(out: Edge[], a: P3, b: P3, o: [number, number]) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   if (Math.hypot(dx, dy) < 1e-6) return;
   // 右手方向 (dy, -dx)
@@ -98,7 +98,11 @@ export function outlineEdges(m: Model): Edge[] {
 
 /** 外沿连成环（或断开的链），合并共线的相邻边 */
 export function outlineLoops(m: Model): Loop[] {
-  const edges = outlineEdges(m);
+  return loopsFromEdges(outlineEdges(m));
+}
+
+/** 定向好的边（朝外在右手边）首尾相接连成环（或断开的链） */
+export function loopsFromEdges(edges: Edge[]): Loop[] {
   const from = new Map<string, number[]>();
   edges.forEach((e, i) => { const k = k3(e.a); from.set(k, [...(from.get(k) ?? []), i]); });
   const ends = new Set(edges.map((e) => k3(e.b)));

@@ -7,6 +7,9 @@ import { objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { solve } from './solve';
 import { buildRail } from '../geom/rail';
+import { guardFromRoute } from '../geom/railing';
+import { DEFAULT_SETTINGS } from '../model/types';
+import { guardRouteBox } from './guard';
 import { Doc, Obj, Piece, anchorRects } from './types';
 
 const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
@@ -44,6 +47,18 @@ export function exportBoxScene(doc: Doc): SceneDesc {
     if (rm.pos.length) meshes.push({ name: `A_Rail_BVM_${String(++ri).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: rm.pos.map(r5) }] });
   }
 
+  // ---- 护栏：每段一个钢轨物体，铆钉是装饰 ----
+  let gi = 0;
+  const nails: SceneAsset[] = [];
+  for (const g of elems) {
+    if (g.kind !== 'guard') continue;
+    const route = guardRouteBox(solved.loops, g);
+    const gm = route && guardFromRoute(route, DEFAULT_SETTINGS);
+    if (!gm || !gm.pos.length) continue;
+    meshes.push({ name: `A_Rail_BVM_Guard_${String(++gi).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: gm.pos.map(r5) }] });
+    for (const n of gm.nails) nails.push({ asset: n.name, kind: 'deco', pos: n.pos.map(r5) as [number, number, number], rotZ: n.rotZ });
+  }
+
   // ---- 挡块：合成一个物体 ----
   const sp: number[] = [], su: number[] = [];
   for (const o of objs) {
@@ -54,7 +69,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   if (sp.length) meshes.push({ name: 'A_Stopper_BVM_01', kind: 'stopper', parts: [{ mat: 'Stopper', pos: sp, uv: su }] });
 
   // ---- 资产（盘点路面、专属路块）与占位符（火焰、重生点） ----
-  const assets: SceneAsset[] = [];
+  const assets: SceneAsset[] = [...nails];
   const elements: SceneElement[] = [];
   for (const [id, parts] of solved.assets) {
     const owner = doc.elems[id];

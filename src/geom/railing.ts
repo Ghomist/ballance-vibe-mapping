@@ -115,8 +115,13 @@ export interface GuardMesh { pos: number[]; nrm: number[]; nails: PrefabPart[]; 
 
 export function buildGuard(loops: Loop[], g: Guard, st: MapSettings): GuardMesh | null {
   const route = guardRoute(loops, g);
-  if (!route) return null;
+  return route ? guardFromRoute(route, st) : null;
+}
+
+/** 沿一段外沿路径生成护栏：钢管、两头的立柱和铆钉 */
+export function guardFromRoute(route: { pts: P3[]; outs: [number, number][] }, st: MapSettings): GuardMesh | null {
   const { pts, outs } = route;
+  if (pts.length < 2 || !outs.length) return null;
   // 往外偏移：拐角处取两条偏移线的交点
   const off = pts.map((p, i) => {
     const n1 = outs[Math.max(i - 1, 0)], n2 = outs[Math.min(i, outs.length - 1)];

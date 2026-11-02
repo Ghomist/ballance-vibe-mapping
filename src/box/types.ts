@@ -93,7 +93,18 @@ export interface RailElem extends ElemBase {
   pieces: RailPiece[];
 }
 
-export type Elem = Box | Piece | Obj | RailElem;
+/** 护栏：沿路面外沿从 a 走到 b（外沿是有方向的环，朝外在右手边）；路面改动后起止点重新投影到最近的外沿上 */
+export interface GuardElem extends ElemBase {
+  kind: 'guard';
+  a: [number, number, number];
+  b: [number, number, number];
+  /** 拖动时整体平移用的参考点（= a） */
+  x: number;
+  y: number;
+  z: number;
+}
+
+export type Elem = Box | Piece | Obj | RailElem | GuardElem;
 
 export interface Doc {
   elems: Record<number, Elem>;
@@ -124,6 +135,7 @@ export function anchorRects(o: Obj): (Rect & { top: number })[] {
 
 /** 元素在平面上的范围 */
 export function footprint(e: Elem): Rect {
+  if (e.kind === 'guard') return { x0: Math.min(e.a[0], e.b[0]) - 0.5, y0: Math.min(e.a[1], e.b[1]) - 0.5, x1: Math.max(e.a[0], e.b[0]) + 0.5, y1: Math.max(e.a[1], e.b[1]) + 0.5 };
   if (e.kind === 'rail') {
     const ps = sampleRail(e);
     const pad = 2.25; // 双轨半宽 + 轨道半径
