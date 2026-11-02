@@ -33,6 +33,15 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
 controls.target.set(20, 10, 0);
 controls.enableDamping = true;
+// 滚轮缩放自己做，带缓动（每帧把相机到目标点的距离朝 zoomGoal 靠一部分）
+controls.enableZoom = false;
+let zoomGoal: number | null = null;
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const cur = zoomGoal ?? camera.position.distanceTo(controls.target);
+  zoomGoal = THREE.MathUtils.clamp(cur * Math.exp(e.deltaY * 0.0012), 2, 3000);
+}, { passive: false });
+let lastFrame = performance.now();
 scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(-0.4, -0.7, 1);
@@ -368,8 +377,8 @@ function drawOverlay() {
     if (hull) selLayer.add(hull);
     selLayer.add(outlineOf(e, c));
   }
-  // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
-  for (const id of new Set([...hoverGroup, ...sel])) {
+  // 机关的对准方块、盘点路口的虚拟路面：悬停、选中、吸附时靠近的都画出来
+  for (const id of new Set([...hoverGroup, ...sel, ...(drag ? nearVirtual : [])])) {
     const e = doc.elems[id];
     if (e && virtualCells(e).length) (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
   }
@@ -490,6 +499,8 @@ function rayToSegment(o: THREE.Vector3, d: THREE.Vector3, a: P3, b: P3): THREE.V
 
 type Target = { p: P3; kind: 'v' | 'm' | 'e'; d: number };
 /** 鼠标附近别的元素上的吸附目标：顶点优先，其次边中点，再次边上最近的点 */
+/** 吸附时附近的机关 / 盘点：画出它们的虚拟路面，方便对准 */
+const nearVirtual = new Set<number>();
 function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target | null {
   let best: Target | null = null;
   const rank = { v: 0, m: 1, e: 2 };
@@ -503,6 +514,7 @@ function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target
   for (const e of Object.values(doc.elems)) {
     if (exclude.has(e.id)) continue;
     const f = feats(e);
+    if (virtualCells(e).length && !nearVirtual.has(e.id) && f.verts.some((v) => toScreen(v).distanceTo(at) < px * 5)) nearVirtual.add(e.id);
     for (const v of f.verts) consider(v, 'v', px);
     for (const m of f.mids) consider(m, 'm', px);
     for (const [a, b] of f.edges) { const q = rayToSegment(ray.ray.origin, ray.ray.direction, a, b); consider([q.x, q.y, q.z], 'e', px * 0.75); }
@@ -656,6 +668,7 @@ window.addEventListener('pointermove', (e) => {
     if (id !== hoverId || vHeld) { hoverId = id; drawOverlay(); }
     return;
   }
+  nearVirtual.clear();
   if (drag.t === 'place') { placeMove(e); return; }
   if (drag.t === 'marquee') { showMarquee(drag.sx, drag.sy, e.clientX, e.clientY); return; }
   if (drag.t === 'click') {
@@ -1283,6 +1296,15 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.opacity = '1';
 });
 renderer.setAnimationLoop(() => {
+  const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
+  lastFrame = now;
+  if (zoomGoal !== null) {
+    const dir = camera.position.clone().sub(controls.target);
+    const cur = dir.length();
+    const next = cur + (zoomGoal - cur) * (1 - Math.exp(-dt / 0.07));
+    camera.position.copy(controls.target).add(dir.setLength(next));
+    if (Math.abs(zoomGoal - next) < Math.max(0.005, cur * 1e-4)) zoomGoal = null;
+  }
   let moving = false;
   if (anim) {
     for (let i = 0; i < anim.val.length; i++) {
@@ -1314,6 +1336,7 @@ renderer.setAnimationLoop(() => {
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },
   get rebuilds() { return rebuildCount; },
+  camDist: () => +camera.position.distanceTo(controls.target).toFixed(2),
   get rebuildTimes() { return rebuildTimes; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
