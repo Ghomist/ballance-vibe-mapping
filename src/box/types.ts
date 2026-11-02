@@ -1,6 +1,7 @@
 // 重构版的数据模型：地图由互相独立的 box（路面）、素材件和机关组成，元素之间不存任何连接关系。
 // 连接、花纹、遮挡、机关的专属路块都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
 import { objType } from '../model/objects';
+import { PREFAB_PORT } from '../model/types';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -43,9 +44,10 @@ export interface Box extends ElemBase {
 /**
  * transition：平凹转换（长 5）；transition-narrow：窄转换（长 2.5，平路一侧也下沉，接细边框平台）；
  * transition-half：半宽平凹转换（长 2.5，凹路接平路平台）；ramp：半块下沉坡（长 2.5，平路接凹槽 / 细边框平台）；
- * base：机关的专属路块。后三种都由求解器自动生成，嵌在平台的边框带里。
+ * base：机关的专属路块。transition-half、ramp 由求解器自动生成，嵌在平台的边框带里。
+ * start：起点（四火）；check：小节盘点（两火）。盘点路面是资产库模型，路口在 rot 一侧（小节盘点两侧都有）。
  */
-export type PieceType = 'transition' | 'transition-narrow' | 'transition-half' | 'ramp' | 'base';
+export type PieceType = 'transition' | 'transition-narrow' | 'transition-half' | 'ramp' | 'base' | 'start' | 'check';
 export type BaseKind = 'trafo' | 'fan' | 'fence';
 
 /** 素材件：形状固定，只能平移和按 90° 旋转 */
@@ -63,6 +65,8 @@ export interface Piece extends ElemBase {
   base?: { kind: BaseKind; mat?: 'Paper' | 'Stone' | 'Wood' };
   /** ramp：嵌进去的平台的样式（凹路或细边框凹路） */
   inner?: Style;
+  /** 小节盘点：激活第几小节（≥2）；不填则按放置顺序自动编号 */
+  sector?: number;
 }
 
 /** 机关 / 装饰：BBP 占位符或资产库模型；需要专属路块和挡块的机关自动带上 */
@@ -122,10 +126,18 @@ export function footprint(e: Elem): Rect {
     }
     return r;
   }
+  if (e.type === 'start' || e.type === 'check') {
+    // 盘点路面：沿路口方向的一条 5 宽的带子，末端就是路口（起点只有 rot 一侧，后面是圆盘）
+    const a = e.type === 'start' ? -2.5 : -PREFAB_PORT.check, b = PREFAB_PORT[e.type];
+    const [lo, hi] = e.rot === 0 || e.rot === 1 ? [a, b] : [-b, -a];
+    return e.rot % 2 === 0 ? { x0: e.x + lo, y0: e.y - 2.5, x1: e.x + hi, y1: e.y + 2.5 } : { x0: e.x - 2.5, y0: e.y + lo, x1: e.x + 2.5, y1: e.y + hi };
+  }
   const l = pieceLen(e) / 2, w = 2.5;
   const hx = e.rot % 2 === 0 ? l : w, hy = e.rot % 2 === 0 ? w : l;
   return { x0: e.x - hx, y0: e.y - hy, x1: e.x + hx, y1: e.y + hy };
 }
+
+export const isCheckpoint = (e: Elem): boolean => e.kind === 'piece' && (e.type === 'start' || e.type === 'check');
 
 /** box 在 (x, y) 处的顶面高度（未下沉） */
 export function boxTopAt(b: Box, x: number, y: number): number {
@@ -144,6 +156,8 @@ export function boxTopAt(b: Box, x: number, y: number): number {
 export type FaceKind = { t: 'port'; style: Style } | { t: 'embed'; style: Style } | { t: 'wall' };
 
 export function pieceFace(p: Piece, d: Dir): FaceKind {
+  if (p.type === 'start') return d === p.rot ? { t: 'port', style: 'normal' } : { t: 'wall' };
+  if (p.type === 'check') return d === p.rot || d === opp(p.rot) ? { t: 'port', style: 'normal' } : { t: 'wall' };
   if (p.base) {
     if (p.base.kind === 'fence') return d === p.rot || d === opp(p.rot) ? { t: 'port', style: 'normal' } : { t: 'wall' };
     return { t: 'port', style: 'normal' };
@@ -156,7 +170,7 @@ export function pieceFace(p: Piece, d: Dir): FaceKind {
 }
 
 /** 素材件两端的样式：[接路的一端（rot 的对面）, rot 那一端] */
-export const pieceStyles = (p: Piece): Style[] => (p.base ? ['normal', 'normal']
+export const pieceStyles = (p: Piece): Style[] => (p.base || p.type === 'start' || p.type === 'check' ? ['normal', 'normal']
   : p.type === 'transition-narrow' ? ['sink', 'ribbon']
   : p.type === 'ramp' ? ['normal', p.inner ?? 'sink']
   : ['sink', 'normal']);

@@ -13,7 +13,7 @@ import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, 
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
-import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, pieceLen } from './types';
+import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen } from './types';
 
 const host = document.getElementById('view')!;
 const statusEl = document.getElementById('status')!;
@@ -136,12 +136,15 @@ function rebuildInner() {
     addGroup(doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id, g);
   }
   lastSolve.tris = tris;
-  // 专属路块
-  for (const [id, part] of solved.bases) {
+  // 专属路块、盘点路面（资产库模型 + 火焰 / 重生点占位符）
+  for (const [id, parts] of solved.assets) {
     const g = new THREE.Group();
-    const pieces = getAsset('asset', part.name) ?? [fallbackBox(5, 5, 5)];
-    addMeshes(g, pieces, id, (m) => { m.position.set(...part.pos); m.rotation.z = (part.rotZ * Math.PI) / 180; });
+    for (const part of parts) {
+      const pieces = getAsset(part.kind, part.name) ?? (part.kind === 'asset' ? [fallbackBox(5, 5, 5)] : []);
+      addMeshes(g, pieces, id, (m) => { m.position.set(...part.pos); m.rotation.z = (part.rotZ * Math.PI) / 180; });
+    }
     addGroup(id, g);
+    if (doc.elems[id]?.kind === 'piece' && g.children.length) objBoxes.set(id, new THREE.Box3().setFromObject(g));
   }
   // 机关、装饰、挡块
   for (const e of Object.values(doc.elems)) {
@@ -276,7 +279,7 @@ const ALIGN_PX = 5;
 
 /** 元素外形的 8 个角：顶面 4 个（x0y0、x1y0、x1y1、x0y1），再是底面 4 个；机关按模型的包围盒 */
 function cornersOf(e: Elem): P3[] {
-  const ob = e.kind === 'obj' ? objBoxes.get(e.id) : null;
+  const ob = e.kind === 'obj' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
   if (ob) {
     const a = ob.min, b = ob.max;
     return [[a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z], [a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z]];
@@ -873,13 +876,14 @@ function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEv
 
 function newElems(type: string): Elem[] {
   const id = doc.nextId++;
-  if (type === 'transition' || type === 'transition-narrow') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
+  if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
   if (type.startsWith('obj:')) return [{ id, kind: 'obj', type: type.slice(4), x: 0, y: 0, z: 0, rot: 0 }];
   return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
 }
 
 /** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
 function handleOf(e: Elem): P3 {
+  if (isCheckpoint(e)) return [e.x, e.y, e.z];
   if (e.kind === 'obj') {
     const a = anchorRects(e)[0];
     return a ? [(a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2, a.top] : [e.x, e.y, e.z];
@@ -888,7 +892,10 @@ function handleOf(e: Elem): P3 {
   return [b.x0, b.y0, b.z1];
 }
 
-function startPlace(type: string) { drag = { t: 'place', ids: null, type, moved: false }; }
+function startPlace(type: string) {
+  if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
+  drag = { t: 'place', ids: null, type, moved: false };
+}
 function placeMove(e: PointerEvent) {
   if (drag?.t !== 'place') return;
   const r = el.getBoundingClientRect();
@@ -1130,6 +1137,11 @@ function syncProps() {
     h += `<label>倾斜</label><select data-k="axis"><option value="-1">不倾斜</option><option value="0"${one.slope?.axis === 0 ? ' selected' : ''}>沿 X</option><option value="1"${one.slope?.axis === 1 ? ' selected' : ''}>沿 Y</option></select>`;
     if (one.slope) h += num('dz', '高差', one.slope.dz);
     h += `<div class="row">开口：${['+X', '+Y', '-X', '-Y'].map((n, i) => `<label><input type="checkbox" data-open="${i}"${(one.open ?? 0) & (1 << i) ? ' checked' : ''}>${n}</label>`).join('')}</div>`;
+  } else if (one.kind === 'piece' && isCheckpoint(one)) {
+    const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
+    h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
+    h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
+    h += `<label>路口朝向</label><select data-k="rot">${['+X', '+Y', '-X', '-Y'].map((n, r) => `<option value="${r}"${r === one.rot ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
   } else if (one.kind === 'piece') {
     h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
     h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
@@ -1160,7 +1172,7 @@ props.addEventListener('change', (ev) => {
     else if (k === 'dz' && e.slope) e.slope.dz = +t.value;
     else if (k === 'sx' || k === 'sy' || k === 'depth') e[k] = Math.max(0.1, +t.value);
   }
-  if (e.kind === 'obj' && k === 'rot') e.rot = +t.value as Dir;
+  if ((e.kind === 'obj' || e.kind === 'piece') && k === 'rot') e.rot = +t.value as Dir;
   props.dataset.id = '';
   rebuild();
 });

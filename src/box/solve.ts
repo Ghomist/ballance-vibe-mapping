@@ -17,12 +17,12 @@ import {
 } from './types';
 
 export interface ElemMeshOut { id: number; parts: Partial<Record<MatName, MeshPart>> }
-/** 资产库模型（专属路块）：放在哪、转多少度 */
-export interface AssetPart { name: string; pos: [number, number, number]; rotZ: number }
+/** 资产库模型（专属路块、盘点路面）或 BBP 占位符（火焰、重生点）：放在哪、转多少度 */
+export interface AssetPart { name: string; kind: 'asset' | 'element'; pos: [number, number, number]; rotZ: number; objName?: string }
 export interface Solved {
   meshes: Map<number, ElemMeshOut>;
-  /** 机关 id → 它的专属路块模型 */
-  bases: Map<number, AssetPart>;
+  /** 元素 id（机关或盘点）→ 它的模型：专属路块、盘点路面 + 火焰 + 重生点 */
+  assets: Map<number, AssetPart[]>;
   /** 自动生成的转换件（负数 id）→ 它嵌进去的那块路面 */
   owner: Map<number, number>;
 }
@@ -178,12 +178,14 @@ export function solve(doc: Doc): Solved {
 
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
-  const baseParts = new Map<number, AssetPart>();
+  const assets = new Map<number, AssetPart[]>();
+  const checks = pieces.filter((p) => p.type === 'check').sort((a, b) => a.id - b.id);
   for (const p of pieces) {
-    if (p.base) baseParts.set(p.id, basePart(p, layers));
+    if (p.base) assets.set(p.id, [basePart(p, layers)]);
+    else if (p.type === 'start' || p.type === 'check') assets.set(p.id, checkpointParts(p, layers, p.sector ?? checks.indexOf(p) + 2));
     else meshPiece(p, layers, out);
   }
-  return { meshes: out, bases: baseParts, owner: auto.owner };
+  return { meshes: out, assets, owner: auto.owner };
 }
 
 /**
@@ -595,7 +597,7 @@ function linkRuns(layers: Layer[], pieces: Piece[]) {
   };
   // 先从平凹转换的侧边出发：转换件的贴图是固定的（凹槽一端 v=1，平路一端 v=0）
   for (const p of pieces) {
-    if (p.base) continue;
+    if (p.base || p.type === 'start' || p.type === 'check') continue;
     const f = footprint(p), ax: 0 | 1 = p.rot % 2 === 0 ? 0 : 1;
     const pf = p.rot === 0 ? f.x1 : p.rot === 2 ? f.x0 : p.rot === 1 ? f.y1 : f.y0; // 平路一端
     const ps = p.rot === 0 ? f.x0 : p.rot === 2 ? f.x1 : p.rot === 1 ? f.y0 : f.y1; // 凹槽一端
@@ -864,10 +866,10 @@ const FAN_VARIANTS: [string, Dir[]][] = [
 function basePart(p: Piece, layers: Layer[]): AssetPart {
   const z = p.z - 2.5; // 资产原点在方块中心
   const b = p.base!;
-  if (b.kind === 'trafo') return { name: `TrafoBase_${b.mat ?? 'Wood'}`, pos: [p.x, p.y, z], rotZ: 0 };
+  if (b.kind === 'trafo') return { name: `TrafoBase_${b.mat ?? 'Wood'}`, kind: 'asset', pos: [p.x, p.y, z], rotZ: 0 };
   // Slider 的原点在第一格中心，本地 +Y 沿栅栏方向
-  if (b.kind === 'fence') return { name: 'Slider', pos: [p.x, p.y, z], rotZ: p.rot * 90 - 90 };
-  if (layers.some((L) => L.embedded.has(p.id))) return { name: 'Ventilator_NoEdge_Borderless', pos: [p.x, p.y, z], rotZ: 0 };
+  if (b.kind === 'fence') return { name: 'Slider', kind: 'asset', pos: [p.x, p.y, z], rotZ: p.rot * 90 - 90 };
+  if (layers.some((L) => L.embedded.has(p.id))) return { name: 'Ventilator_NoEdge_Borderless', kind: 'asset', pos: [p.x, p.y, z], rotZ: 0 };
   // 风扇：没接路的边要有边框
   const fp = footprint(p);
   // 这一边接上了：有同层的路贴着这一边，或者路从底座下面穿过去、在这一边外面还继续
@@ -881,7 +883,45 @@ function basePart(p: Piece, layers: Layer[]): AssetPart {
   const closed = new Set(([0, 1, 2, 3] as Dir[]).filter((d) => !joined(d)));
   for (const [name, borders] of FAN_VARIANTS) {
     if (borders.length !== closed.size) continue;
-    for (let k = 0; k < 4; k++) if (borders.every((d) => closed.has(((d + k) % 4) as Dir))) return { name, pos: [p.x, p.y, z], rotZ: k * 90 };
+    for (let k = 0; k < 4; k++) if (borders.every((d) => closed.has(((d + k) % 4) as Dir))) return { name, kind: 'asset', pos: [p.x, p.y, z], rotZ: k * 90 };
   }
-  return { name: 'Ventilator_4Face', pos: [p.x, p.y, z], rotZ: 0 };
+  return { name: 'Ventilator_4Face', kind: 'asset', pos: [p.x, p.y, z], rotZ: 0 };
+}
+
+// ---------------- 盘点路面 ----------------
+
+/** 火焰占位符里锥桶的底部比原点高这么多：锥桶底部贴住盘点路面顶面 */
+const FLAME_CONE = 1.25555;
+/** 资产库里盘点路面的延伸段不正好在中线上，按资产本地坐标挪回来，让延伸段末端正好落在路口上 */
+const CP_FIX: Record<string, [number, number]> = {
+  CheckPoint_Extended_OpenEdge: [0, -0.042],
+  CheckPoint_DoubleExtended_OpenEdge: [-0.02155, 0.036],
+};
+
+/** 盘点路面由哪些模型组成：路面（按接了哪几侧选延伸段版本）+ 火焰占位符 + 重生点占位符 */
+function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[] {
+  const fp = footprint(p);
+  const joined = (d: Dir) => layers.some((L) => L.pieces.includes(p) && L.boxes.some((b) => faceContact(fp, d, footprint(b))));
+  const floorZ = p.z - 2.5; // 资产模型原点在路块中心
+  const deg = (d: Dir) => d * 90;
+  const two = (v: number) => String(v).padStart(2, '0');
+  if (p.type === 'start') {
+    return [
+      { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot) },
+      // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
+      { name: 'PS_FourFlames', kind: 'element', objName: 'PS_FourFlames_01', pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) + 90 },
+      { name: 'PR_Resetpoint', kind: 'element', objName: 'PR_Resetpoint_01', pos: [p.x, p.y, p.z - FLAME_CONE + 3.65], rotZ: deg(p.rot) },
+    ];
+  }
+  const a = joined(p.rot), b = joined(opp(p.rot));
+  const [name, r] = a && b ? ['CheckPoint_DoubleExtended_OpenEdge', p.rot] : a ? ['CheckPoint_Extended_OpenEdge', p.rot]
+    : b ? ['CheckPoint_Extended_OpenEdge', opp(p.rot)] : ['CheckPoint_NoExtended', p.rot];
+  const f = CP_FIX[name] ?? [0, 0];
+  const rr = (deg(r as Dir) * Math.PI) / 180;
+  const fx = p.x + f[0] * Math.cos(rr) - f[1] * Math.sin(rr), fy = p.y + f[0] * Math.sin(rr) + f[1] * Math.cos(rr);
+  return [
+    { name, kind: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir) },
+    { name: 'PC_TwoFlames', kind: 'element', objName: `PC_TwoFlames_${two(sector - 1)}`, pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) },
+    { name: 'PR_Resetpoint', kind: 'element', objName: `PR_Resetpoint_${two(sector)}`, pos: [p.x, p.y, p.z - FLAME_CONE + 3.3258], rotZ: deg(p.rot) },
+  ];
 }

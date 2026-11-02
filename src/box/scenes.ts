@@ -140,4 +140,15 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       return b.doc;
     },
   },
+  {
+    name: '起点与小节',
+    build: () => {
+      const b = new B();
+      // 起点路口朝 +X，路接在 12.3861 处；小节盘点两头都接路；另一个小节盘点只接一头
+      b.piece('start', 0, 2.5, 0); b.box(12.3861, 0, 20, 5);
+      b.piece('check', 32.3861 + 9.924, 2.5, 0); b.box(32.3861 + 19.848, 0, 15, 5);
+      b.box(67.2341, 0, 5, 20); b.piece('check', 69.7341, 20 + 9.924, 1);
+      return b.doc;
+    },
+  },
 ];
