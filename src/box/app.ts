@@ -44,7 +44,8 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 4000);
 camera.up.set(0, 0, 1);
 camera.position.set(-20, -45, 45);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+// 中键环视、Shift+中键平移（OrbitControls 自带：按着 Shift 的旋转键就是平移）；右键按住是漫游（见下面的 fly）
+controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE };
 controls.target.set(20, 10, 0);
 controls.enableDamping = true;
 // 滚轮缩放自己做，带缓动（每帧把相机到目标点的距离朝 zoomGoal 靠一部分）
@@ -347,11 +348,12 @@ const keyHtml = (k: string) => (k in MOUSE ? mouseIcon(k) : `<kbd>${k}</kbd>`);
 function currentHints(): Hint[] {
   const H = (keys: string[], label: string): Hint => ({ keys, label });
   if (drag?.t === 'place') return [H(['LMB'], '松开放下'), H(['R'], '旋转'), H(['RMB'], '取消')];
+  if (fly) return [H(['W', 'A', 'S', 'D'], '移动'), H(['Space'], '上升'), H(['Shift'], '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), H(['RMB'], '松开退出漫游')];
   if (drag) return [H(['LMB'], '松开完成'), H(['G'], gridOn ? '格栅：开' : '格栅：关'), H(['S'], alignOn ? '对齐：开' : '对齐：关')];
   if (guardMode) return [H(['LMB'], '点路边：放整条直边'), H(['LMB'], '沿路边拖：放一段'), H(['LMB'], '拖把手：改长度'), H(['Esc'], '退出')];
   if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(['Tab'], '换方向'), H(['Esc'], '退出')];
   if (vHeld) return [H(['V', 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
-  const hs = [H(['RMB'], '环视'), H(['MMB'], '平移'), H(['Wheel'], '缩放')];
+  const hs = [H(['MMB'], '环视'), H(['Shift', 'MMB'], '平移'), H(['RMB'], '漫游'), H(['Wheel'], '缩放')];
   if (sel.size) hs.push(H(['LMB'], '移动'), H(['Shift', 'LMB'], '沿轴'), H(['Alt', 'LMB'], '高度'), H(['Ctrl', 'LMB'], '尺寸'), H(['Alt', 'Shift', 'LMB'], '拉坡'), H(['V'], '吸附'), H(['F'], '聚焦'), H(['X'], '删除'));
   else hs.push(H(['LMB'], '选择 / 框选'), H(['F'], '看全部'));
   return hs;
@@ -851,6 +853,76 @@ function liveUpdate() {
 
 const el = renderer.domElement;
 el.addEventListener('contextmenu', (e) => e.preventDefault());
+// ---------------- 漫游：右键按住时，鼠标转视角，WASD 前后左右，空格上升、Shift 下降 ----------------
+let fly: { keys: Set<string>; speed: number; dist: number } | null = null;
+let flySpeed = 30;
+el.addEventListener('pointerdown', (e) => {
+  if (e.button !== 2 || drag) return;
+  e.preventDefault();
+  fly = { keys: new Set(), speed: flySpeed, dist: camera.position.distanceTo(controls.target) };
+  controls.enabled = false;
+  zoomGoal = null; camAnim = null;
+  el.setPointerCapture(e.pointerId);
+  el.requestPointerLock?.();
+  updateStatus();
+}, true);
+function endFly() {
+  if (!fly) return;
+  // 视图中心放回相机前方原来的距离处，之后环视、缩放照常
+  const dir = camera.getWorldDirection(new THREE.Vector3());
+  controls.target.copy(camera.position).addScaledVector(dir, fly.dist);
+  flySpeed = fly.speed;
+  fly = null;
+  controls.enabled = true;
+  controls.update();
+  if (document.pointerLockElement) document.exitPointerLock();
+  updateStatus();
+}
+window.addEventListener('pointerup', (e) => { if (e.button === 2) endFly(); }, true);
+window.addEventListener('blur', endFly);
+window.addEventListener('pointermove', (e) => {
+  if (!fly) return;
+  // 鼠标转视角：水平绕世界 Z 轴，竖直绕相机右方向（不翻过头顶）
+  const k = 0.0025;
+  const dir = camera.getWorldDirection(new THREE.Vector3());
+  const yaw = -e.movementX * k, pitch = -e.movementY * k;
+  dir.applyAxisAngle(new THREE.Vector3(0, 0, 1), yaw);
+  const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
+  const d2 = dir.clone().applyAxisAngle(right, pitch);
+  if (Math.abs(d2.z) < 0.995) dir.copy(d2);
+  camera.lookAt(camera.position.clone().add(dir));
+}, true);
+// 漫游时键盘只管移动（不触发别的快捷键）
+window.addEventListener('keydown', (e) => {
+  if (!fly) return;
+  const k = e.code;
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ', 'KeyE'].includes(k)) fly.keys.add(k);
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+window.addEventListener('keyup', (e) => { if (fly) { fly.keys.delete(e.code); e.stopImmediatePropagation(); } }, true);
+renderer.domElement.addEventListener('wheel', (e) => {
+  if (!fly) return;
+  // 漫游时滚轮调速度
+  e.preventDefault(); e.stopImmediatePropagation();
+  fly.speed = THREE.MathUtils.clamp(fly.speed * Math.exp(-e.deltaY * 0.0015), 2, 400);
+  updateStatus();
+}, { passive: false, capture: true });
+function tickFly(dt: number) {
+  if (!fly) return;
+  const f = camera.getWorldDirection(new THREE.Vector3());
+  const r = new THREE.Vector3().crossVectors(f, camera.up).normalize();
+  const m = new THREE.Vector3();
+  const k = fly.keys;
+  if (k.has('KeyW')) m.add(f);
+  if (k.has('KeyS')) m.sub(f);
+  if (k.has('KeyD')) m.add(r);
+  if (k.has('KeyA')) m.sub(r);
+  if (k.has('Space') || k.has('KeyE')) m.z += 1;
+  if (k.has('ShiftLeft') || k.has('ShiftRight') || k.has('KeyQ')) m.z -= 1;
+  if (m.lengthSq() === 0) return;
+  camera.position.addScaledVector(m.normalize(), fly.speed * dt);
+}
+
 el.addEventListener('pointerdown', (e) => {
   // 右键现在是环视：只在复制跟随鼠标时用来取消；护栏 / 切分工具用 Esc 或点「选择」退出
   if (e.button === 2 && drag?.t === 'move' && drag.grab) { cancelGrab(); return; }
@@ -2111,6 +2183,7 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
 });
 renderer.setAnimationLoop(() => {
   frameNo++;
+  if (fly) tickFly(Math.min(0.05, (performance.now() - lastFrame) / 1000));
   const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
   if (camAnim) {
@@ -2145,7 +2218,7 @@ renderer.setAnimationLoop(() => {
   selLayer.position.set(off[0], off[1], off[2]);
   if (moving && anim?.preview) drawOverlay();
   if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
-  controls.update();
+  if (!fly) controls.update(); // 漫游时视角由鼠标直接控制，OrbitControls 会把相机掰回去对着视图中心
   renderer.render(scene, camera);
   if (secLabels.size) placeSectorLabels();
 });
@@ -2162,6 +2235,7 @@ renderer.setAnimationLoop(() => {
   get rebuilds() { return rebuildCount; },
   camDist: () => +camera.position.distanceTo(controls.target).toFixed(2),
   camState: () => ({ t: controls.target.toArray(), d: camera.position.distanceTo(controls.target) }),
+  camPos: () => camera.position.toArray(),
   get rebuildTimes() { return rebuildTimes; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
