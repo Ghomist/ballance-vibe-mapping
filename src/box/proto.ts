@@ -44,7 +44,9 @@ scene.add(gridHelper);
 
 const world = new THREE.Group();
 const overlay = new THREE.Group();
-scene.add(world, overlay);
+/** 选中物体的边框、包裹面、对准方块：拖动时跟着物体的缓动一起走 */
+const selLayer = new THREE.Group();
+scene.add(world, overlay, selLayer);
 
 // ---------------- 状态 ----------------
 
@@ -89,10 +91,28 @@ function clearWorld() {
   world.clear();
 }
 
+/** 每个元素的网格组（拖动时直接平移它们，不用每次都重算整张图） */
+const elemGroups = new Map<number, THREE.Group[]>();
+const addGroup = (id: number, g: THREE.Group) => { world.add(g); const l = elemGroups.get(id); if (l) l.push(g); else elemGroups.set(id, [g]); };
+
+/**
+ * 拖动中：文档里已经是目标位置（target），画面上的物体按缓动从 shown 追上去；
+ * 整张图的重算最多每 REBUILD_MS 一次（solved 是上次重算时的位置），两次之间只平移选中物体的网格。
+ */
+let live: { ids: Set<number>; target: V3; shown: V3; solved: V3 } | null = null;
+const REBUILD_MS = 90;
+const EASE = 0.38;
+let lastRebuildAt = 0;
+let rebuildWanted = false;
+
 let rebuildCount = 0;
 function rebuild() {
   rebuildCount++;
+  lastRebuildAt = performance.now();
+  rebuildWanted = false;
+  if (live) live.solved = [...live.target];
   clearWorld();
+  elemGroups.clear();
   pickables = [];
   objBoxes.clear();
   const t0 = performance.now();
@@ -115,7 +135,7 @@ function rebuild() {
       tris += part.pos.length / 9;
       if (wireOn) { const w = new THREE.LineSegments(new THREE.WireframeGeometry(geo), WIRE_MAT); w.userData.own = true; g.add(w); }
     }
-    world.add(g);
+    addGroup(doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id, g);
   }
   lastSolve.tris = tris;
   // 专属路块
@@ -123,7 +143,7 @@ function rebuild() {
     const g = new THREE.Group();
     const pieces = getAsset('asset', part.name) ?? [fallbackBox(5, 5, 5)];
     addMeshes(g, pieces, id, (m) => { m.position.set(...part.pos); m.rotation.z = (part.rotZ * Math.PI) / 180; });
-    world.add(g);
+    addGroup(id, g);
   }
   // 机关、装饰、挡块
   for (const e of Object.values(doc.elems)) {
@@ -154,7 +174,7 @@ function rebuild() {
       g.add(mesh);
       pickables.push(mesh);
     }
-    world.add(g);
+    addGroup(e.id, g);
     if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
   }
   save();
@@ -181,7 +201,7 @@ function updateStatus() {
   parts.push(`${Object.keys(doc.elems).length} 个元素 · ${lastSolve.tris} 个三角形 · 求解 ${lastSolve.ms.toFixed(1)} ms`);
   parts.push(splitMode
     ? '切分：点路面在鼠标处切开 · Tab 换方向 · Esc / 右键退出'
-    : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
+    : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Alt+Shift 拖一头拉坡 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
   if (gridOn) parts.push('格栅 1');
   if (alignOn) parts.push('自动对齐');
   statusEl.innerHTML = parts.join('　|　');
@@ -278,7 +298,7 @@ let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
 let splitPreview: { a: P3; b: P3 } | null = null;
 /** Ctrl 改尺寸时顶面的测量线（on5：长度正好是 5 的整数倍） */
-let measure: { a: P3; b: P3; ax: 0 | 1; text: string; on5: boolean } | null = null;
+let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean } | null = null;
 /** 改尺寸时长度吸附到 5 的整数倍的距离（屏幕像素） */
 const SIZE5_PX = 7;
 const measureLabel = document.createElement('div');
@@ -287,21 +307,23 @@ document.body.appendChild(measureLabel);
 const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
 
 function drawOverlay() {
-  overlay.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); const mt = m.material as THREE.Material | undefined; mt?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
-  overlay.clear();
+  for (const layer of [overlay, selLayer]) {
+    layer.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); const mt = m.material as THREE.Material | undefined; mt?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
+    layer.clear();
+  }
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
   for (const id of sel) {
     const e = doc.elems[id];
     if (!e) continue;
     const hull = hullOf(e, 0x4c8dff, 0.16);
-    if (hull) overlay.add(hull);
-    overlay.add(outlineOf(e, 0x4c8dff));
+    if (hull) selLayer.add(hull);
+    selLayer.add(outlineOf(e, 0x4c8dff));
   }
   // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
   for (const id of new Set([...hoverGroup, ...sel])) {
     const e = doc.elems[id];
-    if (e?.kind === 'obj') overlay.add(anchorBoxes(e));
+    if (e?.kind === 'obj') (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
   }
   // 按住 V：显示鼠标下元素的顶点和边中点
   if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
@@ -322,7 +344,7 @@ function drawOverlay() {
   if (measure) {
     const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
     const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
-    const side = new THREE.Vector3(measure.ax === 0 ? 0 : 0.6, measure.ax === 0 ? 0.6 : 0, 0);
+    const side = new THREE.Vector3(...measure.tick);
     const segs = [A, B, A.clone().sub(side), A.clone().add(side), B.clone().sub(side), B.clone().add(side)];
     const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color, depthTest: false }));
     l.renderOrder = 7;
@@ -483,6 +505,7 @@ type Drag =
   | { t: 'axis'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; sx: number; sy: number; axis: 0 | 1 | null }
   | { t: 'lift'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
+  | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
   | { t: 'place'; ids: number[] | null; type: string; moved: boolean }
@@ -496,6 +519,15 @@ function moveSel(orig: Map<number, string>, d: V3) {
   d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 不开格栅时也只保留到 0.001，免得坐标一长串小数
   for (const id of orig.keys()) translateElem(doc.elems[id], d);
   dragInfo = `移动 ${fmt(d[0])}, ${fmt(d[1])}, ${fmt(d[2])}`;
+  if (!live) live = { ids: new Set(orig.keys()), target: [0, 0, 0], shown: [0, 0, 0], solved: [0, 0, 0] };
+  live.target = d;
+}
+
+/** 拖动中的刷新：叠加层马上更新，整张图的重算交给动画循环去节流 */
+function liveUpdate() {
+  rebuildWanted = true;
+  drawOverlay();
+  updateStatus();
 }
 
 const el = renderer.domElement;
@@ -509,6 +541,19 @@ el.addEventListener('pointerdown', (e) => {
   el.setPointerCapture(e.pointerId);
   if (!h) { drag = { t: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey }; return; }
   const group = expandGroups(doc, [h.id]);
+  const hb = doc.elems[h.id];
+  if (e.altKey && e.shiftKey && hb.kind === 'box') {
+    // Alt+Shift：拖路面的一头上下，拉成坡（只动靠近鼠标的那一端）
+    snapshot();
+    sel = new Set([h.id]);
+    const axis: 0 | 1 = hb.slope ? hb.slope.axis : hb.sx >= hb.sy ? 0 : 1;
+    const f = footprint(hb);
+    const hi = axis === 0 ? h.p.x > (f.x0 + f.x1) / 2 : h.p.y > (f.y0 + f.y1) / 2;
+    const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
+    drag = { t: 'tilt', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p, axis, hi };
+    drawOverlay(); syncProps(); updateStatus();
+    return;
+  }
   if (e.shiftKey) {
     // Shift：没拖动就是加选 / 减选，拖动就是沿轴移动
     const s = sel.has(h.id) ? sel : new Set([...sel, ...group]);
@@ -564,7 +609,7 @@ window.addEventListener('pointermove', (e) => {
     moveSel(drag.orig, [to[0] - drag.grab[0], to[1] - drag.grab[1], to[2] - drag.grab[2]]);
     snapTarget = tg;
     snapGrab = to;
-    rebuild();
+    liveUpdate();
     return;
   }
   if (drag.t === 'axis') {
@@ -593,12 +638,13 @@ window.addEventListener('pointermove', (e) => {
     d = alignDelta(drag.b, d, [a], drag.start);
     moveSel(drag.orig, d);
     axisLine = { p: drag.start.clone().add(new THREE.Vector3(...d)), axis: a };
-    rebuild();
+    liveUpdate();
     return;
   }
   const p = planeHit(e, drag.plane);
   if (!p) return;
-  if (drag.t === 'size') { resizeTo(drag, p); rebuild(); return; }
+  if (drag.t === 'size') { resizeTo(drag, p); liveUpdate(); return; }
+  if (drag.t === 'tilt') { tiltTo(drag, p); liveUpdate(); return; }
   const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
@@ -611,7 +657,7 @@ window.addEventListener('pointermove', (e) => {
     d = alignDelta(drag.b, d, [2], p);
     moveSel(drag.orig, d);
   }
-  rebuild();
+  liveUpdate();
 });
 
 /** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边，格栅、自动对齐都管这条边 */
@@ -645,7 +691,53 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
   const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
   const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(elem, x, y) + 0.08]; };
   const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
-  measure = { a: P(t0), b: P(t1), ax, text: fmt(t1 - t0), on5 };
+  measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(t1 - t0), on5 };
+}
+
+/** Alt+Shift 拖动：抬高 / 压低路面的一头。格栅开着时高度取整；对齐开着时吸到别的路面的顶面；放平时吸回水平 */
+function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
+  restore(d.orig);
+  const b = doc.elems[d.id] as Box, o = JSON.parse(d.orig.get(d.id)!) as Box;
+  const len = d.axis === 0 ? o.sx : o.sy;
+  const odz = o.slope && o.slope.axis === d.axis ? o.slope.dz : 0;
+  const zLo = o.z, zHi = o.z + odz;
+  const other = d.hi ? zLo : zHi;
+  let end = (d.hi ? zHi : zLo) + (p.z - d.start.z);
+  if (gridOn) end = Math.round(end);
+  guides = [];
+  // 这一头贴着的路面（端面相接）：拉到接近它的高度时吸上去，正好接上
+  const fo = footprint(o);
+  const dEnd = (d.hi ? d.axis : d.axis + 2) as Dir;
+  const line = [fo.x1, fo.y1, fo.x0, fo.y0][dEnd];
+  const touching = Object.values(doc.elems).filter((x): x is Box => x.kind === 'box' && x.id !== b.id).filter((x) => {
+    const g = footprint(x);
+    const near = [g.x0, g.y0, g.x1, g.y1][dEnd];
+    const [a0, a1, b0, b1] = d.axis === 0 ? [fo.y0, fo.y1, g.y0, g.y1] : [fo.x0, fo.x1, g.x0, g.x1];
+    return Math.abs(near - line) < 0.01 && Math.min(a1, b1) - Math.max(a0, b0) > 0.01;
+  });
+  const meet = touching.map((x) => { const g = footprint(x); const [px, py] = d.axis === 0 ? [line, (g.y0 + g.y1) / 2] : [(g.x0 + g.x1) / 2, line]; return boxTopAt(x, px, py); })
+    .filter((z) => Math.abs(z - end) < worldPerPx(p) * SIZE5_PX).sort((u, v) => Math.abs(u - end) - Math.abs(v - end))[0];
+  if (meet !== undefined) end = meet;
+  else if (Math.abs(end - other) < worldPerPx(p) * SIZE5_PX) end = other; // 吸回水平
+  else if (alignOn) {
+    let best: { diff: number; v: number; ob: Bounds } | null = null;
+    for (const ob of Object.values(doc.elems).filter((x) => x.id !== b.id).map(elemBounds)) {
+      const diff = ob.z1 - end;
+      if (Math.abs(diff) < worldPerPx(p) * ALIGN_PX && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, v: ob.z1, ob };
+    }
+    if (best) { end = best.v; guides.push({ axis: 2, value: end, b: unionB(elemBounds(o), best.ob) }); }
+  }
+  end = Math.round(end * 1000) / 1000;
+  const dz = d.hi ? end - zLo : zHi - end;
+  b.z = d.hi ? zLo : end;
+  b.slope = Math.abs(dz) < 1e-6 ? undefined : { axis: d.axis, dz };
+  // 测量线：在动的那一头，从另一头的高度竖到这一头的高度
+  const f = footprint(b);
+  const t = d.hi ? (d.axis === 0 ? f.x1 : f.y1) : (d.axis === 0 ? f.x0 : f.y0);
+  const mid = d.axis === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
+  const [x, y] = d.axis === 0 ? [t, mid] : [mid, t];
+  measure = { a: [x, y, other], b: [x, y, end], tick: d.axis === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: meet !== undefined ? `高差 ${fmt(end - other)} · 接上` : `高差 ${fmt(end - other)}`, on5: meet !== undefined };
+  dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(end - other))}`;
 }
 
 window.addEventListener('pointerup', (e) => {
@@ -669,6 +761,7 @@ function finishDrag() {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
   drag = null;
+  live = null;
   guides = []; axisLine = null; snapTarget = null; snapGrab = null; dragInfo = ''; measure = null;
   rebuild();
 }
@@ -678,7 +771,7 @@ function cancelGrab() {
     for (const id of drag.orig.keys()) delete doc.elems[id];
     undo.pop();
     sel.clear();
-    drag = null; guides = []; dragInfo = '';
+    drag = null; live = null; guides = []; dragInfo = '';
     rebuild();
   }
 }
@@ -759,7 +852,7 @@ function placeMove(e: PointerEvent) {
   if (best) for (const id of ids) translateElem(doc.elems[id], [best.to[0] - best.from[0], best.to[1] - best.from[1], best.to[2] - best.from[2]]);
   else if (gridOn) { const b = boundsOf(doc, ids); for (const id of ids) translateElem(doc.elems[id], [Math.round(b.x0) - b.x0, Math.round(b.y0) - b.y0, 0]); }
   snapTarget = best ? { p: best.to, kind: best.kind } : null;
-  rebuild();
+  liveUpdate();
 }
 function placeEnd(e: PointerEvent) {
   if (drag?.t !== 'place') return;
@@ -1035,7 +1128,25 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.transition = 'opacity .15s';
   renderer.domElement.style.opacity = '1';
 });
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => {
+  if (live) {
+    // 缓动：画面上的位置每帧追上目标的一部分
+    const sh = live.shown;
+    for (let i = 0; i < 3; i++) { sh[i] += (live.target[i] - sh[i]) * EASE; if (Math.abs(live.target[i] - sh[i]) < 1e-3) sh[i] = live.target[i]; }
+  }
+  if (rebuildWanted && performance.now() - lastRebuildAt > REBUILD_MS) rebuild();
+  // 两次重算之间：选中物体的网格按「画面位置 - 上次重算时的位置」平移，选中框按「画面位置 - 目标位置」平移
+  const off = live ? live.shown.map((v, i) => v - live!.solved[i]) : [0, 0, 0];
+  for (const [id, gs] of elemGroups) {
+    const moving = !!live?.ids.has(id);
+    for (const g of gs) g.position.set(moving ? off[0] : 0, moving ? off[1] : 0, moving ? off[2] : 0);
+  }
+  if (live) selLayer.position.set(live.shown[0] - live.target[0], live.shown[1] - live.target[1], live.shown[2] - live.target[2]);
+  else selLayer.position.set(0, 0, 0);
+  if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
+  controls.update();
+  renderer.render(scene, camera);
+});
 
 // 截图脚本用
 (window as unknown as Record<string, unknown>).__proto = {
