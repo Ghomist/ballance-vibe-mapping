@@ -471,15 +471,26 @@ function drawOverlay() {
     measureLabel.textContent = measure.text;
   }
   if (guardPreview && guardPreview.pts.length > 1) {
-    // 和上一版一样：预览画成护栏的样子（往外偏一点、在护栏顶的高度画横杆，两头画立柱）
-    const st = DEFAULT_SETTINGS, { pts, outs } = guardPreview;
-    const off = pts.map((p, i) => { const o = outs[Math.min(i, outs.length - 1)], o2 = outs[Math.max(i - 1, 0)]; return new THREE.Vector3(p[0] + (o[0] + o2[0]) / 2 * st.guardOffset, p[1] + (o[1] + o2[1]) / 2 * st.guardOffset, p[2]); });
-    const segs: THREE.Vector3[] = [];
-    for (let i = 0; i + 1 < off.length; i++) segs.push(off[i].clone().setZ(off[i].z + st.guardTop), off[i + 1].clone().setZ(off[i + 1].z + st.guardTop));
-    for (const q of [off[0], off[off.length - 1]]) segs.push(q.clone().setZ(q.z - st.guardPostDepth), q.clone().setZ(q.z + st.guardTop));
-    const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color: 0x4cff8a, depthTest: false }));
-    l.renderOrder = 7;
-    overlay.add(l);
+    // 预览就是放下后的护栏本身（同一套几何：往外偏、拐角圆弧、两头立柱），半透明绿色
+    const gm = guardFromRoute(guardPreview, DEFAULT_SETTINGS);
+    if (gm) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(gm.pos, 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(gm.nrm, 3));
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x4cff8a, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false }));
+      m.renderOrder = 7;
+      overlay.add(m);
+    }
+  }
+  // 护栏工具里：每条护栏两头的把手（拖它改长度），鼠标靠近的那个放大变绿
+  if (guardMode) {
+    for (const g of Object.values(doc.elems)) {
+      if (g.kind !== 'guard') continue;
+      ([0, 1] as const).forEach((end) => {
+        const on = guardEndHover?.id === g.id && guardEndHover.end === end;
+        overlay.add(marks([guardHandle(g, end)], 'dot', on ? 0x4cff8a : 0xffd34c, on ? 16 : 11));
+      });
+    }
   }
   if (splitPreview) {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
@@ -1277,14 +1288,21 @@ function surfacePoint(e: { clientX: number; clientY: number }): P3 | null {
   return null;
 }
 /** 护栏工具里，鼠标下的护栏端头（屏幕上 18 像素以内）：可以拖它改长度 */
+/** 护栏端头的把手位置：立柱顶上（和实际的护栏一样往外偏 guardOffset） */
+function guardHandle(g: Extract<Elem, { kind: 'guard' }>, end: 0 | 1): P3 {
+  const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
+  const o = end === 0 ? g.outs[0] : g.outs[g.outs.length - 1];
+  const st = DEFAULT_SETTINGS;
+  return [p[0] + o[0] * st.guardOffset, p[1] + o[1] * st.guardOffset, p[2] + st.guardTop];
+}
+let guardEndHover: { id: number; end: 0 | 1 } | null = null;
 function guardEndAt(e: { clientX: number; clientY: number }): { id: number; end: 0 | 1 } | null {
   const at = new THREE.Vector2(e.clientX, e.clientY);
   let best: { id: number; end: 0 | 1; d: number } | null = null;
   for (const g of Object.values(doc.elems)) {
     if (g.kind !== 'guard') continue;
     ([0, 1] as const).forEach((end) => {
-      const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
-      const d = Math.min(toScreen(p).distanceTo(at), toScreen([p[0], p[1], p[2] + DEFAULT_SETTINGS.guardTop]).distanceTo(at));
+      const d = toScreen(guardHandle(g, end)).distanceTo(at);
       if (d < 18 && (!best || d < best.d)) best = { id: g.id, end, d };
     });
   }
@@ -1299,6 +1317,7 @@ function guardHover(e: PointerEvent) {
     if (pr && Math.abs(pr.s - guardDrag.s0) > 0.3) guardDrag.moved = true;
   } else {
     const end = guardEndAt(e);
+    guardEndHover = end;
     el.style.cursor = end ? 'ew-resize' : '';
     guardPreview = end ? null : p ? edgeAt(loops, p) : null;
   }
