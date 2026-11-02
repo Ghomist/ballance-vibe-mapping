@@ -194,18 +194,35 @@ let dragInfo = '';
  *   能吸附时 goal = snap + (raw - snap) × MAGNET：物体被轻轻吸向标准点，鼠标在附近小幅晃动时物体基本停在标准点上；
  *   松手时落到 final（能吸附就是 snap，正好对准）。所有拖动（移动、沿轴、改高度、V 吸附、改尺寸、拉坡、拖放）都走这一套。
  */
-interface Anim { val: number[]; goal: number[]; final: number[]; apply: (v: number[]) => void }
+/**
+ * 底层（文档、花纹求解）只认最终值 final：吸附住以后鼠标再怎么小幅晃动，final 不变，就不重算、花纹也不变；
+ * 缓动只是画面上的：平移类拖动把这些元素的网格整体挪 (val - final)；改形状的拖动（改尺寸、拉坡）只让选中框缓动。
+ */
+interface Anim {
+  val: number[]; goal: number[]; final: number[]; applied: number[] | null;
+  apply: (v: number[]) => void;
+  /** 平移类拖动：跟着缓动平移网格的元素 */
+  ids?: Set<number>;
+  /** 改形状的拖动：画面值 val 对应的形状（画选中框用） */
+  preview?: (v: number[]) => Elem[];
+}
 let anim: Anim | null = null;
 /** 当前是否处在吸附范围内（选中框变成绿色） */
 let snapping = false;
 const EASE = 0.35;
 const MAGNET = 0.22;
-function drive(raw: number[], snap: number[] | null, apply: (v: number[]) => void, init: number[]) {
+function drive(raw: number[], snap: number[] | null, apply: (v: number[]) => void, init: number[], opt: { ids?: Set<number>; preview?: (v: number[]) => Elem[] } = {}) {
   const goal = snap ? snap.map((v, i) => v + (raw[i] - v) * MAGNET) : raw;
-  if (!anim) anim = { val: [...init], goal, final: snap ?? raw, apply };
-  else Object.assign(anim, { goal, final: snap ?? raw, apply });
-  snapping = !!snap;
-  rebuildWanted = true;
+  const final = snap ?? raw;
+  if (!anim) anim = { val: [...init], goal, final, applied: null, apply, ...opt };
+  else Object.assign(anim, { goal, final, apply, ...opt });
+  if (snapping !== !!snap) { snapping = !!snap; drawOverlay(); }
+  // 最终值变了才改文档、重算花纹
+  if (!anim.applied || anim.applied.some((v, i) => Math.abs(v - final[i]) > 1e-9)) {
+    anim.apply(final);
+    anim.applied = [...final];
+    rebuildWanted = true;
+  }
 }
 let lastStatus = '';
 function updateStatus() {
@@ -332,8 +349,8 @@ function drawOverlay() {
   }
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
-  for (const id of sel) {
-    const e = doc.elems[id];
+  const selElems = anim?.preview ? anim.preview(anim.val) : [...sel].map((id) => doc.elems[id]);
+  for (const e of selElems) {
     if (!e) continue;
     const c = snapping && drag ? 0x4cff8a : 0x4c8dff;
     const hull = hullOf(e, c, 0.16);
@@ -537,7 +554,7 @@ function restore(orig: Map<number, string>) { for (const [id, s] of orig) doc.el
 /** 拖动整体平移：鼠标位置 dRaw，自动对齐给出 dSnap（和 dRaw 一样时表示没吸上） */
 function moveWithSnap(orig: Map<number, string>, dRaw: V3, dSnap: V3) {
   const on = dSnap.some((v, i) => Math.abs(v - dRaw[i]) > 1e-6);
-  drive(dRaw, on ? dSnap : null, (v) => moveSel(orig, v as V3), [0, 0, 0]);
+  drive(dRaw, on ? dSnap : null, (v) => moveSel(orig, v as V3), [0, 0, 0], { ids: new Set(orig.keys()) });
   const f = on ? dSnap : dRaw;
   dragInfo = `移动 ${fmt(f[0])}, ${fmt(f[1])}, ${fmt(f[2])}${on ? '（对齐）' : ''}`;
 }
@@ -630,7 +647,7 @@ window.addEventListener('pointermove', (e) => {
     const tg = findTarget(e.clientX, e.clientY, sel);
     const g = drag.grab;
     const raw: V3 = [p.x - g[0], p.y - g[1], 0];
-    drive(raw, tg ? [tg.p[0] - g[0], tg.p[1] - g[1], tg.p[2] - g[2]] : null, (v) => moveSel((drag as { orig: Map<number, string> }).orig, v as V3), [0, 0, 0]);
+    drive(raw, tg ? [tg.p[0] - g[0], tg.p[1] - g[1], tg.p[2] - g[2]] : null, (v) => moveSel((drag as { orig: Map<number, string> }).orig, v as V3), [0, 0, 0], { ids: new Set(drag.orig.keys()) });
     snapTarget = tg;
     snapGrab = tg ? null : [p.x, p.y, g[2]];
     dragInfo = tg ? `吸附到${tg.kind === 'v' ? '顶点' : tg.kind === 'm' ? '边中点' : '边上'}` : '';
@@ -720,7 +737,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(b, x, y) + 0.08]; };
     const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
     measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(finalLen), on5: snap !== null };
-  }, [start]);
+  }, [start], { preview: (v) => { const b: Box = JSON.parse(d.orig.get(d.id)!); setEdge(b, v[0]); return [b]; } });
   const w = ax === 0 ? o.sy : o.sx;
   dragInfo = `尺寸 ${ax === 0 ? `${fmt(finalLen)} × ${fmt(w)}` : `${fmt(w)} × ${fmt(finalLen)}`}`;
 }
@@ -786,7 +803,7 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
     const mid = d.axis === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
     const [x, y] = d.axis === 0 ? [t, mid] : [mid, t];
     measure = { a: [x, y, other], b: [x, y, cur], tick: d.axis === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: `高差 ${fmt(final - other)}${label}`, on5: snap !== null };
-  }, [start]);
+  }, [start], { preview: (v) => { const b: Box = JSON.parse(d.orig.get(d.id)!); setEnd(b, v[0]); return [b]; } });
   dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(final - other))}`;
 }
 
@@ -807,8 +824,8 @@ window.addEventListener('pointerup', (e) => {
 });
 
 function finishDrag() {
-  // 松手：落到最终位置（能吸附就正好对准）
-  if (anim) anim.apply(anim.final);
+  // 松手：落到最终位置（能吸附就正好对准；文档里本来就是最终位置）
+  if (anim && !anim.applied) anim.apply(anim.final);
   anim = null;
   snapping = false;
   if (drag && 'orig' in drag && drag.orig && !(drag.t === 'move' && drag.grab)) {
@@ -908,7 +925,8 @@ function placeMove(e: PointerEvent) {
     }
   }
   const snap: V3 | null = best ? [raw[0] + best.to[0] - best.from[0], raw[1] + best.to[1] - best.from[1], raw[2] + best.to[2] - best.from[2]] : null;
-  drive(raw, snap, (v) => moveSel(orig, v as V3), raw);
+  if (anim?.applied) moveSel(orig, anim.applied as V3); // 上面为了找吸附点临时挪过，先放回文档里的最终位置
+  drive(raw, snap, (v) => moveSel(orig, v as V3), raw, { ids });
   snapTarget = best ? { p: best.to, kind: best.kind } : null;
 }
 function placeEnd(e: PointerEvent) {
@@ -927,7 +945,6 @@ function placeEnd(e: PointerEvent) {
     sel = new Set(ids);
     palette.hidden = true;
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
-  else if (anim) anim.apply(anim.final);
   anim = null; snapping = false;
   drag = null; snapTarget = null;
   rebuild();
@@ -1188,15 +1205,22 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.opacity = '1';
 });
 renderer.setAnimationLoop(() => {
+  let moving = false;
   if (anim) {
-    let moving = false;
     for (let i = 0; i < anim.val.length; i++) {
       const dv = anim.goal[i] - anim.val[i];
       if (Math.abs(dv) > 1e-4) { anim.val[i] += dv * EASE; moving = true; } else anim.val[i] = anim.goal[i];
     }
-    if (moving || rebuildWanted) { anim.apply(anim.val); rebuildWanted = true; }
   }
   if (rebuildWanted) rebuild();
+  // 画面上的缓动：平移类拖动把网格挪 (val - final)，选中框一起挪；改形状的拖动重画选中框
+  const off = anim?.ids ? anim.val.map((v, i) => v - anim!.final[i]) : [0, 0, 0];
+  for (const [id, gs] of elemGroups) {
+    const m = !!anim?.ids?.has(id);
+    for (const g of gs) g.position.set(m ? off[0] : 0, m ? off[1] : 0, m ? off[2] : 0);
+  }
+  selLayer.position.set(off[0], off[1], off[2]);
+  if (moving && anim?.preview) drawOverlay();
   if (measure) { const m = toScreen(new THREE.Vector3(...measure.a).add(new THREE.Vector3(...measure.b)).multiplyScalar(0.5)); measureLabel.style.left = `${m.x}px`; measureLabel.style.top = `${m.y}px`; }
   controls.update();
   renderer.render(scene, camera);
