@@ -827,6 +827,8 @@ function meshPiece(p: Piece, layers: Layer[], out: Map<number, ElemMeshOut>) {
     mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
     mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
   }
+  // 平台里自动嵌的转换件（负数 id）只要顶面：侧面、端面都贴着平台或路，看不见
+  if (p.id < 0) { out.set(p.id, { id: p.id, parts: mb.parts }); return; }
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
     const A = L(0, ly, cz), B = L(5, ly, fz);
     const Ab: V3 = [A[0], A[1], A[2] - 5], Bb: V3 = [B[0], B[1], B[2] - 5];

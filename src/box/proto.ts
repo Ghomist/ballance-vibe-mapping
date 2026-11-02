@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { MatName } from '../geom/floor';
-import { FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
+import { FAKE_EXTRA, FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial } from '../view/materials';
@@ -164,6 +164,13 @@ function rebuildInner() {
       m.rotation.y = ((fix.pitch ?? 0) * Math.PI) / 180;
       m.rotation.z = ((deg + (fix.rot ?? 0)) * Math.PI) / 180;
     });
+    // 一起显示的附加模型（终点飞船前面的软木桥）：只显示，不导出
+    if (fakePieces) for (const ex of FAKE_EXTRA[fake!] ?? []) {
+      addMeshes(g, getAsset('fake', ex.name) ?? [], e.id, (m) => {
+        m.position.set(e.x + ex.dx * Math.cos(r) - ex.dy * Math.sin(r), e.y + ex.dx * Math.sin(r) + ex.dy * Math.cos(r), e.z + ex.dz);
+        m.rotation.z = r;
+      });
+    }
     const st = e.noStopper ? null : stopperMesh({ id: 0, cat: 'module', type: e.type, x: e.x, y: e.y, z: e.z, rot: deg });
     if (st) {
       const geo = new THREE.BufferGeometry();
@@ -419,7 +426,7 @@ const HATCH = (() => {
 
 /** 对齐辅助面：在对齐的那个坐标上画一块斜线填充的面，范围盖住对齐的两个元素 */
 function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
-  const { b } = gd, pad = 1.5;
+  const { b } = gd, pad = 0; // 辅助面就和正在操作的物体一样大，不挡视野
   // 面上的两个方向（u、v）对应的世界坐标分量
   const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
   const lo = [b.x0 - pad, b.y0 - pad, b.z0 - pad], hi = [b.x1 + pad, b.y1 + pad, b.z1 + pad];
@@ -535,7 +542,7 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
     out[a] += best.diff;
     hits.push({ a, value: best.value, ob: best.ob });
   }
-  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: unionB(shiftB(b, out), h.ob) });
+  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: shiftB(b, out) });
   return out;
 }
 
@@ -581,7 +588,18 @@ el.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
   if (splitMode) { doSplit(e); return; }
-  const h = pick(e);
+  let h = pick(e);
+  // 按住 Ctrl / Alt 时只操作已经选中的东西：鼠标下面就算是别的路面也不会选到它
+  if ((e.ctrlKey || e.altKey) && sel.size) {
+    const others = new Set(Object.keys(doc.elems).map(Number).filter((id) => !sel.has(id)));
+    const hs = pick(e, others);
+    if (hs) h = hs;
+    else {
+      const b = boundsOf(doc, sel);
+      const p = planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), -b.z1)) ?? new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1);
+      h = { id: [...sel][0], p };
+    }
+  }
   el.setPointerCapture(e.pointerId);
   if (!h) { drag = { t: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey }; return; }
   const group = expandGroups(doc, [h.id]);
@@ -633,7 +651,8 @@ window.addEventListener('pointermove', (e) => {
   if (!drag) {
     if (e.target !== el) return;
     if (splitMode) { splitHover(e); return; }
-    const id = pick(e)?.id ?? null;
+    // 按住 Ctrl / Alt 时不提示别的路面（这时只会操作已经选中的东西）
+    const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
     if (id !== hoverId || vHeld) { hoverId = id; drawOverlay(); }
     return;
   }
@@ -719,7 +738,7 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     for (const ob of Object.values(doc.elems).filter((x) => x.id !== o.id).map(elemBounds)) {
       for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - raw; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
     }
-    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: unionB(elemBounds(o), best.ob) }); }
+    if (best) { snap = raw + best.diff; guides.push({ axis: ax, value: snap, b: elemBounds(o) }); }
   }
   // 长度接近 5 的整数倍时吸附（不管开没开格栅、对齐都有）
   const fixed = s < 2 ? lo : lo + len;
@@ -788,7 +807,7 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
       const diff = ob.z1 - raw;
       if (Math.abs(diff) < worldPerPx(p) * ALIGN_PX && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, v: ob.z1, ob };
     }
-    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: unionB(elemBounds(o), best.ob) }); }
+    if (best) { snap = best.v; guides.push({ axis: 2, value: snap, b: elemBounds(o) }); }
   }
   const final = snap ?? raw;
   const setEnd = (x: Box, v: number) => {

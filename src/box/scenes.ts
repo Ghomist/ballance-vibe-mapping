@@ -1,12 +1,16 @@
-// 原型的测试场景：专挑刁钻的拼法（错位、非整数宽度、窄路、坡、重叠、缝隙）
+// 原型的演示 / 测试场景：每个场景把一类功能的各种拼法摆在一起（错位、非整数宽度、坡、重叠、转换、机关…）
 import { objType } from '../model/objects';
 import { Box, Dir, Doc, Piece, PieceType, Style, emptyDoc } from './types';
 
 class B {
   doc: Doc = emptyDoc();
+  /** 后面添加的东西都平移这么多（把几组拼法摆在同一个场景里） */
+  private ox = 0;
+  private oy = 0;
+  at(ox: number, oy: number) { this.ox = ox; this.oy = oy; return this; }
   box(x: number, y: number, sx: number, sy: number, o: { z?: number; style?: Style; depth?: number; slope?: Box['slope']; open?: number } = {}) {
     const id = this.doc.nextId++;
-    this.doc.elems[id] = { id, kind: 'box', x, y, z: o.z ?? 0, sx, sy, depth: o.depth ?? 5, style: o.style ?? 'normal', slope: o.slope, open: o.open };
+    this.doc.elems[id] = { id, kind: 'box', x: x + this.ox, y: y + this.oy, z: o.z ?? 0, sx, sy, depth: o.depth ?? 5, style: o.style ?? 'normal', slope: o.slope, open: o.open };
     return id;
   }
   /** 机关：对准方块中心放在 (ax, ay)，对准方块顶面在 top */
@@ -14,65 +18,98 @@ class B {
     const a = objType(type)?.anchor ?? [0, 0, 0];
     const c = [1, 0, -1, 0][rot], s = [0, 1, 0, -1][rot];
     const id = this.doc.nextId++;
-    this.doc.elems[id] = { id, kind: 'obj', type, x: ax - (a[0] * c - a[1] * s), y: ay - (a[0] * s + a[1] * c), z: top - a[2], rot };
+    this.doc.elems[id] = { id, kind: 'obj', type, x: ax + this.ox - (a[0] * c - a[1] * s), y: ay + this.oy - (a[0] * s + a[1] * c), z: top - a[2], rot };
     return id;
   }
   piece(type: PieceType, x: number, y: number, rot: Dir, z = 0) {
     const id = this.doc.nextId++;
-    this.doc.elems[id] = { id, kind: 'piece', type, x, y, z, rot } as Piece;
+    this.doc.elems[id] = { id, kind: 'piece', type, x: x + this.ox, y: y + this.oy, z, rot } as Piece;
     return id;
   }
 }
 
+/** 起点 / 小节盘点的路口离中心多远 */
+const START_PORT = 12.3861, CHECK_PORT = 9.924;
+
 export const SCENES: { name: string; build: () => Doc }[] = [
   {
-    name: '路口（对齐）',
+    name: '完整小关卡',
     build: () => {
       const b = new B();
-      // 直路 + T 字 + 十字 + 拐角，全部对齐 5
-      b.box(0, 0, 40, 5); b.box(15, 5, 5, 15); // T
-      b.box(0, 30, 40, 5); b.box(15, 20, 5, 10); b.box(15, 35, 5, 10); // 十字（上下两段和 T 的竖段相连）
-      b.box(50, 0, 5, 30); b.box(55, 25, 20, 5); // 拐角
+      // 起点 → 风扇（拼在两段路之间）→ 小节盘点 → 坡（高头插进平台，平台掏空）→ 平台中间放变球器
+      // → 凹路（自动嵌半宽平凹转换）→ 软木桥（两头是开口的凹路）→ 平凹转换 → 平路 → 终点气球
+      b.piece('start', 0, 2.5, 0);
+      const r0 = START_PORT;
+      b.box(r0, 0, 15, 5); b.obj('P_Modul_18', r0 + 17.5, 2.5, 0); b.box(r0 + 20, 0, 15, 5);
+      const c = r0 + 35 + CHECK_PORT;
+      b.piece('check', c, 2.5, 0);
+      const r1 = c + CHECK_PORT;
+      b.box(r1, 0, 10, 5); b.box(r1 + 10, 0, 15, 5, { slope: { axis: 0, dz: 5 } });
+      const px = r1 + 23;
+      b.box(px, -7.5, 20, 20, { z: 5 }); b.obj('P_Trafo_Wood', px + 12.5, 2.5, 5);
+      b.box(px + 20, 0, 15, 5, { z: 5, style: 'sink', open: 1 });
+      const cork = px + 35 - 2.5 + 9.36; // 软木桥原点：左边的对准方块是凹路的最后一格
+      b.obj('P_Modul_29', cork + 10.97, 2.5, 5);
+      const r2 = cork + 10.97 - 2.5;
+      b.box(r2, 0, 15, 5, { z: 5, style: 'sink', open: 4 });
+      b.piece('transition', r2 + 17.5, 2.5, 0, 5);
+      b.box(r2 + 20, 0, 15, 5, { z: 5 });
+      // 终点气球：对准方块是路的最后一格，飞船在路的前方
+      b.obj('PE_Balloon', r2 + 32.5, 2.5, 5, 2);
       return b.doc;
     },
   },
   {
-    name: '错位拼接',
+    name: '路面拼接',
     build: () => {
       const b = new B();
-      b.box(0, 0, 20, 5); b.box(20, 1.3, 20, 5); // 端面错开 1.3
-      b.box(0, 15, 20, 5); b.box(7.37, 20, 5, 12); // T 字口偏到 7.37
-      b.box(30, 15, 5, 20); b.box(35, 17.6, 12, 5); // 侧面接一条错开的路
-      b.box(0, 40, 13.3, 5); b.box(13.3, 40.003, 10, 5); // 0.003 的错缝：算作连上
-      b.box(0, 50, 13.3, 5); b.box(13.35, 50, 10, 5); // 0.05 的缝：不连
-      return b.doc;
-    },
-  },
-  {
-    name: '各种宽度',
-    build: () => {
-      const b = new B();
+      // 对齐 5 的直路、T 字、十字、拐角
+      b.at(0, 0);
+      b.box(0, 0, 40, 5); b.box(15, 5, 5, 15);
+      b.box(0, 30, 40, 5); b.box(15, 20, 5, 10); b.box(15, 35, 5, 10);
+      b.box(50, 0, 5, 30); b.box(55, 25, 20, 5);
+      // 错位：端面错开 1.3、T 字口偏到 7.37、侧面接错开的路、0.003 的错缝（连上）、0.05 的缝（不连）
+      b.at(95, 0);
+      b.box(0, 0, 20, 5); b.box(20, 1.3, 20, 5);
+      b.box(0, 15, 20, 5); b.box(7.37, 20, 5, 12);
+      b.box(30, 15, 5, 20); b.box(35, 17.6, 12, 5);
+      b.box(0, 40, 13.3, 5); b.box(13.3, 40.003, 10, 5);
+      b.box(0, 50, 13.3, 5); b.box(13.35, 50, 10, 5);
+      // 各种宽度：1、3.7、7，平台接普通路和窄路，3×3 小方块
+      b.at(0, 70);
       b.box(0, 0, 30, 1); b.box(0, 5, 30, 3.7); b.box(0, 12, 30, 7);
-      b.box(40, 0, 22, 17.5); // 平台
-      b.box(62, 6, 15, 5); b.box(47, 17.5, 3.7, 10); // 接普通路、窄路
-      b.box(0, 25, 3, 3); // 小方块
+      b.box(40, 0, 22, 17.5); b.box(62, 6, 15, 5); b.box(47, 17.5, 3.7, 10);
+      b.box(0, 25, 3, 3);
+      // 重叠与错层：同样式重叠合并、不同样式压上去、高出来的路穿过路面、桥从上面跨过
+      b.at(95, 75);
+      b.box(0, 0, 20, 5); b.box(10, 0, 20, 5);
+      b.box(0, 15, 25, 5); b.box(10, 13.5, 6, 8, { style: 'sink' });
+      b.box(0, 30, 30, 5); b.box(12, 25, 5, 15, { z: 2 });
+      b.box(40, 0, 5, 30); b.box(32, 12, 21, 5, { z: 6, depth: 1.5 });
       return b.doc;
     },
   },
   {
-    name: '凹路与转换',
+    name: '样式与转换',
     build: () => {
       const b = new B();
-      b.box(0, 0, 20, 5, { style: 'sink' }); b.box(8, 5, 5, 10, { style: 'sink' }); // 凹路 T
-      // 平路 → 平凹转换 → 凹路
+      // 凹路 T；平路 → 平凹转换 → 凹路；细边框平台嵌窄转换接凹路；凹槽平台接凹路；凹路开口端
+      b.at(0, 0);
+      b.box(0, 0, 20, 5, { style: 'sink' }); b.box(8, 5, 5, 10, { style: 'sink' });
       b.box(0, 25, 15, 5); b.piece('transition', 17.5, 27.5, 2); b.box(20, 25, 15, 5, { style: 'sink' });
-      // 细边框凹平台，窄转换嵌在边框带里，外面接凹路
       b.box(40, 0, 25, 20, { style: 'ribbon' });
       b.piece('transition-narrow', 51.55, 1.25, 1); b.box(49.05, -12, 5, 12, { style: 'sink' });
-      // 凹槽平台 + 凹路
       b.box(0, 40, 20, 15, { style: 'sink' }); b.box(20, 44.1, 12, 5, { style: 'sink' });
-      // 凹路开口端（接机关的断口）
       b.box(40, 35, 15, 5, { style: 'sink', open: 1 << 0 }); b.box(60, 35, 15, 5, { style: 'sink', open: 1 << 2 });
+      // 不同样式的路接平台：自动在边框带里嵌转换件（贴着、插进去、T 字口都行）
+      b.at(0, 80);
+      b.box(0, 0, 20, 15); b.box(7.5, -10, 5, 10, { style: 'sink' }); b.box(20, 5, 10, 5);
+      b.box(40, 0, 20, 15, { style: 'sink' }); b.box(47.5, -10, 5, 10); b.box(60, 5, 10, 5, { style: 'sink' });
+      b.box(80, 0, 22, 17, { style: 'ribbon' }); b.box(83.7, -10, 5, 10, { style: 'sink' }); b.box(102, 6.3, 10, 5);
+      b.box(0, 30, 30, 5); b.box(12.5, 35, 5, 10, { style: 'sink' });
+      b.box(40, 30, 15, 15, { style: 'ribbon' }); b.box(48, 35, 20, 5);
+      b.box(75, 30, 15, 15, { style: 'sink' }); b.box(83, 35, 20, 5);
+      b.box(110, 30, 15, 15); b.box(118, 35, 20, 5, { style: 'sink' });
       return b.doc;
     },
   },
@@ -94,37 +131,7 @@ export const SCENES: { name: string; build: () => Doc }[] = [
     },
   },
   {
-    name: '重叠与错层',
-    build: () => {
-      const b = new B();
-      b.box(0, 0, 20, 5); b.box(10, 0, 20, 5); // 同样式重叠：合并
-      b.box(0, 15, 25, 5); b.box(10, 13.5, 6, 8, { style: 'sink' }); // 不同样式压上去
-      b.box(0, 30, 30, 5); b.box(12, 25, 5, 15, { z: 2 }); // 高出来的 box 穿过路面
-      b.box(40, 0, 5, 30); b.box(32, 12, 21, 5, { z: 6, depth: 1.5 }); // 桥从上面跨过
-      return b.doc;
-    },
-  },
-  {
-    name: '平台与不同样式的路',
-    build: () => {
-      const b = new B();
-      // 平路平台：凹路接进来（自动嵌半宽平凹转换），平路照常接
-      b.box(0, 0, 20, 15); b.box(7.5, -10, 5, 10, { style: 'sink' }); b.box(20, 5, 10, 5);
-      // 凹槽平台：平路接进来（自动嵌半块下沉坡），凹路照常接
-      b.box(40, 0, 20, 15, { style: 'sink' }); b.box(47.5, -10, 5, 10); b.box(60, 5, 10, 5, { style: 'sink' });
-      // 细边框平台：凹路接进来（自动嵌窄转换），平路接进来（下沉坡），不对齐格栅的位置
-      b.box(80, 0, 22, 17, { style: 'ribbon' }); b.box(83.7, -10, 5, 10, { style: 'sink' }); b.box(102, 6.3, 10, 5);
-      // 凹路接平路的侧面（T 字口）
-      b.box(0, 30, 30, 5); b.box(12.5, 35, 5, 10, { style: 'sink' });
-      // 路插进平台里（不是刚好贴着）：插进去的部分被平台盖住，边沿照样嵌转换件
-      b.box(40, 30, 15, 15, { style: 'ribbon' }); b.box(48, 35, 20, 5);
-      b.box(40, 50, 15, 15, { style: 'sink' }); b.box(48, 55, 20, 5);
-      b.box(40, 70, 15, 15); b.box(48, 75, 20, 5, { style: 'sink' });
-      return b.doc;
-    },
-  },
-  {
-    name: '机关',
+    name: '机关与盘点',
     build: () => {
       const b = new B();
       // 风扇直接放在路上（盖住）；风扇拼在两段路之间
@@ -133,21 +140,16 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       // 变球器嵌在凹槽平台中间；单独放的变球器
       b.box(40, 0, 20, 20, { style: 'sink' }); b.obj('P_Trafo_Wood', 50, 10, -0.7);
       b.obj('P_Trafo_Paper', 70, 10, 0);
-      // 栅栏路面；软木桥（挡块）两头接路；跷跷板
+      // 栅栏路面
       b.box(0, 30, 10, 5); b.obj('P_Modul_01', 12.5, 32.5, 0, 0); b.box(20, 30, 10, 5);
       // 软木桥：两个对准方块是两头那一格路面，中间断开（断口是开口端）
       b.box(40, 30, 10, 5, { style: 'sink', open: 1 }); b.obj('P_Modul_29', 56.86 + 10.97, 32.5, 0, 0); b.box(65.33, 30, 10, 5, { style: 'sink', open: 4 });
-      return b.doc;
-    },
-  },
-  {
-    name: '起点与小节',
-    build: () => {
-      const b = new B();
-      // 起点路口朝 +X，路接在 12.3861 处；小节盘点两头都接路；另一个小节盘点只接一头
-      b.piece('start', 0, 2.5, 0); b.box(12.3861, 0, 20, 5);
-      b.piece('check', 32.3861 + 9.924, 2.5, 0); b.box(32.3861 + 19.848, 0, 15, 5);
-      b.box(67.2341, 0, 5, 20); b.piece('check', 69.7341, 20 + 9.924, 1);
+      // 盘点：起点接一头；小节盘点两头都接、只接一头、都不接
+      b.at(0, 55);
+      b.piece('start', 0, 2.5, 0); b.box(START_PORT, 0, 15, 5);
+      b.piece('check', START_PORT + 15 + CHECK_PORT, 2.5, 0); b.box(START_PORT + 15 + 2 * CHECK_PORT, 0, 15, 5);
+      b.box(72.5, 0, 5, 10); b.piece('check', 75, 10 + CHECK_PORT, 1);
+      b.piece('check', 100, 2.5, 0);
       return b.doc;
     },
   },
