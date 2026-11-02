@@ -111,6 +111,10 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.box(80, 0, 22, 17, { style: 'ribbon' }); b.box(83.7, -10, 5, 10, { style: 'sink' }); b.box(102, 6.3, 10, 5);
       // 凹路接平路的侧面（T 字口）
       b.box(0, 30, 30, 5); b.box(12.5, 35, 5, 10, { style: 'sink' });
+      // 路插进平台里（不是刚好贴着）：插进去的部分被平台盖住，边沿照样嵌转换件
+      b.box(40, 30, 15, 15, { style: 'ribbon' }); b.box(48, 35, 20, 5);
+      b.box(40, 50, 15, 15, { style: 'sink' }); b.box(48, 55, 20, 5);
+      b.box(40, 70, 15, 15); b.box(48, 75, 20, 5, { style: 'sink' });
       return b.doc;
     },
   },

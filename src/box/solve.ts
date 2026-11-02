@@ -128,12 +128,15 @@ interface Layer {
 }
 
 let runSeq = 0;
+/** 插进平台的路（"路:平台"）：重叠的部分由平台盖住，不按后放的优先 */
+let inserted = new Set<string>();
 
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
   const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj');
   const auto = autoTransitions(docElems);
+  inserted = auto.inserted;
   const elems: Elem[] = [...docElems, ...bases, ...auto.pieces];
   const boxes = elems.filter((e): e is Box => e.kind === 'box');
   const pieces = elems.filter((e): e is Piece => e.kind === 'piece');
@@ -183,32 +186,41 @@ export function solve(doc: Doc): Solved {
 /**
  * 不同样式的路接到平台（或别的路的侧面）上时，在平台的边框带里自动嵌一个长 2.5 的转换件：
  *   凹路接平路平台：半宽平凹转换；凹路接细边框平台：窄转换；平路接凹槽 / 细边框平台：半块下沉坡。
- * 条件：路宽正好是 5、端面整个贴在平台侧面上、平台那一侧比路宽、往里至少有 2.5。
+ * 路可以刚好贴着平台，也可以一端插进平台里（插进去的那一截被平台盖住）。
+ * 条件：路宽正好是 5、整个宽度都在平台侧面的范围里、平台那一侧比路宽、往里至少有 2.5。
  */
-function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, number> } {
+function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, number>; inserted: Set<string> } {
   const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
   const placed = elems.filter((e): e is Piece => e.kind === 'piece');
   const pieces: Piece[] = [];
   const owner = new Map<number, number>();
+  const inserted = new Set<string>();
   for (const A of flats) for (const B of flats) {
     if (A === B || A.style === B.style || A.style === 'ribbon' || Math.abs(A.z - B.z) > EPS_TOUCH) continue;
     const type = A.style === 'sink' ? (B.style === 'normal' ? 'transition-half' : 'transition-narrow') : 'ramp';
     const fa = footprint(A), fb = footprint(B);
     for (const d of [0, 1, 2, 3] as Dir[]) {
-      const q = faceContact(fa, d, fb);
-      if (!q) continue;
-      const w = d % 2 === 0 ? A.sy : A.sx;
-      const bw = d % 2 === 0 ? B.sy : B.sx, bd = d % 2 === 0 ? B.sx : B.sy;
-      if (Math.abs(w - 5) > EPS_TOUCH || q[1] - q[0] < w - EPS_TOUCH || bw < w + EPS_TOUCH || bd < 2.5 - EPS_TOUCH) continue;
-      const line = [fa.x1, fa.y1, fa.x0, fa.y0][d], c = (q[0] + q[1]) / 2;
-      const along = line + (d < 2 ? 1.25 : -1.25);
-      const p: Piece = { id: -(pieces.length + 1), kind: 'piece', type, x: d % 2 === 0 ? along : c, y: d % 2 === 0 ? c : along, z: B.z, rot: d, inner: type === 'ramp' ? B.style : undefined };
+      // 路沿 d 方向进入平台：平台在 d 的对面那条边（line）上接路
+      const ax = d % 2;
+      const [a0, a1, b0, b1] = ax === 0 ? [fa.x0, fa.x1, fb.x0, fb.x1] : [fa.y0, fa.y1, fb.y0, fb.y1];
+      const [c0, c1, e0, e1] = ax === 0 ? [fa.y0, fa.y1, fb.y0, fb.y1] : [fa.x0, fa.x1, fb.x0, fb.x1];
+      const pos = d < 2;
+      const line = pos ? b0 : b1;
+      // 路从外面伸到这条线（或越过它，但没穿过平台），路的另一端在平台外面
+      const reaches = pos ? a0 < line - EPS_TOUCH && a1 >= line - EPS_TOUCH && a1 <= b1 + EPS_TOUCH
+        : a1 > line + EPS_TOUCH && a0 <= line + EPS_TOUCH && a0 >= b0 - EPS_TOUCH;
+      if (!reaches) continue;
+      if (Math.abs(c1 - c0 - 5) > EPS_TOUCH || c0 < e0 - EPS_TOUCH || c1 > e1 + EPS_TOUCH || e1 - e0 < 5 + EPS_TOUCH || b1 - b0 < 2.5 - EPS_TOUCH) continue;
+      const c = (c0 + c1) / 2;
+      const along = line + (pos ? 1.25 : -1.25);
+      const p: Piece = { id: -(pieces.length + 1), kind: 'piece', type, x: ax === 0 ? along : c, y: ax === 0 ? c : along, z: B.z, rot: d, inner: type === 'ramp' ? B.style : undefined };
       if (placed.some((x) => overlaps(footprint(x), footprint(p)))) continue; // 已经手动放了转换件
       pieces.push(p);
       owner.set(p.id, B.id);
+      if (pos ? a1 > line + EPS_TOUCH : a0 < line - EPS_TOUCH) inserted.add(`${A.id}:${B.id}`);
     }
   }
-  return { pieces, owner };
+  return { pieces, owner, inserted };
 }
 
 /** 素材件在某一层里每个面的接法（嵌进凹槽的底座四边都算嵌入面） */
@@ -348,7 +360,12 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
     if (zt > L.z + EPS_TOUCH && zb < L.z - EPS_TOUCH) return true;
     // 专属路块盖在路上：顶面和路面齐平或落在槽底的都算（专属路块优先）
     if (o.kind === 'piece' && o.base && zt <= L.z + EPS_TOUCH && zt >= L.z - SINK_DEPTH - EPS_TOUCH) return true;
-    if (Math.abs(zt - L.z) <= EPS_TOUCH) return o.kind === 'piece' || o.id > cand;
+    if (Math.abs(zt - L.z) <= EPS_TOUCH) {
+      if (o.kind === 'piece') return true;
+      if (inserted.has(`${o.id}:${cand}`)) return false;
+      if (inserted.has(`${cand}:${o.id}`)) return true;
+      return o.id > cand;
+    }
     return false;
   });
   for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
