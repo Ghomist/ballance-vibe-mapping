@@ -951,6 +951,9 @@ const CP_FIX: Record<string, [number, number]> = {
   CheckPoint_DoubleExtended_OpenEdge: [-0.02155, 0.036],
 };
 
+/** 重生点占位符本身朝 -X，转 180° 才和路口 / 设置的重生朝向一致 */
+const spawnRot = (p: Piece) => ((p.spawn ?? p.rot * 90) + 180) % 360;
+
 /** 盘点路面由哪些模型组成：路面（按接了哪几侧选延伸段版本）+ 火焰占位符 + 重生点占位符 */
 function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[] {
   const fp = footprint(p);
@@ -963,7 +966,7 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
       { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot) },
       // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
       { name: 'PS_FourFlames', kind: 'element', objName: 'PS_FourFlames_01', pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) + 90 },
-      { name: 'PR_Resetpoint', kind: 'element', objName: 'PR_Resetpoint_01', pos: [p.x, p.y, p.z - FLAME_CONE + 3.65], rotZ: deg(p.rot) },
+      { name: 'PR_Resetpoint', kind: 'element', objName: 'PR_Resetpoint_01', pos: [p.x, p.y, p.z - FLAME_CONE + 3.65], rotZ: spawnRot(p) },
     ];
   }
   const a = joined(p.rot), b = joined(opp(p.rot));
@@ -975,6 +978,6 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
   return [
     { name, kind: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir) },
     { name: 'PC_TwoFlames', kind: 'element', objName: `PC_TwoFlames_${two(sector - 1)}`, pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) },
-    { name: 'PR_Resetpoint', kind: 'element', objName: `PR_Resetpoint_${two(sector)}`, pos: [p.x, p.y, p.z - FLAME_CONE + 3.3258], rotZ: deg(p.rot) },
+    { name: 'PR_Resetpoint', kind: 'element', objName: `PR_Resetpoint_${two(sector)}`, pos: [p.x, p.y, p.z - FLAME_CONE + 3.3258], rotZ: spawnRot(p) },
   ];
 }

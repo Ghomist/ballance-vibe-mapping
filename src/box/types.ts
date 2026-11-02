@@ -68,6 +68,8 @@ export interface Piece extends ElemBase {
   inner?: Style;
   /** 小节盘点：激活第几小节（≥2）；不填则按放置顺序自动编号 */
   sector?: number;
+  /** 起点 / 小节盘点：重生时球朝向的角度（度，45° 的倍数，0 = +X）；不填则和路口方向一致 */
+  spawn?: number;
 }
 
 /** 机关 / 装饰：BBP 占位符或资产库模型；需要专属路块和挡块的机关自动带上 */

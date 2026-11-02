@@ -1604,6 +1604,8 @@ function syncProps() {
     h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
     h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
     h += `<label>路口朝向</label><select data-k="rot">${['+X', '+Y', '-X', '-Y'].map((n, r) => `<option value="${r}"${r === one.rot ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    const ARROW = ['→ +X', '↗', '↑ +Y', '↖', '← -X', '↙', '↓ -Y', '↘'];
+    h += `<label>重生朝向</label><select data-k="spawn"><option value=""${one.spawn === undefined ? ' selected' : ''}>和路口一致</option>${ARROW.map((n, i) => `<option value="${i * 45}"${one.spawn === i * 45 ? ' selected' : ''}>${n}（${i * 45}°）</option>`).join('')}</select>`;
   } else if (one.kind === 'piece') {
     h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
     h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
@@ -1635,6 +1637,7 @@ props.addEventListener('change', (ev) => {
     else if (k === 'sx' || k === 'sy' || k === 'depth') e[k] = Math.max(0.1, +t.value);
   }
   if ((e.kind === 'obj' || e.kind === 'piece') && k === 'rot') e.rot = +t.value as Dir;
+  if (e.kind === 'piece' && k === 'spawn') e.spawn = t.value === '' ? undefined : +t.value;
   if (e.kind === 'rail') {
     if (k === 'heading') e.heading = +t.value;
     const pc = e.pieces[0];

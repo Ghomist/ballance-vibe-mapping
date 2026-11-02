@@ -66,6 +66,7 @@ export function rotateElem(e: Elem, px: number, py: number) {
     return;
   }
   [e.x, e.y] = rot(e.x, e.y);
+  if (e.kind === 'piece' && e.spawn !== undefined) e.spawn = (e.spawn + 90) % 360;
   if (e.kind === 'rail') { e.heading = (e.heading + 90) % 360; return; }
   e.rot = ((e.rot + 1) % 4) as Dir;
 }
