@@ -17,7 +17,7 @@ import { ASSET_INFO, assetInfo } from './asset-info';
 import { thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
-import { type P3, feats } from './snap';
+import { type P3, feats as featsRaw } from './snap';
 import { solve } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
@@ -146,7 +146,16 @@ function rebuild() {
   rebuildTimes.push(performance.now() - tStart);
   if (rebuildTimes.length > 200) rebuildTimes.shift();
 }
+const featsCache = new Map<number, { e: Elem; f: ReturnType<typeof featsRaw>; b: Bounds }>();
+function cached(e: Elem) {
+  let c = featsCache.get(e.id);
+  if (!c || c.e !== e) { c = { e, f: featsRaw(e), b: elemBounds(e) }; featsCache.set(e.id, c); }
+  return c;
+}
+/** 元素的吸附点（顶点、边中点、边）：元素对象没变就用缓存 */
+const feats = (e: Elem) => cached(e).f;
 function rebuildInner() {
+  featsCache.clear();
   rebuildCount++;
   rebuildWanted = false;
   clearWorld();
@@ -678,9 +687,15 @@ function planeHit(e: { clientX: number; clientY: number }, plane: THREE.Plane) {
   setRay(e);
   return ray.ray.intersectPlane(plane, new THREE.Vector3());
 }
+/** 画布在页面上的位置：每帧取一次（getBoundingClientRect 会触发排版，吸附时要投影几百个点，不能每个点都取） */
+let canvasRect: DOMRect | null = null;
+let canvasRectFrame = -1;
+let frameNo = 0;
+const tmpV = new THREE.Vector3();
 function toScreen(p: P3 | THREE.Vector3): THREE.Vector2 {
-  const v = (Array.isArray(p) ? new THREE.Vector3(...p) : p.clone()).project(camera);
-  const r = renderer.domElement.getBoundingClientRect();
+  if (canvasRectFrame !== frameNo || !canvasRect) { canvasRect = renderer.domElement.getBoundingClientRect(); canvasRectFrame = frameNo; }
+  const v = (Array.isArray(p) ? tmpV.set(p[0], p[1], p[2]) : tmpV.copy(p)).project(camera);
+  const r = canvasRect;
   return new THREE.Vector2((v.x + 1) / 2 * r.width + r.left, (1 - v.y) / 2 * r.height + r.top);
 }
 /** 某一点附近一个像素对应多少世界单位 */
@@ -714,8 +729,15 @@ function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target
     if (!best || rank[kind] < rank[best.kind] || (rank[kind] === rank[best.kind] && d < best.d)) best = { p, kind, d };
   };
   setRay({ clientX: x, clientY: y });
+  const r = canvasRect ?? renderer.domElement.getBoundingClientRect();
+  const far = Math.max(r.width, r.height);
   for (const e of Object.values(doc.elems)) {
     if (exclude.has(e.id)) continue;
+    // 包围盒中心在屏幕上离鼠标比包围盒本身大得多：不可能有点在鼠标附近，跳过
+    const b = cached(e).b;
+    const cs = toScreen([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2]);
+    const rad = toScreen([b.x1, b.y1, b.z1]).distanceTo(cs) + toScreen([b.x0, b.y0, b.z0]).distanceTo(cs);
+    if (cs.distanceTo(at) > rad + px * 6 && rad < far) continue;
     const f = feats(e);
     if (virtualCells(e).length && !nearVirtual.has(e.id) && f.verts.some((v) => toScreen(v).distanceTo(at) < px * 5)) nearVirtual.add(e.id);
     for (const v of f.verts) consider(v, 'v', px);
@@ -949,7 +971,7 @@ window.addEventListener('pointermove', (e) => {
     const th = tg ? { id: tg.id, side: tg.side } : null;
     if (th?.id !== openHover?.id || th?.side !== openHover?.side) { openHover = th; el.style.cursor = th ? 'pointer' : ''; if (th) dragInfo = '点击切换这一侧的开口'; else dragInfo = ''; drawOverlay(); updateStatus(); }
     const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
-    if (id !== hoverId || vHeld) { hoverId = id; drawOverlay(); }
+    if (id !== hoverId) { hoverId = id; drawOverlay(); }
     return;
   }
   nearVirtual.clear();
@@ -2063,6 +2085,7 @@ function frameAll() {
 }
 
 function resize() {
+  canvasRect = null;
   const w = host.clientWidth, h = host.clientHeight;
   renderer.setSize(w, h);
   camera.aspect = w / h;
@@ -2087,6 +2110,7 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.opacity = '1';
 });
 renderer.setAnimationLoop(() => {
+  frameNo++;
   const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
   if (camAnim) {
