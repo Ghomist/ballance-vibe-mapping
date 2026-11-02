@@ -8,7 +8,7 @@ import type { MatName } from '../geom/floor';
 import { FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
-import { getMaterial } from '../view/materials';
+import { floorTexturesReady, getMaterial } from '../view/materials';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
@@ -83,8 +83,16 @@ function addMeshes(group: THREE.Group, pieces: AssetPiece[], id: number, place: 
   }
 }
 
-function rebuild() {
+/** 清掉上一次生成的网格（资产库模型的几何体是共用的，不能释放） */
+function clearWorld() {
+  world.traverse((o) => { if ((o as THREE.Mesh).geometry && o.userData.own) (o as THREE.Mesh).geometry.dispose(); });
   world.clear();
+}
+
+let rebuildCount = 0;
+function rebuild() {
+  rebuildCount++;
+  clearWorld();
   pickables = [];
   objBoxes.clear();
   const t0 = performance.now();
@@ -99,12 +107,13 @@ function rebuild() {
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(part.uv, 2));
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, getMaterial(mat));
+      mesh.userData.own = true;
       // 自动生成的转换件属于它嵌进去的那块路面
       mesh.userData.id = doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id;
       g.add(mesh);
       pickables.push(mesh);
       tris += part.pos.length / 9;
-      if (wireOn) g.add(new THREE.LineSegments(new THREE.WireframeGeometry(geo), new THREE.LineBasicMaterial({ color: 0x00e0ff, transparent: true, opacity: 0.45 })));
+      if (wireOn) { const w = new THREE.LineSegments(new THREE.WireframeGeometry(geo), WIRE_MAT); w.userData.own = true; g.add(w); }
     }
     world.add(g);
   }
@@ -141,6 +150,7 @@ function rebuild() {
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, getStopperMaterial());
       mesh.userData.id = e.id;
+      mesh.userData.own = true;
       g.add(mesh);
       pickables.push(mesh);
     }
@@ -152,7 +162,10 @@ function rebuild() {
   updateStatus();
   syncProps();
 }
-setAssetLoadedCallback(() => rebuild());
+const WIRE_MAT = new THREE.LineBasicMaterial({ color: 0x00e0ff, transparent: true, opacity: 0.45 });
+// 模型是一个个异步加载的：同一帧里加载完的合并成一次重建，不要每来一个就把整张图重算一遍
+let assetRebuild = 0;
+setAssetLoadedCallback(() => { if (!assetRebuild) assetRebuild = requestAnimationFrame(() => { assetRebuild = 0; if (!drag) rebuild(); }); });
 
 // ---------------- 状态栏 ----------------
 
@@ -243,6 +256,7 @@ let splitPreview: { a: P3; b: P3 } | null = null;
 const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
 
 function drawOverlay() {
+  overlay.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); const mt = m.material as THREE.Material | undefined; mt?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
   overlay.clear();
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
@@ -396,7 +410,7 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
 
 type Drag =
   | { t: 'move'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3; grab?: boolean }
-  | { t: 'axis'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; sx: number; sy: number; axis: 0 | 1 | 2 | null }
+  | { t: 'axis'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; sx: number; sy: number; axis: 0 | 1 | null }
   | { t: 'lift'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
@@ -486,11 +500,11 @@ window.addEventListener('pointermove', (e) => {
   if (drag.t === 'axis') {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (drag.axis === null) {
-      // 自动找用户想沿哪根轴拖：鼠标移动方向和三根轴在屏幕上的方向哪个最一致
+      // 自动找用户想沿 X 还是 Y 拖：鼠标移动方向和两根轴在屏幕上的方向哪个更一致（上下移动用 Alt）
       const s0 = toScreen(drag.start);
       const md = new THREE.Vector2(dx, dy).normalize();
-      let best = -1, ax: 0 | 1 | 2 = 0;
-      for (const a of [0, 1, 2] as const) {
+      let best = -1, ax: 0 | 1 = 0;
+      for (const a of [0, 1] as const) {
         const q = drag.start.clone(); q.setComponent(a, q.getComponent(a) + 1);
         const v = toScreen(q).sub(s0);
         if (v.length() < 1e-6) continue;
@@ -933,6 +947,12 @@ window.addEventListener('resize', resize);
 resize();
 frameAll();
 rebuild();
+// 路面贴图加载好之前先不显示（最多等 1.5 秒），免得先闪一下纯色的路面
+renderer.domElement.style.opacity = '0';
+Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).then(() => {
+  renderer.domElement.style.transition = 'opacity .15s';
+  renderer.domElement.style.opacity = '1';
+});
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 
 // 截图脚本用
@@ -944,6 +964,7 @@ renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, came
   select: (ids: number[]) => { sel = new Set(ids); drawOverlay(); syncProps(); },
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },
+  get rebuilds() { return rebuildCount; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
 };
