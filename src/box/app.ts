@@ -44,7 +44,7 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 4000);
 camera.up.set(0, 0, 1);
 camera.position.set(-20, -45, 45);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.target.set(20, 10, 0);
 controls.enableDamping = true;
 // 滚轮缩放自己做，带缓动（每帧把相机到目标点的距离朝 zoomGoal 靠一部分）
@@ -342,7 +342,7 @@ function currentHints(): Hint[] {
   if (guardMode) return [H(['LMB'], '点路边：放整条直边'), H(['LMB'], '沿路边拖：放一段'), H(['LMB'], '拖把手：改长度'), H(['Esc'], '退出')];
   if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(['Tab'], '换方向'), H(['Esc'], '退出')];
   if (vHeld) return [H(['V', 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
-  const hs = [H(['MMB'], '环视'), H(['RMB'], '平移'), H(['Wheel'], '缩放')];
+  const hs = [H(['RMB'], '环视'), H(['MMB'], '平移'), H(['Wheel'], '缩放')];
   if (sel.size) hs.push(H(['LMB'], '移动'), H(['Shift', 'LMB'], '沿轴'), H(['Alt', 'LMB'], '高度'), H(['Ctrl', 'LMB'], '尺寸'), H(['Alt', 'Shift', 'LMB'], '拉坡'), H(['V'], '吸附'), H(['F'], '聚焦'), H(['X'], '删除'));
   else hs.push(H(['LMB'], '选择 / 框选'), H(['F'], '看全部'));
   return hs;
@@ -830,7 +830,8 @@ function liveUpdate() {
 const el = renderer.domElement;
 el.addEventListener('contextmenu', (e) => e.preventDefault());
 el.addEventListener('pointerdown', (e) => {
-  if (e.button === 2 && (splitMode || guardMode || (drag?.t === 'move' && drag.grab))) { cancelGrab(); exitSplit(); exitGuard(); return; }
+  // 右键现在是环视：只在复制跟随鼠标时用来取消；护栏 / 切分工具用 Esc 或点「选择」退出
+  if (e.button === 2 && drag?.t === 'move' && drag.grab) { cancelGrab(); return; }
   if (e.button !== 0) return;
   if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
   if (splitMode) { doSplit(e); return; }
@@ -2136,6 +2137,7 @@ renderer.setAnimationLoop(() => {
   get sel() { return [...sel]; },
   get rebuilds() { return rebuildCount; },
   camDist: () => +camera.position.distanceTo(controls.target).toFixed(2),
+  camState: () => ({ t: controls.target.toArray(), d: camera.position.distanceTo(controls.target) }),
   get rebuildTimes() { return rebuildTimes; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
