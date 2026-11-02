@@ -1,15 +1,24 @@
-// box 制图原型：验证花纹算法和基本交互（拖动、V 键顶点吸附、格栅、拖拽放置）
+// box 制图原型：路面、素材件、机关的放置与编辑
+//   左键：点选 / 框选（Shift 加选）/ 拖动；Shift 拖动沿轴移动；Alt 拖动改高度；Ctrl 拖动改尺寸
+//   按住 V 拖动：抓住顶点或边中点，吸附到别的元素的顶点、边中点或边上
+//   格栅（G）：位置和尺寸吸附到步长 1；对齐（S）：边、中线、顶面靠近时对齐并画出辅助面
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { MatName } from '../geom/floor';
+import { FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
+import { stopperMesh } from '../model/stoppers';
+import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { getMaterial } from '../view/materials';
+import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
+import { type P3, feats } from './snap';
 import { solve } from './solve';
-import { Box, Dir, Doc, Elem, PieceType, Style, boxTopAt, footprint, pieceLen } from './types';
+import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, footprint, pieceLen } from './types';
 
 const host = document.getElementById('view')!;
-const status = document.getElementById('status')!;
+const statusEl = document.getElementById('status')!;
 const props = document.getElementById('props')!;
+const marqueeEl = document.getElementById('marquee')!;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -37,26 +46,52 @@ const world = new THREE.Group();
 const overlay = new THREE.Group();
 scene.add(world, overlay);
 
-let doc: Doc = SCENES[0].build();
-let selected: number | null = null;
+// ---------------- 状态 ----------------
+
+const STORE = 'bvm.box.doc';
+let doc: Doc = (() => { try { const s = localStorage.getItem(STORE); if (s) return JSON.parse(s) as Doc; } catch { /* 读不了就用测试场景 */ } return SCENES[0].build(); })();
+let sel = new Set<number>();
 let gridOn = false;
+let alignOn = false;
 let wireOn = false;
+let modelView = true;
 let vHeld = false;
+let splitMode = false;
+let splitAxis: 0 | 1 | null = null; // null：按路面较长的方向自动选
 const undo: string[] = [];
 const redo: string[] = [];
 const snapshot = () => { undo.push(JSON.stringify(doc)); redo.length = 0; if (undo.length > 200) undo.shift(); };
+const save = () => { try { localStorage.setItem(STORE, JSON.stringify(doc)); } catch { /* 存不了就算了 */ } };
+
+let flashMsg: { text: string; until: number; warn?: boolean } | null = null;
+const flash = (text: string, warn = false) => { flashMsg = { text, until: performance.now() + 3000, warn }; updateStatus(); };
 
 // ---------------- 渲染 ----------------
 
-let pickables: THREE.Mesh[] = [];
+let pickables: THREE.Object3D[] = [];
+const lastSolve = { ms: 0, tris: 0 };
+const objBoxes = new Map<number, THREE.Box3>();
+
+function addMeshes(group: THREE.Group, pieces: AssetPiece[], id: number, place: (m: THREE.Mesh) => void) {
+  for (const pc of pieces) {
+    const mesh = new THREE.Mesh(pc.geometry, pc.material);
+    place(mesh);
+    mesh.userData.id = id;
+    mesh.updateMatrixWorld();
+    group.add(mesh);
+    pickables.push(mesh);
+  }
+}
+
 function rebuild() {
   world.clear();
   pickables = [];
+  objBoxes.clear();
   const t0 = performance.now();
-  const meshes = solve(doc);
-  const ms = performance.now() - t0;
+  const solved = solve(doc);
+  lastSolve.ms = performance.now() - t0;
   let tris = 0;
-  for (const m of meshes.values()) {
+  for (const m of solved.meshes.values()) {
     const g = new THREE.Group();
     for (const [mat, part] of Object.entries(m.parts) as [MatName, { pos: number[]; uv: number[] }][]) {
       const geo = new THREE.BufferGeometry();
@@ -64,7 +99,8 @@ function rebuild() {
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(part.uv, 2));
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, getMaterial(mat));
-      mesh.userData.id = m.id;
+      // 自动生成的转换件属于它嵌进去的那块路面
+      mesh.userData.id = doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id;
       g.add(mesh);
       pickables.push(mesh);
       tris += part.pos.length / 9;
@@ -72,234 +108,539 @@ function rebuild() {
     }
     world.add(g);
   }
+  lastSolve.tris = tris;
+  // 专属路块
+  for (const [id, part] of solved.bases) {
+    const g = new THREE.Group();
+    const pieces = getAsset('asset', part.name) ?? [fallbackBox(5, 5, 5)];
+    addMeshes(g, pieces, id, (m) => { m.position.set(...part.pos); m.rotation.z = (part.rotZ * Math.PI) / 180; });
+    world.add(g);
+  }
+  // 机关、装饰、挡块
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'obj') continue;
+    const g = new THREE.Group();
+    const t = objType(e.type);
+    const deg = e.rot * 90;
+    const fake = t?.cat === 'module' && modelView ? fakeModel(e.type) : null;
+    const fakePieces = fake ? getAsset('fake', fake) : null;
+    const pieces = fakePieces ?? getAsset(t?.cat === 'deco' ? 'asset' : 'element', e.type) ?? [];
+    const fix = (fakePieces && FAKE_FIX[fake!]) || {};
+    const r = (deg * Math.PI) / 180, fx = fix.dx ?? 0, fy = fix.dy ?? 0;
+    addMeshes(g, pieces, e.id, (m) => {
+      m.position.set(e.x + fx * Math.cos(r) - fy * Math.sin(r), e.y + fx * Math.sin(r) + fy * Math.cos(r), e.z + (fix.dz ?? 0));
+      m.rotation.order = 'ZYX';
+      m.rotation.y = ((fix.pitch ?? 0) * Math.PI) / 180;
+      m.rotation.z = ((deg + (fix.rot ?? 0)) * Math.PI) / 180;
+    });
+    const st = e.noStopper ? null : stopperMesh({ id: 0, cat: 'module', type: e.type, x: e.x, y: e.y, z: e.z, rot: deg });
+    if (st) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(st.pos, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(st.uv, 2));
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, getStopperMaterial());
+      mesh.userData.id = e.id;
+      g.add(mesh);
+      pickables.push(mesh);
+    }
+    world.add(g);
+    if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
+  }
+  save();
   drawOverlay();
-  setStatus(`${Object.keys(doc.elems).length} 个元素 · ${tris} 个三角形 · 求解 ${ms.toFixed(1)} ms`);
+  updateStatus();
   syncProps();
 }
+setAssetLoadedCallback(() => rebuild());
 
-let statusBase = '';
-function setStatus(s?: string) {
-  if (s !== undefined) statusBase = s;
-  const keys = '中键旋转 · 右键平移 · 滚轮缩放 · 左键拖动移动 · Alt 拖动改高度 · Ctrl 拖动改尺寸 · 按住 V 拖顶点吸附 · G 格栅 · R 旋转';
-  status.textContent = `${statusBase}　|　${keys}${gridOn ? '　|　格栅 1' : ''}`;
-}
+// ---------------- 状态栏 ----------------
 
-/** 元素的 8 个顶点 */
-function vertsOf(e: Elem): THREE.Vector3[] {
-  const f = footprint(e);
-  const out: THREE.Vector3[] = [];
-  for (const [x, y] of [[f.x0, f.y0], [f.x1, f.y0], [f.x1, f.y1], [f.x0, f.y1]]) {
-    const top = e.kind === 'box' ? boxTopAt(e, x, y) : e.z;
-    const depth = e.kind === 'box' ? e.depth : 5;
-    out.push(new THREE.Vector3(x, y, top), new THREE.Vector3(x, y, top - depth));
+let dragInfo = '';
+function updateStatus() {
+  const parts: string[] = [];
+  if (flashMsg && performance.now() < flashMsg.until) parts.push(flashMsg.warn ? `<span class="warn">${flashMsg.text}</span>` : `<b>${flashMsg.text}</b>`);
+  if (dragInfo) parts.push(`<b>${dragInfo}</b>`);
+  if (sel.size) {
+    const b = boundsOf(doc, sel);
+    parts.push(`选中 ${sel.size} 个 · ${fmt(b.x1 - b.x0)} × ${fmt(b.y1 - b.y0)} · 顶面 ${fmt(b.z1)}`);
   }
-  return out;
+  parts.push(`${Object.keys(doc.elems).length} 个元素 · ${lastSolve.tris} 个三角形 · 求解 ${lastSolve.ms.toFixed(1)} ms`);
+  parts.push(splitMode
+    ? '切分：点路面在鼠标处切开 · Tab 换方向 · Esc / 右键退出'
+    : '中键旋转 · 右键平移 · 滚轮缩放 · 拖空白处框选 · Shift 沿轴移动 · Alt 改高度 · Ctrl 改尺寸 · 按住 V 吸附 · 方向键微调');
+  if (gridOn) parts.push('格栅 1');
+  if (alignOn) parts.push('自动对齐');
+  statusEl.innerHTML = parts.join('　|　');
+}
+const fmt = (v: number) => String(+v.toFixed(3));
+setInterval(() => { if (flashMsg && performance.now() > flashMsg.until) { flashMsg = null; updateStatus(); } }, 500);
+
+// ---------------- 叠加层：选中框、吸附点、辅助面 ----------------
+
+/** 吸附点的样式：圆点（顶点）、菱形（边中点）、圆环（边上的点） */
+function spriteTex(shape: 'dot' | 'diamond' | 'ring'): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  g.lineWidth = 7;
+  g.strokeStyle = 'rgba(12,16,26,0.95)';
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  if (shape === 'diamond') { g.moveTo(32, 6); g.lineTo(58, 32); g.lineTo(32, 58); g.lineTo(6, 32); g.closePath(); g.fill(); g.stroke(); }
+  else if (shape === 'dot') { g.arc(32, 32, 22, 0, Math.PI * 2); g.fill(); g.stroke(); }
+  else { g.arc(32, 32, 20, 0, Math.PI * 2); g.lineWidth = 16; g.stroke(); g.lineWidth = 8; g.strokeStyle = '#ffffff'; g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const TEX = { dot: spriteTex('dot'), diamond: spriteTex('diamond'), ring: spriteTex('ring') };
+function marks(ps: P3[], shape: keyof typeof TEX, color: number, size: number, opacity = 1) {
+  const g = new THREE.BufferGeometry().setFromPoints(ps.map((p) => new THREE.Vector3(...p)));
+  const m = new THREE.Points(g, new THREE.PointsMaterial({ map: TEX[shape], color, size, sizeAttenuation: false, transparent: true, opacity, depthTest: false, alphaTest: 0.05 }));
+  m.renderOrder = 10;
+  return m;
 }
 
-function outline(e: Elem, color: number, opacity = 1) {
-  const v = vertsOf(e);
-  const idx = [0, 2, 2, 4, 4, 6, 6, 0, 1, 3, 3, 5, 5, 7, 7, 1, 0, 1, 2, 3, 4, 5, 6, 7];
-  const geo = new THREE.BufferGeometry().setFromPoints(idx.map((i) => v[i]));
-  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false }));
+function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
+  let segs: P3[] = [];
+  const ob = e.kind === 'obj' ? objBoxes.get(e.id) : null;
+  if (ob) {
+    const a = ob.min, b = ob.max;
+    const c: P3[] = [[a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z], [a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z]];
+    for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
+  } else segs = feats(e).edges.flat();
+  const geo = new THREE.BufferGeometry().setFromPoints(segs.map((p) => new THREE.Vector3(...p)));
+  const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
+  l.renderOrder = 5;
+  return l;
 }
 
 let hoverId: number | null = null;
-let snapMarks: { from?: THREE.Vector3; to?: THREE.Vector3 } = {};
+/** 拖动时要画的东西 */
+let guides: { axis: 0 | 1 | 2; value: number; b: Bounds }[] = [];
+let axisLine: { p: THREE.Vector3; axis: 0 | 1 | 2 } | null = null;
+let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
+let snapGrab: P3 | null = null;
+let splitPreview: { a: P3; b: P3 } | null = null;
+const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
+
 function drawOverlay() {
   overlay.clear();
-  if (hoverId !== null && hoverId !== selected && doc.elems[hoverId]) overlay.add(outline(doc.elems[hoverId], 0x9fc2ff, 0.5));
-  if (selected !== null && doc.elems[selected]) overlay.add(outline(doc.elems[selected], 0x4c8dff));
-  if (vHeld && hoverId !== null && doc.elems[hoverId]) overlay.add(dots(vertsOf(doc.elems[hoverId]), 0xffd34c, 9));
-  if (snapMarks.to) overlay.add(dots([snapMarks.to], 0x4cff8a, 16));
-  if (snapMarks.from) overlay.add(dots([snapMarks.from], 0xff7a4c, 12));
-}
-function dots(ps: THREE.Vector3[], color: number, size: number) {
-  const g = new THREE.BufferGeometry().setFromPoints(ps);
-  return new THREE.Points(g, new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false }));
+  const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
+  for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
+  for (const id of sel) if (doc.elems[id]) overlay.add(outlineOf(doc.elems[id], 0x4c8dff));
+  // 按住 V：显示鼠标下元素的顶点和边中点
+  if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
+    const f = feats(doc.elems[hoverId]);
+    overlay.add(marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
+  }
+  if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
+  if (snapTarget) overlay.add(marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
+  for (const gd of guides) overlay.add(guidePlane(gd));
+  if (axisLine) {
+    const d = new THREE.Vector3(...[0, 1, 2].map((i) => (i === axisLine!.axis ? 1 : 0)));
+    const geo = new THREE.BufferGeometry().setFromPoints([axisLine.p.clone().addScaledVector(d, -500), axisLine.p.clone().addScaledVector(d, 500)]);
+    const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: AXIS_COLOR[axisLine.axis], transparent: true, opacity: 0.9, depthTest: false }));
+    l.renderOrder = 6;
+    overlay.add(l);
+  }
+  if (splitPreview) {
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
+    const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffd34c, depthTest: false }));
+    l.renderOrder = 6;
+    overlay.add(l, marks([splitPreview.a, splitPreview.b], 'dot', 0xffd34c, 9));
+  }
 }
 
-// ---------------- 拾取 ----------------
+/** 对齐辅助面：在对齐的那个坐标上画一块半透明的面，范围盖住对齐的两个元素 */
+function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
+  const { b } = gd, pad = 1.5;
+  let c: THREE.Vector3[];
+  if (gd.axis === 0) c = [[gd.value, b.y0 - pad, b.z0 - pad], [gd.value, b.y1 + pad, b.z0 - pad], [gd.value, b.y1 + pad, b.z1 + pad], [gd.value, b.y0 - pad, b.z1 + pad]].map((p) => new THREE.Vector3(...p));
+  else if (gd.axis === 1) c = [[b.x0 - pad, gd.value, b.z0 - pad], [b.x1 + pad, gd.value, b.z0 - pad], [b.x1 + pad, gd.value, b.z1 + pad], [b.x0 - pad, gd.value, b.z1 + pad]].map((p) => new THREE.Vector3(...p));
+  else c = [[b.x0 - pad, b.y0 - pad, gd.value], [b.x1 + pad, b.y0 - pad, gd.value], [b.x1 + pad, b.y1 + pad, gd.value], [b.x0 - pad, b.y1 + pad, gd.value]].map((p) => new THREE.Vector3(...p));
+  const g = new THREE.Group();
+  const geo = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]]);
+  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: AXIS_COLOR[gd.axis], transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }));
+  const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineBasicMaterial({ color: AXIS_COLOR[gd.axis], transparent: true, opacity: 0.8, depthTest: false }));
+  face.renderOrder = 4; edge.renderOrder = 5;
+  g.add(face, edge);
+  return g;
+}
+
+// ---------------- 拾取与投影 ----------------
 
 const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-function setNdc(e: { clientX: number; clientY: number }) {
+function setRay(e: { clientX: number; clientY: number }) {
   const r = renderer.domElement.getBoundingClientRect();
   ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(ndc, camera);
 }
-function pick(e: { clientX: number; clientY: number }, skip?: number): { id: number; p: THREE.Vector3 } | null {
-  setNdc(e);
+function pick(e: { clientX: number; clientY: number }, skip?: Set<number>): { id: number; p: THREE.Vector3 } | null {
+  setRay(e);
   for (const h of ray.intersectObjects(pickables, false)) {
     const id = h.object.userData.id as number;
-    if (id !== skip) return { id, p: h.point.clone() };
+    if (!skip?.has(id) && doc.elems[id]) return { id, p: h.point.clone() };
   }
   return null;
 }
 function planeHit(e: { clientX: number; clientY: number }, plane: THREE.Plane) {
-  setNdc(e);
+  setRay(e);
   return ray.ray.intersectPlane(plane, new THREE.Vector3());
 }
-function toScreen(p: THREE.Vector3): THREE.Vector2 {
-  const v = p.clone().project(camera);
+function toScreen(p: P3 | THREE.Vector3): THREE.Vector2 {
+  const v = (Array.isArray(p) ? new THREE.Vector3(...p) : p.clone()).project(camera);
   const r = renderer.domElement.getBoundingClientRect();
   return new THREE.Vector2((v.x + 1) / 2 * r.width + r.left, (1 - v.y) / 2 * r.height + r.top);
 }
-/** 离屏幕上 (x, y) 最近的、其它元素的顶点 */
-function nearestVertex(x: number, y: number, exclude: number, maxPx = 14): THREE.Vector3 | null {
-  let best: THREE.Vector3 | null = null, bd = maxPx;
+/** 某一点附近一个像素对应多少世界单位 */
+function worldPerPx(p: THREE.Vector3) {
+  const d = camera.position.distanceTo(p);
+  return (2 * d * Math.tan((camera.fov * Math.PI) / 360)) / renderer.domElement.clientHeight;
+}
+
+/** 射线与线段最近的点 */
+function rayToSegment(o: THREE.Vector3, d: THREE.Vector3, a: P3, b: P3): THREE.Vector3 {
+  const A = new THREE.Vector3(...a), u = new THREE.Vector3(...b).sub(A);
+  const w = o.clone().sub(A);
+  const uu = u.dot(u), ud = u.dot(d), dd = d.dot(d), uw = u.dot(w), dw = d.dot(w);
+  const den = uu * dd - ud * ud;
+  let s = den > 1e-12 ? (uw * dd - ud * dw) / den : 0;
+  s = Math.max(0, Math.min(1, s));
+  return A.addScaledVector(u, s);
+}
+
+type Target = { p: P3; kind: 'v' | 'm' | 'e'; d: number };
+/** 鼠标附近别的元素上的吸附目标：顶点优先，其次边中点，再次边上最近的点 */
+function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target | null {
+  let best: Target | null = null;
+  const rank = { v: 0, m: 1, e: 2 };
+  const at = new THREE.Vector2(x, y);
+  const consider = (p: P3, kind: 'v' | 'm' | 'e', lim: number) => {
+    const d = toScreen(p).distanceTo(at);
+    if (d > lim) return;
+    if (!best || rank[kind] < rank[best.kind] || (rank[kind] === rank[best.kind] && d < best.d)) best = { p, kind, d };
+  };
+  setRay({ clientX: x, clientY: y });
   for (const e of Object.values(doc.elems)) {
-    if (e.id === exclude) continue;
-    for (const v of vertsOf(e)) { const s = toScreen(v); const d = Math.hypot(s.x - x, s.y - y); if (d < bd) { bd = d; best = v; } }
+    if (exclude.has(e.id)) continue;
+    const f = feats(e);
+    for (const v of f.verts) consider(v, 'v', px);
+    for (const m of f.mids) consider(m, 'm', px);
+    for (const [a, b] of f.edges) { const q = rayToSegment(ray.ray.origin, ray.ray.direction, a, b); consider([q.x, q.y, q.z], 'e', px * 0.75); }
   }
   return best;
 }
 
-// ---------------- 编辑操作 ----------------
+// ---------------- 移动的约束：格栅、对齐 ----------------
 
-const snapGrid = (v: number) => (gridOn ? Math.round(v) : v);
+/** 移动量按格栅取整：让选中整体的最小角（高度看顶面）落在整数上 */
+function gridDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[] = [0, 1, 2]): V3 {
+  if (!gridOn) return d;
+  const lo = [b.x0, b.y0, b.z1];
+  return d.map((v, i) => (axes.includes(i as 0 | 1 | 2) ? Math.round(lo[i] + v) - lo[i] : v)) as V3;
+}
 
-function translate(e: Elem, dx: number, dy: number, dz: number) { e.x += dx; e.y += dy; e.z += dz; }
+const unionB = (a: Bounds, b: Bounds): Bounds => ({ x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), z0: Math.min(a.z0, b.z0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1), z1: Math.max(a.z1, b.z1) });
+const shiftB = (b: Bounds, d: V3): Bounds => ({ x0: b.x0 + d[0], x1: b.x1 + d[0], y0: b.y0 + d[1], y1: b.y1 + d[1], z0: b.z0 + d[2], z1: b.z1 + d[2] });
 
-function rotateElem(e: Elem) {
-  if (e.kind === 'piece') { e.rot = ((e.rot + 1) % 4) as Dir; return; }
-  const cx = e.x + e.sx / 2, cy = e.y + e.sy / 2;
-  [e.sx, e.sy] = [e.sy, e.sx];
-  e.x = cx - e.sx / 2; e.y = cy - e.sy / 2;
-  if (e.slope) {
-    if (e.slope.axis === 0) e.slope.axis = 1;
-    else { e.slope = { axis: 0, dz: -e.slope.dz }; e.z -= e.slope.dz; }
+/** 自动对齐：选中整体的边 / 中线 / 顶面与别的元素足够近时对齐，返回修正后的移动量，并记下辅助面 */
+function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3): V3 {
+  guides = [];
+  if (!alignOn) return d;
+  const thr = worldPerPx(near) * 9;
+  const out = [...d] as V3;
+  const others = Object.values(doc.elems).filter((e) => !sel.has(e.id)).map(elemBounds);
+  const vals = (x: Bounds, a: 0 | 1 | 2) => (a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0]);
+  const hits: { a: 0 | 1 | 2; value: number; ob: Bounds }[] = [];
+  for (const a of axes) {
+    let best: { diff: number; value: number; ob: Bounds } | null = null;
+    const mine = vals(b, a).map((v) => v + d[a]);
+    for (const ob of others) for (const v of vals(ob, a)) for (const m of mine) {
+      const diff = v - m;
+      if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, value: v, ob };
+    }
+    if (!best) continue;
+    out[a] += best.diff;
+    hits.push({ a, value: best.value, ob: best.ob });
   }
-  if (e.open) { const o = e.open; e.open = ((o << 1) | (o >> 3)) & 15; }
+  for (const h of hits) guides.push({ axis: h.a, value: h.value, b: unionB(shiftB(b, out), h.ob) });
+  return out;
 }
 
-function newElem(type: string): Elem {
-  const id = doc.nextId++;
-  if (type === 'transition' || type === 'transition-narrow') return { id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 };
-  return { id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style };
-}
+// ---------------- 拖动 ----------------
 
 type Drag =
-  | { t: 'move'; id: number; orig: string; plane: THREE.Plane; start: THREE.Vector3 }
-  | { t: 'lift'; id: number; orig: string; plane: THREE.Plane; start: THREE.Vector3 }
-  | { t: 'size'; id: number; orig: string; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
-  | { t: 'vsnap'; id: number; orig: string; grab: THREE.Vector3; plane: THREE.Plane }
-  | { t: 'place'; id: number | null; type: string; moved: boolean };
+  | { t: 'move'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3; grab?: boolean }
+  | { t: 'axis'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; sx: number; sy: number; axis: 0 | 1 | 2 | null }
+  | { t: 'lift'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3 }
+  | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
+  | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
+  | { t: 'marquee'; sx: number; sy: number; add: boolean }
+  | { t: 'place'; ids: number[] | null; type: string; moved: boolean }
+  | { t: 'click'; id: number; sx: number; sy: number; orig: Map<number, string>; b: Bounds; start: THREE.Vector3 };
 let drag: Drag | null = null;
+
+const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
+function restore(orig: Map<number, string>) { for (const [id, s] of orig) doc.elems[id] = JSON.parse(s); }
+function moveSel(orig: Map<number, string>, d: V3) {
+  restore(orig);
+  d = d.map((v) => Math.round(v * 1000) / 1000) as V3; // 不开格栅时也只保留到 0.001，免得坐标一长串小数
+  for (const id of orig.keys()) translateElem(doc.elems[id], d);
+  dragInfo = `移动 ${fmt(d[0])}, ${fmt(d[1])}, ${fmt(d[2])}`;
+}
 
 const el = renderer.domElement;
 el.addEventListener('contextmenu', (e) => e.preventDefault());
 el.addEventListener('pointerdown', (e) => {
+  if (e.button === 2 && (splitMode || (drag?.t === 'move' && drag.grab))) { cancelGrab(); exitSplit(); return; }
   if (e.button !== 0) return;
+  if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
+  if (splitMode) { doSplit(e); return; }
   const h = pick(e);
-  if (!h) { selected = null; drawOverlay(); syncProps(); return; }
-  selected = h.id;
+  el.setPointerCapture(e.pointerId);
+  if (!h) { drag = { t: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey }; return; }
+  const group = expandGroups(doc, [h.id]);
+  if (e.shiftKey) {
+    // Shift：没拖动就是加选 / 减选，拖动就是沿轴移动
+    const s = sel.has(h.id) ? sel : new Set([...sel, ...group]);
+    drag = { t: 'click', id: h.id, sx: e.clientX, sy: e.clientY, orig: origOf(s), b: boundsOf(doc, s), start: h.p };
+    return;
+  }
+  if (!sel.has(h.id)) sel = group;
+  snapshot();
   const elem = doc.elems[h.id];
-  const orig = JSON.stringify(elem);
   if (vHeld) {
-    // 按住 V：抓住离鼠标最近的顶点
-    let grab = vertsOf(elem)[0], bd = Infinity;
-    for (const v of vertsOf(elem)) { const s = toScreen(v); const d = Math.hypot(s.x - e.clientX, s.y - e.clientY); if (d < bd) { bd = d; grab = v; } }
-    drag = { t: 'vsnap', id: h.id, orig, grab, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -grab.z) };
+    // 按住 V：抓住离鼠标最近的顶点或边中点
+    const f = feats(elem);
+    let grab = f.verts[0], bd = Infinity;
+    for (const v of [...f.verts, ...f.mids]) { const d = toScreen(v).distanceTo(new THREE.Vector2(e.clientX, e.clientY)); if (d < bd) { bd = d; grab = v; } }
+    drag = { t: 'vsnap', orig: origOf(), grab, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -grab[2]) };
+    snapGrab = grab;
   } else if (e.altKey) {
     const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
-    drag = { t: 'lift', id: h.id, orig, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
+    drag = { t: 'lift', orig: origOf(), b: boundsOf(doc, sel), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
   } else if (e.ctrlKey && elem.kind === 'box') {
+    sel = new Set([h.id]);
     const f = footprint(elem);
     const ds = [f.x1 - h.p.x, f.y1 - h.p.y, h.p.x - f.x0, h.p.y - f.y0].map(Math.abs);
     const side = ds.indexOf(Math.min(...ds)) as Dir;
-    drag = { t: 'size', id: h.id, orig, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p, side };
+    drag = { t: 'size', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p, side };
   } else {
-    drag = { t: 'move', id: h.id, orig, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
+    drag = { t: 'move', orig: origOf(), b: boundsOf(doc, sel), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
   }
-  snapshot();
-  el.setPointerCapture(e.pointerId);
-  drawOverlay(); syncProps();
+  drawOverlay(); syncProps(); updateStatus();
 });
 
 window.addEventListener('pointermove', (e) => {
   if (!drag) {
-    const h = e.target === el ? pick(e) : null;
-    const id = h?.id ?? null;
-    if (id !== hoverId) { hoverId = id; drawOverlay(); }
+    if (e.target !== el) return;
+    if (splitMode) { splitHover(e); return; }
+    const id = pick(e)?.id ?? null;
+    if (id !== hoverId || vHeld) { hoverId = id; drawOverlay(); }
     return;
   }
   if (drag.t === 'place') { placeMove(e); return; }
-  const elem = doc.elems[drag.id];
-  const o = JSON.parse(drag.orig) as Elem;
+  if (drag.t === 'marquee') { showMarquee(drag.sx, drag.sy, e.clientX, e.clientY); return; }
+  if (drag.t === 'click') {
+    if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 5) return;
+    snapshot();
+    sel = new Set(drag.orig.keys());
+    drag = { t: 'axis', orig: drag.orig, b: drag.b, start: drag.start, sx: drag.sx, sy: drag.sy, axis: null };
+  }
   if (drag.t === 'vsnap') {
     const p = planeHit(e, drag.plane);
     if (!p) return;
-    Object.assign(elem, o);
-    const target = nearestVertex(e.clientX, e.clientY, drag.id);
-    const to = target ?? p;
-    translate(elem, to.x - drag.grab.x, to.y - drag.grab.y, target ? to.z - drag.grab.z : 0);
-    snapMarks = { to: target ?? undefined, from: undefined };
+    const tg = findTarget(e.clientX, e.clientY, sel);
+    const to: P3 = tg ? tg.p : [p.x, p.y, drag.grab[2]];
+    moveSel(drag.orig, [to[0] - drag.grab[0], to[1] - drag.grab[1], to[2] - drag.grab[2]]);
+    snapTarget = tg;
+    snapGrab = to;
+    rebuild();
+    return;
+  }
+  if (drag.t === 'axis') {
+    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (drag.axis === null) {
+      // 自动找用户想沿哪根轴拖：鼠标移动方向和三根轴在屏幕上的方向哪个最一致
+      const s0 = toScreen(drag.start);
+      const md = new THREE.Vector2(dx, dy).normalize();
+      let best = -1, ax: 0 | 1 | 2 = 0;
+      for (const a of [0, 1, 2] as const) {
+        const q = drag.start.clone(); q.setComponent(a, q.getComponent(a) + 1);
+        const v = toScreen(q).sub(s0);
+        if (v.length() < 1e-6) continue;
+        const c = Math.abs(v.normalize().dot(md));
+        if (c > best) { best = c; ax = a; }
+      }
+      drag.axis = ax;
+    }
+    const a = drag.axis;
+    const dir = new THREE.Vector3(...[0, 1, 2].map((i) => (i === a ? 1 : 0)));
+    setRay(e);
+    const q = rayToSegment(ray.ray.origin, ray.ray.direction, drag.start.clone().addScaledVector(dir, -1e4).toArray() as P3, drag.start.clone().addScaledVector(dir, 1e4).toArray() as P3);
+    let d: V3 = [0, 0, 0];
+    d[a] = q.getComponent(a) - drag.start.getComponent(a);
+    d = gridDelta(drag.b, d, [a]);
+    d = alignDelta(drag.b, d, [a], drag.start);
+    moveSel(drag.orig, d);
+    axisLine = { p: drag.start.clone().add(new THREE.Vector3(...d)), axis: a };
     rebuild();
     return;
   }
   const p = planeHit(e, drag.plane);
   if (!p) return;
-  const d = p.clone().sub(drag.start);
-  Object.assign(elem, o);
+  if (drag.t === 'size') { resizeTo(drag, p); rebuild(); return; }
+  const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
-    const f = footprint(o);
-    elem.x = o.x + snapGrid(f.x0 + d.x) - f.x0;
-    elem.y = o.y + snapGrid(f.y0 + d.y) - f.y0;
+    let d: V3 = [raw.x, raw.y, 0];
+    d = gridDelta(drag.b, d, [0, 1]);
+    d = alignDelta(drag.b, d, [0, 1], p);
+    moveSel(drag.orig, d);
   } else if (drag.t === 'lift') {
-    elem.z = snapGrid(o.z + d.z);
-  } else if (drag.t === 'size' && elem.kind === 'box' && o.kind === 'box') {
-    const s = drag.side;
-    if (s === 0) elem.sx = Math.max(0.1, snapGrid(o.x + o.sx + d.x) - o.x);
-    if (s === 1) elem.sy = Math.max(0.1, snapGrid(o.y + o.sy + d.y) - o.y);
-    if (s === 2) { const x0 = Math.min(o.x + o.sx - 0.1, snapGrid(o.x + d.x)); elem.x = x0; elem.sx = o.x + o.sx - x0; }
-    if (s === 3) { const y0 = Math.min(o.y + o.sy - 0.1, snapGrid(o.y + d.y)); elem.y = y0; elem.sy = o.y + o.sy - y0; }
+    let d: V3 = [0, 0, raw.z];
+    d = gridDelta(drag.b, d, [2]);
+    d = alignDelta(drag.b, d, [2], p);
+    moveSel(drag.orig, d);
   }
   rebuild();
 });
 
+/** Ctrl 拖动改尺寸：拖的是离鼠标最近的那条边，格栅、自动对齐都管这条边 */
+function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
+  restore(d.orig);
+  const elem = doc.elems[d.id] as Box, o = JSON.parse(d.orig.get(d.id)!) as Box;
+  const s = d.side, ax: 0 | 1 = s % 2 === 0 ? 0 : 1;
+  const lo = ax === 0 ? o.x : o.y, len = ax === 0 ? o.sx : o.sy;
+  let edge = (s < 2 ? lo + len : lo) + (ax === 0 ? p.x - d.start.x : p.y - d.start.y);
+  if (gridOn) edge = Math.round(edge);
+  guides = [];
+  if (alignOn) {
+    const thr = worldPerPx(p) * 9;
+    let best: { diff: number; ob: Bounds } | null = null;
+    for (const ob of Object.values(doc.elems).filter((x) => x.id !== elem.id).map(elemBounds)) {
+      for (const v of ax === 0 ? [ob.x0, ob.x1] : [ob.y0, ob.y1]) { const diff = v - edge; if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, ob }; }
+    }
+    if (best) { edge += best.diff; guides.push({ axis: ax, value: edge, b: unionB(elemBounds(elem), best.ob) }); }
+  }
+  if (s < 2) { const n = Math.max(0.1, edge - lo); if (ax === 0) elem.sx = n; else elem.sy = n; }
+  else { const e0 = Math.min(lo + len - 0.1, edge); if (ax === 0) { elem.x = e0; elem.sx = lo + len - e0; } else { elem.y = e0; elem.sy = lo + len - e0; } }
+  dragInfo = `尺寸 ${fmt(elem.sx)} × ${fmt(elem.sy)}`;
+}
+
 window.addEventListener('pointerup', (e) => {
-  if (!drag) return;
+  if (!drag || e.button !== 0) return;
+  if (drag.t === 'move' && drag.grab) return; // 跟着鼠标走的复制，点击才放下
   if (drag.t === 'place') { placeEnd(e); return; }
-  if (JSON.stringify(doc.elems[drag.id]) === drag.orig) undo.pop();
-  drag = null;
-  snapMarks = {};
-  drawOverlay();
+  if (drag.t === 'marquee') { finishMarquee(drag, e); return; }
+  if (drag.t === 'click') {
+    // Shift 点击：加选 / 减选整个绑定组
+    const group = expandGroups(doc, [drag.id]);
+    if ([...group].every((id) => sel.has(id))) for (const id of group) sel.delete(id); else for (const id of group) sel.add(id);
+    drag = null;
+    drawOverlay(); syncProps(); updateStatus();
+    return;
+  }
+  finishDrag();
 });
+
+function finishDrag() {
+  if (drag && 'orig' in drag && !(drag.t === 'move' && drag.grab)) {
+    if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
+  }
+  drag = null;
+  guides = []; axisLine = null; snapTarget = null; snapGrab = null; dragInfo = '';
+  rebuild();
+}
+
+function cancelGrab() {
+  if (drag?.t === 'move' && drag.grab) {
+    for (const id of drag.orig.keys()) delete doc.elems[id];
+    undo.pop();
+    sel.clear();
+    drag = null; guides = []; dragInfo = '';
+    rebuild();
+  }
+}
+
+// ---------------- 框选 ----------------
+
+function showMarquee(x0: number, y0: number, x1: number, y1: number) {
+  marqueeEl.hidden = false;
+  Object.assign(marqueeEl.style, { left: `${Math.min(x0, x1)}px`, top: `${Math.min(y0, y1)}px`, width: `${Math.abs(x1 - x0)}px`, height: `${Math.abs(y1 - y0)}px` });
+}
+function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEvent) {
+  marqueeEl.hidden = true;
+  drag = null;
+  const [x0, x1] = [Math.min(d.sx, e.clientX), Math.max(d.sx, e.clientX)], [y0, y1] = [Math.min(d.sy, e.clientY), Math.max(d.sy, e.clientY)];
+  if (x1 - x0 < 4 && y1 - y0 < 4) { if (!d.add) sel.clear(); drawOverlay(); syncProps(); updateStatus(); return; }
+  // 框住元素顶面的中心就算选中
+  const hit: number[] = [];
+  for (const it of Object.values(doc.elems)) {
+    const b = elemBounds(it);
+    const s = toScreen([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1]);
+    if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) hit.push(it.id);
+  }
+  const got = expandGroups(doc, hit);
+  sel = d.add ? new Set([...sel, ...got]) : got;
+  drawOverlay(); syncProps(); updateStatus();
+}
 
 // ---------------- 从顶栏拖进来放置 ----------------
 
-for (const b of document.querySelectorAll<HTMLButtonElement>('.add')) {
-  b.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    drag = { t: 'place', id: null, type: b.dataset.add!, moved: false };
-  });
+function newElems(type: string): Elem[] {
+  const id = doc.nextId++;
+  if (type === 'transition' || type === 'transition-narrow') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
+  if (type.startsWith('obj:')) return [{ id, kind: 'obj', type: type.slice(4), x: 0, y: 0, z: 0, rot: 0 }];
+  return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
 }
+
+/** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
+function handleOf(e: Elem): P3 {
+  if (e.kind === 'obj') {
+    const a = anchorRects(e)[0];
+    return a ? [(a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2, a.top] : [e.x, e.y, e.z];
+  }
+  const b = elemBounds(e);
+  return [b.x0, b.y0, b.z1];
+}
+
+function startPlace(type: string) { drag = { t: 'place', ids: null, type, moved: false }; }
 function placeMove(e: PointerEvent) {
   if (drag?.t !== 'place') return;
   const r = el.getBoundingClientRect();
   const over = e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom;
   if (!over) return;
   drag.moved = true;
-  if (drag.id === null) { snapshot(); const n = newElem(drag.type); doc.elems[n.id] = n; drag.id = n.id; }
-  const elem = doc.elems[drag.id];
-  // 鼠标下的路面顶面（或地面）
-  const h = pick(e, drag.id);
-  const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
-  const f = footprint(elem);
-  translate(elem, p.x - f.x0, p.y - f.y0, p.z - elem.z);
-  // 拖拽放置时自动吸附：新元素的任一顶点靠近别的顶点就贴上去
-  let best: { from: THREE.Vector3; to: THREE.Vector3; d: number } | null = null;
-  for (const v of vertsOf(elem)) {
-    const s = toScreen(v);
-    const t = nearestVertex(s.x, s.y, elem.id, 18);
-    if (!t) continue;
-    const d = toScreen(t).distanceTo(s);
-    if (!best || d < best.d) best = { from: v, to: t, d };
+  palette.hidden = true;
+  if (drag.ids === null) {
+    snapshot();
+    const es = newElems(drag.type);
+    for (const n of es) doc.elems[n.id] = n;
+    drag.ids = es.map((n) => n.id);
+    sel = new Set(drag.ids);
   }
-  if (best) translate(elem, best.to.x - best.from.x, best.to.y - best.from.y, best.to.z - best.from.z);
-  else if (gridOn) { const g = footprint(elem); translate(elem, Math.round(g.x0) - g.x0, Math.round(g.y0) - g.y0, 0); }
-  snapMarks = best ? { to: best.to } : {};
-  selected = elem.id;
+  const ids = new Set(drag.ids);
+  // 鼠标下的路面顶面（或地面）
+  const h = pick(e, ids);
+  const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  const hd = handleOf(doc.elems[drag.ids[0]]);
+  for (const id of ids) translateElem(doc.elems[id], [p.x - hd[0], p.y - hd[1], p.z - hd[2]]);
+  // 拖拽放置时自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就贴上去
+  let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
+  for (const id of ids) {
+    const f = feats(doc.elems[id]);
+    for (const v of [...f.verts, ...f.mids]) {
+      const s = toScreen(v);
+      const t = findTarget(s.x, s.y, ids, 16);
+      if (t && (!best || t.d < best.d)) best = { from: v, to: t.p, d: t.d, kind: t.kind };
+    }
+  }
+  if (best) for (const id of ids) translateElem(doc.elems[id], [best.to[0] - best.from[0], best.to[1] - best.from[1], best.to[2] - best.from[2]]);
+  else if (gridOn) { const b = boundsOf(doc, ids); for (const id of ids) translateElem(doc.elems[id], [Math.round(b.x0) - b.x0, Math.round(b.y0) - b.y0, 0]); }
+  snapTarget = best ? { p: best.to, kind: best.kind } : null;
   rebuild();
 }
 function placeEnd(e: PointerEvent) {
@@ -309,96 +650,253 @@ function placeEnd(e: PointerEvent) {
   if (!drag.moved && !over) {
     // 点击按钮：放到视图中心
     snapshot();
-    const n = newElem(drag.type);
-    const f = footprint(n);
-    translate(n, snapGrid(controls.target.x - (f.x1 - f.x0) / 2) - f.x0, snapGrid(controls.target.y - (f.y1 - f.y0) / 2) - f.y0, 0);
-    doc.elems[n.id] = n; selected = n.id;
-  } else if (drag.id !== null && !over) { delete doc.elems[drag.id]; undo.pop(); selected = null; }
-  drag = null; snapMarks = {};
+    const es = newElems(drag.type);
+    for (const n of es) doc.elems[n.id] = n;
+    const ids = es.map((n) => n.id);
+    const b = boundsOf(doc, ids);
+    const g = (v: number) => (gridOn ? Math.round(v) : v);
+    for (const id of ids) translateElem(doc.elems[id], [g(controls.target.x - (b.x1 - b.x0) / 2) - b.x0, g(controls.target.y - (b.y1 - b.y0) / 2) - b.y0, 0]);
+    sel = new Set(ids);
+    palette.hidden = true;
+  } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
+  drag = null; snapTarget = null;
   rebuild();
 }
+for (const b of document.querySelectorAll<HTMLButtonElement>('.add')) {
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); startPlace(b.dataset.add!); });
+}
+
+// 机关面板
+const palette = document.getElementById('palette')!;
+palette.innerHTML = (['module', 'deco'] as const).map((cat) => `<div class="cat">${cat === 'module' ? '机关' : '装饰'}</div>`
+  + OBJ_TYPES.filter((t) => t.cat === cat).map((t) => `<div class="item" data-type="${t.type}" title="拖进视图放置">${t.label}${baseSpec(t.type) ? ' · 带专属路块' : ''}</div>`).join('')).join('');
+palette.addEventListener('pointerdown', (e) => {
+  const it = (e.target as HTMLElement).closest<HTMLElement>('.item');
+  if (!it) return;
+  e.preventDefault();
+  startPlace(`obj:${it.dataset.type}`);
+});
+const modsBtn = document.getElementById('mods')!;
+modsBtn.addEventListener('click', () => {
+  const r = modsBtn.getBoundingClientRect();
+  palette.style.left = `${r.left}px`;
+  palette.hidden = !palette.hidden;
+});
+window.addEventListener('pointerdown', (e) => { if (!palette.contains(e.target as Node) && e.target !== modsBtn) palette.hidden = true; });
+
+// ---------------- 切分 ----------------
+
+function splitAt(e: { clientX: number; clientY: number }): { id: number; axis: 0 | 1; t: number } | null {
+  const h = pick(e);
+  const b = h && doc.elems[h.id];
+  if (!h || b?.kind !== 'box') return null;
+  const axis: 0 | 1 = splitAxis ?? (b.sx >= b.sy ? 0 : 1);
+  let t = h.p.getComponent(axis);
+  t = gridOn ? Math.round(t) : Math.round(t * 1000) / 1000;
+  return { id: h.id, axis, t };
+}
+function splitHover(e: { clientX: number; clientY: number }) {
+  const s = splitAt(e);
+  splitPreview = null;
+  if (s) {
+    const b = doc.elems[s.id] as Box;
+    const f = footprint(b);
+    const top = (x: number, y: number): P3 => [x, y, (b.slope ? b.z + (b.slope.dz * ((b.slope.axis === 0 ? x - b.x : y - b.y) / (b.slope.axis === 0 ? b.sx : b.sy))) : b.z) + 0.02];
+    splitPreview = s.axis === 0 ? { a: top(s.t, f.y0), b: top(s.t, f.y1) } : { a: top(f.x0, s.t), b: top(f.x1, s.t) };
+    const lo = s.axis === 0 ? f.x0 : f.y0, hi = s.axis === 0 ? f.x1 : f.y1;
+    dragInfo = `切成 ${fmt(s.t - lo)} + ${fmt(hi - s.t)}`;
+  } else dragInfo = '';
+  hoverId = s?.id ?? null;
+  drawOverlay(); updateStatus();
+}
+function doSplit(e: PointerEvent) {
+  const s = splitAt(e);
+  if (!s) return;
+  snapshot();
+  const n = splitBox(doc, s.id, s.axis, s.t);
+  if (n === null) { undo.pop(); flash('太靠边了，切不开', true); return; }
+  rebuild();
+  splitHover(e);
+}
+function enterSplit() { splitMode = true; splitAxis = null; document.getElementById('split')!.classList.add('on'); sel.clear(); drawOverlay(); updateStatus(); }
+function exitSplit() { if (!splitMode) return; splitMode = false; splitPreview = null; dragInfo = ''; document.getElementById('split')!.classList.remove('on'); drawOverlay(); updateStatus(); }
+
+// ---------------- 命令 ----------------
+
+function doMerge() {
+  snapshot();
+  const r = mergeBoxes(doc, [...sel]);
+  if (!r.ok) { undo.pop(); flash(r.msg, true); return; }
+  sel = new Set([r.id]);
+  flash('已合并');
+  rebuild();
+}
+function doGroup() {
+  if (sel.size < 2) { flash('至少选两个东西才能绑定', true); return; }
+  snapshot(); groupElems(doc, sel); flash(`已绑定 ${sel.size} 个元素`); rebuild();
+}
+function doUngroup() {
+  if (![...sel].some((id) => doc.elems[id].group !== undefined)) { flash('选中的东西没有绑定', true); return; }
+  snapshot(); ungroupElems(doc, sel); flash('已解除绑定'); rebuild();
+}
+function doRotate() {
+  if (!sel.size) return;
+  snapshot();
+  const b = boundsOf(doc, sel);
+  const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+  for (const id of sel) rotateElem(doc.elems[id], cx, cy);
+  // 开着格栅时，转完的最小角仍落在格栅上
+  if (gridOn) { const nb = boundsOf(doc, sel); for (const id of sel) translateElem(doc.elems[id], [Math.round(nb.x0) - nb.x0, Math.round(nb.y0) - nb.y0, 0]); }
+  rebuild();
+}
+function doDelete() {
+  if (!sel.size) return;
+  snapshot();
+  for (const id of sel) delete doc.elems[id];
+  sel.clear();
+  rebuild();
+}
+function doDuplicate(mouse: { clientX: number; clientY: number }) {
+  if (!sel.size) return;
+  snapshot();
+  sel = new Set(duplicate(doc, sel));
+  const b = boundsOf(doc, sel);
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -b.z1);
+  const start = planeHit(mouse, plane) ?? new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1);
+  drag = { t: 'move', orig: origOf(), b, plane, start, grab: true };
+  flash('复制：移动鼠标，点击放下，右键 / Esc 取消');
+  rebuild();
+}
+function nudge(d: V3) {
+  if (!sel.size) return;
+  snapshot();
+  for (const id of sel) translateElem(doc.elems[id], d);
+  rebuild();
+}
+const keepSel = () => { sel = new Set([...sel].filter((id) => doc.elems[id])); };
+function undoOnce() { if (undo.length) { redo.push(JSON.stringify(doc)); doc = JSON.parse(undo.pop()!); keepSel(); rebuild(); } }
+function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); doc = JSON.parse(redo.pop()!); keepSel(); rebuild(); } }
+
+const lastMouse = { clientX: 0, clientY: 0 };
+window.addEventListener('pointermove', (e) => { lastMouse.clientX = e.clientX; lastMouse.clientY = e.clientY; }, true);
+
+document.getElementById('split')!.addEventListener('click', () => (splitMode ? exitSplit() : enterSplit()));
+document.getElementById('merge')!.addEventListener('click', doMerge);
+document.getElementById('group')!.addEventListener('click', doGroup);
+document.getElementById('ungroup')!.addEventListener('click', doUngroup);
+document.getElementById('dup')!.addEventListener('click', () => { const r = el.getBoundingClientRect(); doDuplicate({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }); });
+document.getElementById('rot')!.addEventListener('click', doRotate);
+document.getElementById('del')!.addEventListener('click', doDelete);
+const gridBtn = document.getElementById('grid')!;
+const toggleGrid = () => { gridOn = !gridOn; gridBtn.classList.toggle('on', gridOn); updateStatus(); };
+gridBtn.addEventListener('click', toggleGrid);
+const alignBtn = document.getElementById('align')!;
+const toggleAlign = () => { alignOn = !alignOn; alignBtn.classList.toggle('on', alignOn); updateStatus(); };
+alignBtn.addEventListener('click', toggleAlign);
+const wireBtn = document.getElementById('wire')!;
+wireBtn.addEventListener('click', () => { wireOn = !wireOn; wireBtn.classList.toggle('on', wireOn); rebuild(); });
+const viewBtn = document.getElementById('view-mode')!;
+viewBtn.addEventListener('click', () => { modelView = !modelView; viewBtn.textContent = modelView ? '机关模型' : '占位符'; rebuild(); });
+
+window.addEventListener('keydown', (e) => {
+  const tag = (e.target as HTMLElement).tagName;
+  if (tag === 'INPUT' || tag === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'v' && !vHeld) { vHeld = true; drawOverlay(); }
+  if (k === 'escape') { cancelGrab(); exitSplit(); }
+  if (k === 'tab' && splitMode) { e.preventDefault(); splitAxis = splitAxis === null ? 1 : ((1 - splitAxis) as 0 | 1); splitHover(lastMouse); }
+  if (e.ctrlKey) {
+    if (k === 'z') undoOnce();
+    else if (k === 'y') redoOnce();
+    else if (k === 'j') { e.preventDefault(); doMerge(); }
+    else if (k === 'g') { e.preventDefault(); if (e.shiftKey) doUngroup(); else doGroup(); }
+    else if (k === 'd') { e.preventDefault(); doDuplicate(lastMouse); }
+    else if (k === 'a') { e.preventDefault(); sel = new Set(Object.keys(doc.elems).map(Number)); drawOverlay(); syncProps(); updateStatus(); }
+    return;
+  }
+  if (k === 'g') toggleGrid();
+  if (k === 's') toggleAlign();
+  if (k === 'k') (splitMode ? exitSplit() : enterSplit());
+  if (k === 'r') doRotate();
+  if (k === 'delete' || k === 'backspace') doDelete();
+  if (k === 'f') frameAll();
+  const step = e.shiftKey ? 0.1 : 1;
+  const arrows: Record<string, V3> = { arrowleft: [-step, 0, 0], arrowright: [step, 0, 0], arrowup: [0, step, 0], arrowdown: [0, -step, 0], pageup: [0, 0, step], pagedown: [0, 0, -step] };
+  if (arrows[k]) { e.preventDefault(); nudge(arrows[k]); }
+});
+window.addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'v') { vHeld = false; drawOverlay(); } });
 
 // ---------------- 属性面板 ----------------
 
 function syncProps() {
-  const e = selected !== null ? doc.elems[selected] : null;
-  if (!e) { props.hidden = true; return; }
-  if (props.dataset.id === String(e.id) && props.contains(document.activeElement)) return;
+  const one = sel.size === 1 ? doc.elems[[...sel][0]] : null;
+  if (!one) { props.hidden = true; return; }
+  if (props.dataset.id === String(one.id) && props.contains(document.activeElement)) return;
   props.hidden = false;
-  props.dataset.id = String(e.id);
-  const num = (k: string, v: number) => `<label>${k}</label><input data-k="${k}" type="number" step="0.1" value="${+v.toFixed(4)}">`;
-  let h = num('x', e.x) + num('y', e.y) + num('z', e.z);
-  if (e.kind === 'box') {
-    h += num('sx', e.sx) + num('sy', e.sy) + num('depth', e.depth);
-    h += `<label>样式</label><select data-k="style">${(['normal', 'sink', 'ribbon'] as Style[]).map((s) => `<option value="${s}"${s === e.style ? ' selected' : ''}>${{ normal: '平路', sink: '凹路', ribbon: '细边框凹路' }[s]}</option>`).join('')}</select>`;
-    h += `<label>倾斜轴</label><select data-k="axis"><option value="-1">不倾斜</option><option value="0"${e.slope?.axis === 0 ? ' selected' : ''}>沿 X</option><option value="1"${e.slope?.axis === 1 ? ' selected' : ''}>沿 Y</option></select>`;
-    h += num('dz', e.slope?.dz ?? 0);
-    h += `<div class="row">开口：${['+X', '+Y', '-X', '-Y'].map((n, i) => `<label><input type="checkbox" data-open="${i}"${(e.open ?? 0) & (1 << i) ? ' checked' : ''}>${n}</label>`).join('')}</div>`;
+  props.dataset.id = String(one.id);
+  const num = (k: string, label: string, v: number) => `<label>${label}</label><input data-k="${k}" type="number" step="0.1" value="${+v.toFixed(4)}">`;
+  let h = '';
+  if (one.kind === 'box') {
+    h += `<div class="title">路面${one.group !== undefined ? '（已绑定）' : ''}</div>`;
+    h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z) + num('sx', '长 (x)', one.sx) + num('sy', '宽 (y)', one.sy) + num('depth', '厚度', one.depth);
+    h += `<label>样式</label><select data-k="style">${(['normal', 'sink', 'ribbon'] as Style[]).map((s) => `<option value="${s}"${s === one.style ? ' selected' : ''}>${{ normal: '平路', sink: '凹路', ribbon: '细边框凹路' }[s]}</option>`).join('')}</select>`;
+    h += `<label>倾斜</label><select data-k="axis"><option value="-1">不倾斜</option><option value="0"${one.slope?.axis === 0 ? ' selected' : ''}>沿 X</option><option value="1"${one.slope?.axis === 1 ? ' selected' : ''}>沿 Y</option></select>`;
+    if (one.slope) h += num('dz', '高差', one.slope.dz);
+    h += `<div class="row">开口：${['+X', '+Y', '-X', '-Y'].map((n, i) => `<label><input type="checkbox" data-open="${i}"${(one.open ?? 0) & (1 << i) ? ' checked' : ''}>${n}</label>`).join('')}</div>`;
+  } else if (one.kind === 'piece') {
+    h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
+    h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', '顶面', one.z);
   } else {
-    h += `<label>类型</label><span>${e.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(e)}）</span>`;
+    const t = objType(one.type);
+    h += `<div class="title">${t?.label ?? one.type}</div>`;
+    h += num('x', 'x', one.x) + num('y', 'y', one.y) + num('z', 'z', one.z);
+    h += `<label>朝向</label><select data-k="rot">${[0, 1, 2, 3].map((r) => `<option value="${r}"${r === one.rot ? ' selected' : ''}>${r * 90}°</option>`).join('')}</select>`;
+    const extra: string[] = [];
+    if (stopperMesh({ id: 0, cat: 'module', type: one.type, x: 0, y: 0, z: 0, rot: 0 })) extra.push(`<label><input type="checkbox" data-flag="noStopper"${one.noStopper ? '' : ' checked'}>挡块</label>`);
+    if (baseSpec(one.type)) extra.push(`<label><input type="checkbox" data-flag="noBase"${one.noBase ? '' : ' checked'}>专属路块</label>`);
+    if (extra.length) h += `<div class="row">${extra.join('')}</div>`;
   }
   props.innerHTML = h;
 }
 props.addEventListener('change', (ev) => {
   const t = ev.target as HTMLInputElement;
-  const e = selected !== null ? doc.elems[selected] : null;
+  const e = sel.size === 1 ? doc.elems[[...sel][0]] : null;
   if (!e) return;
   snapshot();
-  if (t.dataset.open !== undefined && e.kind === 'box') e.open = ((e.open ?? 0) ^ (1 << +t.dataset.open)) || undefined;
   const k = t.dataset.k;
-  if (k && e.kind === 'box') {
+  if (t.dataset.open !== undefined && e.kind === 'box') e.open = ((e.open ?? 0) ^ (1 << +t.dataset.open)) || undefined;
+  if (t.dataset.flag && e.kind === 'obj') (e as Obj)[t.dataset.flag as 'noStopper' | 'noBase'] = !t.checked || undefined;
+  if (k === 'x' || k === 'y' || k === 'z') e[k] = +t.value;
+  if (e.kind === 'box') {
     if (k === 'style') e.style = t.value as Style;
     else if (k === 'axis') e.slope = +t.value < 0 ? undefined : { axis: +t.value as 0 | 1, dz: e.slope?.dz || 2.5 };
-    else if (k === 'dz') { if (e.slope) e.slope.dz = +t.value; }
-    else if (k === 'sx' || k === 'sy' || k === 'depth') (e as Box)[k] = Math.max(0.1, +t.value);
-    else if (k === 'x' || k === 'y' || k === 'z') e[k] = +t.value;
-  } else if (k === 'x' || k === 'y' || k === 'z') e[k] = +t.value;
+    else if (k === 'dz' && e.slope) e.slope.dz = +t.value;
+    else if (k === 'sx' || k === 'sy' || k === 'depth') e[k] = Math.max(0.1, +t.value);
+  }
+  if (e.kind === 'obj' && k === 'rot') e.rot = +t.value as Dir;
   props.dataset.id = '';
   rebuild();
 });
 
-// ---------------- 顶栏与快捷键 ----------------
+// ---------------- 场景与视图 ----------------
 
 const sceneSel = document.getElementById('scene') as HTMLSelectElement;
-sceneSel.innerHTML = SCENES.map((s, i) => `<option value="${i}">${s.name}</option>`).join('') + '<option value="-1">空白</option>';
-sceneSel.addEventListener('change', () => setScene(+sceneSel.value));
+sceneSel.innerHTML = '<option value="" hidden>测试场景…</option>' + SCENES.map((s, i) => `<option value="${i}">${s.name}</option>`).join('') + '<option value="-1">空白</option>';
+sceneSel.addEventListener('change', () => { setScene(+sceneSel.value); sceneSel.value = ''; sceneSel.blur(); });
 function setScene(i: number) {
   snapshot();
   doc = i < 0 ? { elems: {}, nextId: 1 } : SCENES[i].build();
-  selected = null;
+  sel.clear();
   frameAll();
   rebuild();
 }
-const gridBtn = document.getElementById('grid')!;
-const toggleGrid = () => { gridOn = !gridOn; gridBtn.classList.toggle('on', gridOn); setStatus(); };
-gridBtn.addEventListener('click', toggleGrid);
-const wireBtn = document.getElementById('wire')!;
-wireBtn.addEventListener('click', () => { wireOn = !wireOn; wireBtn.classList.toggle('on', wireOn); rebuild(); });
-const rotSel = () => { const e = selected !== null ? doc.elems[selected] : null; if (e) { snapshot(); rotateElem(e); rebuild(); } };
-const delSel = () => { if (selected !== null) { snapshot(); delete doc.elems[selected]; selected = null; rebuild(); } };
-document.getElementById('rot')!.addEventListener('click', rotSel);
-document.getElementById('del')!.addEventListener('click', delSel);
-
-window.addEventListener('keydown', (e) => {
-  if ((e.target as HTMLElement).tagName === 'INPUT') return;
-  const k = e.key.toLowerCase();
-  if (k === 'v' && !vHeld) { vHeld = true; drawOverlay(); }
-  if (k === 'g') toggleGrid();
-  if (k === 'r') rotSel();
-  if (k === 'delete' || k === 'backspace') delSel();
-  if (k === 'f') frameAll();
-  if (e.ctrlKey && k === 'z' && undo.length) { redo.push(JSON.stringify(doc)); doc = JSON.parse(undo.pop()!); rebuild(); }
-  if (e.ctrlKey && k === 'y' && redo.length) { undo.push(JSON.stringify(doc)); doc = JSON.parse(redo.pop()!); rebuild(); }
-});
-window.addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'v') { vHeld = false; drawOverlay(); } });
 
 function frameAll() {
-  const es = Object.values(doc.elems);
-  if (!es.length) return;
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const e of es) { const f = footprint(e); x0 = Math.min(x0, f.x0); y0 = Math.min(y0, f.y0); x1 = Math.max(x1, f.x1); y1 = Math.max(y1, f.y1); }
-  const c = new THREE.Vector3((x0 + x1) / 2, (y0 + y1) / 2, 0);
-  const r = Math.max(x1 - x0, y1 - y0);
+  const ids = sel.size ? [...sel] : Object.keys(doc.elems).map(Number);
+  if (!ids.length) return;
+  const b = boundsOf(doc, ids);
+  const c = new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1);
+  const r = Math.max(b.x1 - b.x0, b.y1 - b.y0, 5);
   controls.target.copy(c);
   camera.position.copy(c).add(new THREE.Vector3(-0.2, -0.55, 1).normalize().multiplyScalar(r * 1.05 + 8));
 }
@@ -417,10 +915,13 @@ renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, came
 
 // 截图脚本用
 (window as unknown as Record<string, unknown>).__proto = {
-  setScene: (i: number) => { setScene(i); sceneSel.value = String(i); },
+  setScene,
   view: (pos: number[], target: number[]) => { camera.position.set(pos[0], pos[1], pos[2]); controls.target.set(target[0], target[1], target[2]); controls.update(); },
-  project: (p: number[]) => { const s = toScreen(new THREE.Vector3(p[0], p[1], p[2])); return { x: s.x, y: s.y }; },
+  project: (p: number[]) => { const s = toScreen([p[0], p[1], p[2]]); return { x: s.x, y: s.y }; },
   wire: (on: boolean) => { wireOn = on; wireBtn.classList.toggle('on', on); rebuild(); },
+  select: (ids: number[]) => { sel = new Set(ids); drawOverlay(); syncProps(); },
+  toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
+  get sel() { return [...sel]; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
 };

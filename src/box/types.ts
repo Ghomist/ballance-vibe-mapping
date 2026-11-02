@@ -1,5 +1,6 @@
-// 重构版的数据模型：地图由互相独立的 box（路面）和素材件组成，元素之间不存任何连接关系。
-// 连接、花纹、遮挡都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
+// 重构版的数据模型：地图由互相独立的 box（路面）、素材件和机关组成，元素之间不存任何连接关系。
+// 连接、花纹、遮挡、机关的专属路块都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
+import { objType } from '../model/objects';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -15,8 +16,13 @@ export const BAND = 2.5;
 /** 判定「贴在一起」「一样高」的容差 */
 export const EPS_TOUCH = 0.005;
 
-export interface Box {
+interface ElemBase {
   id: number;
+  /** 绑定：同一个编号的元素在选择、移动时作为一个整体 */
+  group?: number;
+}
+
+export interface Box extends ElemBase {
   kind: 'box';
   /** 最小角（x、y 最小的那个角） */
   x: number;
@@ -34,23 +40,45 @@ export interface Box {
   open?: number;
 }
 
-export type PieceType = 'transition' | 'transition-narrow';
+/**
+ * transition：平凹转换（长 5）；transition-narrow：窄转换（长 2.5，平路一侧也下沉，接细边框平台）；
+ * transition-half：半宽平凹转换（长 2.5，凹路接平路平台）；ramp：半块下沉坡（长 2.5，平路接凹槽 / 细边框平台）；
+ * base：机关的专属路块。后三种都由求解器自动生成，嵌在平台的边框带里。
+ */
+export type PieceType = 'transition' | 'transition-narrow' | 'transition-half' | 'ramp' | 'base';
+export type BaseKind = 'trafo' | 'fan' | 'fence';
 
 /** 素材件：形状固定，只能平移和按 90° 旋转 */
-export interface Piece {
-  id: number;
+export interface Piece extends ElemBase {
   kind: 'piece';
   type: PieceType;
-  /** 中心 */
+  /** 中心（专属路块：机关对准的那一格的中心） */
   x: number;
   y: number;
   /** 顶面高度 */
   z: number;
-  /** 平凹转换：从凹槽一端指向平路一端的方向 */
+  /** 平凹转换：从凹槽一端指向平路一端的方向；栅栏路面：栅栏被推过去的方向 */
   rot: Dir;
+  /** 专属路块（由机关生成，不存进文档） */
+  base?: { kind: BaseKind; mat?: 'Paper' | 'Stone' | 'Wood' };
+  /** ramp：嵌进去的平台的样式（凹路或细边框凹路） */
+  inner?: Style;
 }
 
-export type Elem = Box | Piece;
+/** 机关 / 装饰：BBP 占位符或资产库模型；需要专属路块和挡块的机关自动带上 */
+export interface Obj extends ElemBase {
+  kind: 'obj';
+  type: string;
+  /** 物体原点 */
+  x: number;
+  y: number;
+  z: number;
+  rot: Dir;
+  noStopper?: boolean;
+  noBase?: boolean;
+}
+
+export type Elem = Box | Piece | Obj;
 
 export interface Doc {
   elems: Record<number, Elem>;
@@ -62,11 +90,38 @@ export const emptyDoc = (): Doc => ({ elems: {}, nextId: 1 });
 export const isSlope = (e: Elem): e is Box & { slope: { axis: 0 | 1; dz: number } } => e.kind === 'box' && !!e.slope && Math.abs(e.slope.dz) > 1e-9;
 
 /** 素材件的尺寸：沿 rot 的长度 */
-export const pieceLen = (p: Piece) => (p.type === 'transition-narrow' ? 2.5 : 5);
+export const pieceLen = (p: Piece) => (p.type === 'transition' ? 5 : 2.5);
+
+export type Rect = { x0: number; y0: number; x1: number; y1: number };
+
+/** 机关的对准方块（世界坐标的矩形和顶面高度） */
+export function anchorRects(o: Obj): (Rect & { top: number })[] {
+  const t = objType(o.type);
+  if (!t?.anchor) return [];
+  const c = [1, 0, -1, 0][o.rot], s = [0, 1, 0, -1][o.rot];
+  return [t.anchor, ...(t.more ?? [])].map((a) => {
+    const sx = a[3] ?? 5, sy = a[4] ?? 5;
+    const hx = (o.rot % 2 ? sy : sx) / 2, hy = (o.rot % 2 ? sx : sy) / 2;
+    const x = o.x + a[0] * c - a[1] * s, y = o.y + a[0] * s + a[1] * c;
+    return { x0: x - hx, y0: y - hy, x1: x + hx, y1: y + hy, top: o.z + a[2] };
+  });
+}
 
 /** 元素在平面上的范围 */
-export function footprint(e: Elem): { x0: number; y0: number; x1: number; y1: number } {
+export function footprint(e: Elem): Rect {
   if (e.kind === 'box') return { x0: e.x, y0: e.y, x1: e.x + e.sx, y1: e.y + e.sy };
+  if (e.kind === 'obj') {
+    const rs = anchorRects(e);
+    if (!rs.length) return { x0: e.x - 1, y0: e.y - 1, x1: e.x + 1, y1: e.y + 1 };
+    return { x0: Math.min(...rs.map((r) => r.x0)), y0: Math.min(...rs.map((r) => r.y0)), x1: Math.max(...rs.map((r) => r.x1)), y1: Math.max(...rs.map((r) => r.y1)) };
+  }
+  if (e.base) {
+    const r = { x0: e.x - 2.5, y0: e.y - 2.5, x1: e.x + 2.5, y1: e.y + 2.5 };
+    if (e.base.kind === 'fence') {
+      if (e.rot === 0) r.x1 += 5; else if (e.rot === 2) r.x0 -= 5; else if (e.rot === 1) r.y1 += 5; else r.y0 -= 5;
+    }
+    return r;
+  }
   const l = pieceLen(e) / 2, w = 2.5;
   const hx = e.rot % 2 === 0 ? l : w, hy = e.rot % 2 === 0 ? w : l;
   return { x0: e.x - hx, y0: e.y - hy, x1: e.x + hx, y1: e.y + hy };
@@ -89,10 +144,36 @@ export function boxTopAt(b: Box, x: number, y: number): number {
 export type FaceKind = { t: 'port'; style: Style } | { t: 'embed'; style: Style } | { t: 'wall' };
 
 export function pieceFace(p: Piece, d: Dir): FaceKind {
-  const narrow = p.type === 'transition-narrow';
-  if (d === p.rot) return { t: 'port', style: narrow ? 'ribbon' : 'normal' };
-  if (d === opp(p.rot)) return { t: 'port', style: 'sink' };
-  return narrow ? { t: 'embed', style: 'ribbon' } : { t: 'wall' };
+  if (p.base) {
+    if (p.base.kind === 'fence') return d === p.rot || d === opp(p.rot) ? { t: 'port', style: 'normal' } : { t: 'wall' };
+    return { t: 'port', style: 'normal' };
+  }
+  // rot 一侧是嵌进平台的那一端，对面接路
+  const [outer, inner]: [Style, Style] = pieceStyles(p) as [Style, Style];
+  if (d === p.rot) return { t: 'port', style: inner };
+  if (d === opp(p.rot)) return { t: 'port', style: outer };
+  return p.type === 'transition' ? { t: 'wall' } : { t: 'embed', style: inner };
 }
 
-export const pieceStyles = (p: Piece): Style[] => (p.type === 'transition-narrow' ? ['sink', 'ribbon'] : ['sink', 'normal']);
+/** 素材件两端的样式：[接路的一端（rot 的对面）, rot 那一端] */
+export const pieceStyles = (p: Piece): Style[] => (p.base ? ['normal', 'normal']
+  : p.type === 'transition-narrow' ? ['sink', 'ribbon']
+  : p.type === 'ramp' ? ['normal', p.inner ?? 'sink']
+  : ['sink', 'normal']);
+
+/** 需要专属路块的机关 */
+export function baseSpec(type: string): Piece['base'] | null {
+  const t = /^P_Trafo_(Paper|Stone|Wood)$/.exec(type);
+  if (t) return { kind: 'trafo', mat: t[1] as 'Paper' | 'Stone' | 'Wood' };
+  if (type === 'P_Modul_18') return { kind: 'fan' };
+  if (type === 'P_Modul_01') return { kind: 'fence' };
+  return null;
+}
+
+/** 机关的专属路块：放在对准方块那一格，顶面与对准方块顶面齐平 */
+export function basePiece(o: Obj): Piece | null {
+  const spec = o.noBase ? null : baseSpec(o.type);
+  const a = anchorRects(o)[0];
+  if (!spec || !a) return null;
+  return { id: o.id, kind: 'piece', type: 'base', x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2, z: a.top, rot: o.rot, base: spec };
+}

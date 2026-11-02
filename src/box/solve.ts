@@ -12,11 +12,20 @@
 //    每个 box 只在自己的格子里生成网格，但距离场看的是整片路面，所以接缝两边算出来的结果完全一致。
 import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
 import {
-  BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, Piece, SINK_DEPTH, Style,
-  boxTopAt, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
+  BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Piece, SINK_DEPTH, Style,
+  basePiece, boxTopAt, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
 } from './types';
 
 export interface ElemMeshOut { id: number; parts: Partial<Record<MatName, MeshPart>> }
+/** 资产库模型（专属路块）：放在哪、转多少度 */
+export interface AssetPart { name: string; pos: [number, number, number]; rotZ: number }
+export interface Solved {
+  meshes: Map<number, ElemMeshOut>;
+  /** 机关 id → 它的专属路块模型 */
+  bases: Map<number, AssetPart>;
+  /** 自动生成的转换件（负数 id）→ 它嵌进去的那块路面 */
+  owner: Map<number, number>;
+}
 
 const EPS = 1e-7;
 const UP: V3 = [0, 0, 1];
@@ -106,6 +115,8 @@ interface Layer {
   z: number;
   boxes: Box[];
   pieces: Piece[];
+  /** 嵌在本层凹槽里的专属路块（顶面在槽底） */
+  embedded: Set<number>;
   /** 展开坐标 ↔ 世界坐标 */
   dev: (x: number, y: number) => V2;
   world: (X: number, Y: number, depth: number) => V3;
@@ -118,9 +129,12 @@ interface Layer {
 
 let runSeq = 0;
 
-export function solve(doc: Doc): Map<number, ElemMeshOut> {
+export function solve(doc: Doc): Solved {
   runSeq = 0;
-  const elems = Object.values(doc.elems);
+  const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
+  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj');
+  const auto = autoTransitions(docElems);
+  const elems: Elem[] = [...docElems, ...bases, ...auto.pieces];
   const boxes = elems.filter((e): e is Box => e.kind === 'box');
   const pieces = elems.filter((e): e is Piece => e.kind === 'piece');
   const layers: Layer[] = [];
@@ -140,7 +154,11 @@ export function solve(doc: Doc): Map<number, ElemMeshOut> {
   for (const p of pieces) {
     let joined = false;
     for (const L of layers) {
-      if (L.slope || !pieceStyles(p).includes(L.style) || Math.abs(L.z - p.z) > EPS_TOUCH) continue;
+      if (L.slope) continue;
+      // 变球器、风扇的底座顶面落在凹槽槽底：嵌进凹槽里，四边都和凹槽连成一体
+      if (p.base && p.base.kind !== 'fence' && L.style !== 'normal' && Math.abs(L.z - SINK_DEPTH - p.z) <= EPS_TOUCH
+        && L.boxes.some((b) => overlaps(footprint(b), footprint(p)))) { L.pieces.push(p); L.embedded.add(p.id); joined = true; continue; }
+      if (!pieceStyles(p).includes(L.style) || Math.abs(L.z - p.z) > EPS_TOUCH) continue;
       if (L.boxes.some((b) => overlaps(footprint(b), footprint(p)) || pieceTouches(p, b, L.style))) { L.pieces.push(p); joined = true; }
     }
     if (!joined) { const L = flatLayer(layers.length, pieceStyles(p)[1], [], p.z); L.pieces.push(p); layers.push(L); }
@@ -154,9 +172,47 @@ export function solve(doc: Doc): Map<number, ElemMeshOut> {
 
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
-  for (const p of pieces) meshPiece(p, layers, out);
-  return out;
+  const baseParts = new Map<number, AssetPart>();
+  for (const p of pieces) {
+    if (p.base) baseParts.set(p.id, basePart(p, layers));
+    else meshPiece(p, layers, out);
+  }
+  return { meshes: out, bases: baseParts, owner: auto.owner };
 }
+
+/**
+ * 不同样式的路接到平台（或别的路的侧面）上时，在平台的边框带里自动嵌一个长 2.5 的转换件：
+ *   凹路接平路平台：半宽平凹转换；凹路接细边框平台：窄转换；平路接凹槽 / 细边框平台：半块下沉坡。
+ * 条件：路宽正好是 5、端面整个贴在平台侧面上、平台那一侧比路宽、往里至少有 2.5。
+ */
+function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, number> } {
+  const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
+  const placed = elems.filter((e): e is Piece => e.kind === 'piece');
+  const pieces: Piece[] = [];
+  const owner = new Map<number, number>();
+  for (const A of flats) for (const B of flats) {
+    if (A === B || A.style === B.style || A.style === 'ribbon' || Math.abs(A.z - B.z) > EPS_TOUCH) continue;
+    const type = A.style === 'sink' ? (B.style === 'normal' ? 'transition-half' : 'transition-narrow') : 'ramp';
+    const fa = footprint(A), fb = footprint(B);
+    for (const d of [0, 1, 2, 3] as Dir[]) {
+      const q = faceContact(fa, d, fb);
+      if (!q) continue;
+      const w = d % 2 === 0 ? A.sy : A.sx;
+      const bw = d % 2 === 0 ? B.sy : B.sx, bd = d % 2 === 0 ? B.sx : B.sy;
+      if (Math.abs(w - 5) > EPS_TOUCH || q[1] - q[0] < w - EPS_TOUCH || bw < w + EPS_TOUCH || bd < 2.5 - EPS_TOUCH) continue;
+      const line = [fa.x1, fa.y1, fa.x0, fa.y0][d], c = (q[0] + q[1]) / 2;
+      const along = line + (d < 2 ? 1.25 : -1.25);
+      const p: Piece = { id: -(pieces.length + 1), kind: 'piece', type, x: d % 2 === 0 ? along : c, y: d % 2 === 0 ? c : along, z: B.z, rot: d, inner: type === 'ramp' ? B.style : undefined };
+      if (placed.some((x) => overlaps(footprint(x), footprint(p)))) continue; // 已经手动放了转换件
+      pieces.push(p);
+      owner.set(p.id, B.id);
+    }
+  }
+  return { pieces, owner };
+}
+
+/** 素材件在某一层里每个面的接法（嵌进凹槽的底座四边都算嵌入面） */
+const faceIn = (L: Layer, p: Piece, d: Dir): FaceKind => (L.embedded.has(p.id) ? { t: 'embed', style: L.style } : pieceFace(p, d));
 
 const overlaps = (a: ReturnType<typeof footprint>, b: ReturnType<typeof footprint>) =>
   Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > EPS_TOUCH && Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) > EPS_TOUCH;
@@ -185,7 +241,7 @@ function faceContact(f: ReturnType<typeof footprint>, d: Dir, g: ReturnType<type
 function flatLayer(id: number, style: Style, boxes: Box[], z0 = 0): Layer {
   const z = boxes.length ? boxes[0].z : z0;
   return {
-    id, style, z, boxes, pieces: [], rects: [], edges: [], runs: [], folds: [],
+    id, style, z, boxes, pieces: [], embedded: new Set(), rects: [], edges: [], runs: [], folds: [],
     dev: (x, y) => [x, y],
     world: (X, Y, depth) => [X, Y, z - depth],
   };
@@ -197,7 +253,7 @@ function slopeLayer(id: number, b: Box): Layer {
   const k = Math.hypot(len, b.slope!.dz) / len;
   const p0 = ax === 0 ? b.x : b.y;
   return {
-    id, style: b.style, slope: b, z: b.z, boxes: [b], pieces: [], rects: [], edges: [], runs: [], folds: [],
+    id, style: b.style, slope: b, z: b.z, boxes: [b], pieces: [], embedded: new Set(), rects: [], edges: [], runs: [], folds: [],
     dev: (x, y) => (ax === 0 ? [p0 + (x - p0) * k, y] : [x, p0 + (y - p0) * k]),
     world: (X, Y, depth) => {
       const [x, y] = ax === 0 ? [p0 + (X - p0) / k, Y] : [X, p0 + (Y - p0) / k];
@@ -290,6 +346,8 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
     const zt = o.kind === 'box' ? boxTopAt(o, x, y) : o.z;
     const zb = zt - (o.kind === 'box' ? o.depth : 5);
     if (zt > L.z + EPS_TOUCH && zb < L.z - EPS_TOUCH) return true;
+    // 专属路块盖在路上：顶面和路面齐平或落在槽底的都算（专属路块优先）
+    if (o.kind === 'piece' && o.base && zt <= L.z + EPS_TOUCH && zt >= L.z - SINK_DEPTH - EPS_TOUCH) return true;
     if (Math.abs(zt - L.z) <= EPS_TOUCH) return o.kind === 'piece' || o.id > cand;
     return false;
   });
@@ -319,7 +377,7 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
         // 两格都被占：只有素材件和 box 之间、接法不匹配时才算外沿
         if (!isPiece(o) && !isPiece(nb)) continue;
         const pid = isPiece(o) ? o : nb;
-        const face = pieceFace(piece(pid), pid === o ? d : opp(d));
+        const face = faceIn(L, piece(pid), pid === o ? d : opp(d));
         if (face.t !== 'wall' && face.style === L.style) continue;
         units.push({ ax, c, a, b, n: d, owner: o, kind: 'exp' });
         continue;
@@ -463,6 +521,7 @@ function linkRuns(layers: Layer[], pieces: Piece[]) {
   };
   // 先从平凹转换的侧边出发：转换件的贴图是固定的（凹槽一端 v=1，平路一端 v=0）
   for (const p of pieces) {
+    if (p.base) continue;
     const f = footprint(p), ax: 0 | 1 = p.rot % 2 === 0 ? 0 : 1;
     const pf = p.rot === 0 ? f.x1 : p.rot === 2 ? f.x0 : p.rot === 1 ? f.y1 : f.y0; // 平路一端
     const ps = p.rot === 0 ? f.x0 : p.rot === 2 ? f.x1 : p.rot === 1 ? f.y0 : f.y1; // 凹槽一端
@@ -471,7 +530,9 @@ function linkRuns(layers: Layer[], pieces: Piece[]) {
       if (r.set || r.ax !== ax || !r.layer.pieces.includes(p)) continue;
       const wallC = r.n === (ax === 0 ? 1 : 0) ? (ax === 0 ? f.y1 : f.x1) : r.n === (ax === 0 ? 3 : 2) ? (ax === 0 ? f.y0 : f.x0) : NaN;
       if (Math.abs(r.c - wallC) > EPS_TOUCH || r.a > Math.min(pf, ps) + EPS_TOUCH || r.b < Math.max(pf, ps) - EPS_TOUCH) continue;
-      r.s = s; r.o = 5 - s * ps; r.set = true;
+      // 转换件：凹槽一端 v=1；半块下沉坡：接路的一端 v=0.5（都是 rot 对面那一端，v 朝这一端增大）
+      const vE = p.type === 'ramp' ? 0.5 : 1;
+      r.s = s; r.o = 5 * vE - s * ps; r.set = true;
       flood(idx.get(r)!);
     }
   }
@@ -647,36 +708,86 @@ function resolve(poly: Poly, lins: Lin[], emit: (p: Poly, w: Lin) => void, depth
 
 function meshPiece(p: Piece, layers: Layer[], out: Map<number, ElemMeshOut>) {
   const mb = new MeshBuilder();
-  const narrow = p.type === 'transition-narrow';
+  const ramp = p.type === 'ramp';
   const sx = pieceLen(p) / 5;
-  const a: V2 = [DX[p.rot], DY[p.rot]]; // 凹槽 → 平路
+  // 局部坐标沿用 BME：lx=0 是凹槽一侧，lx=5 是平路一侧（长 2.5 的件沿长度缩放 0.5，UV 不变）；ly 横跨路宽
+  //   平凹转换：凹槽一侧是 rot 的对面；半块下沉坡：凹槽一侧是 rot 那一端（嵌进平台）
+  const sd = ramp ? p.rot : opp(p.rot);
+  const a: V2 = [-DX[sd], -DY[sd]];
   const q: V2 = [-a[1], a[0]];
   const L = (lx: number, ly: number, lz: number): V3 =>
     [p.x + a[0] * (lx - 2.5) * sx + q[0] * (ly - 2.5), p.y + a[1] * (lx - 2.5) * sx + q[1] * (ly - 2.5), p.z + lz];
-  const fz = narrow ? -SINK_DEPTH : 0;
-  const v0 = L(0, 0, 0), v1 = L(5, 0, fz), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, fz), v4 = L(0, 5, 0);
-  mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
-  mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
-  mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
+  // 窄转换：平路一侧也下沉（贴着细边框平台下沉的内部）；下沉坡：凹槽一侧整条边下沉
+  const fz = p.type === 'transition-narrow' ? -SINK_DEPTH : 0;
+  const cz = ramp ? -SINK_DEPTH : 0;
+  if (ramp) {
+    for (const e0 of [0, 5]) {
+      const E0 = L(0, e0, cz), E1 = L(5, e0, 0), M1 = L(5, 2.5, 0), M0 = L(0, 2.5, cz);
+      mb.poly('FloorTopBorder', [E0, E1, M1, M0], [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0]], UP);
+    }
+  } else {
+    const v0 = L(0, 0, 0), v1 = L(5, 0, fz), v2 = L(0, 2.5, -SINK_DEPTH), v3 = L(5, 5, fz), v4 = L(0, 5, 0);
+    mb.tri('FloorTopProfilFlat', [v0, v1, v2], [[0, 1], [0, 0], [0.5, 1]], UP);
+    mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
+    mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
+  }
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
-    const A = L(0, ly, 0), B = L(5, ly, fz);
+    const A = L(0, ly, cz), B = L(5, ly, fz);
     const Ab: V3 = [A[0], A[1], A[2] - 5], Bb: V3 = [B[0], B[1], B[2] - 5];
     mb.poly('FloorSide', [A, B, Bb, Ab], [[0, 1], [0, 1 - sx], [1, 1 - sx], [1, 1]], [q[0] * sg, q[1] * sg, 0]);
   }
-  // 接口没接上时补端面
+  // 接口没接上（没有同样式的路贴着或压着）时补端面
   const fp = footprint(p);
-  for (const [d, lx, notch] of [[opp(p.rot), 0, SINK_DEPTH], [p.rot, 5, narrow ? 0 : 0]] as const) {
+  for (const [d, lx] of [[sd, 0], [opp(sd), 5]] as const) {
     const face = pieceFace(p, d);
     if (face.t === 'wall') continue;
     const st = face.style;
-    const joined = layers.some((Ly) => Ly.style === st && Math.abs(Ly.z - p.z) < EPS_TOUCH && Ly.boxes.some((b) => faceContact(fp, d, footprint(b)) || (narrow && d === p.rot && overlaps(fp, footprint(b)))));
+    const joined = layers.some((Ly) => Ly.style === st && Math.abs(Ly.z - p.z) < EPS_TOUCH && Ly.boxes.some((b) => faceContact(fp, d, footprint(b)) || overlaps(fp, footprint(b))));
     if (joined) continue;
-    const top = d === p.rot ? fz : 0;
-    const Lc = L(lx, 0, top), M = L(lx, 2.5, d === p.rot ? fz : -notch), R = L(lx, 5, top);
+    const top = lx === 0 ? cz : fz;
+    const notch = lx === 0 && !ramp ? SINK_DEPTH : 0;
+    const Lc = L(lx, 0, top), M = L(lx, 2.5, top - notch), R = L(lx, 5, top);
     const outv: V3 = [DX[d], DY[d], 0];
     const bz = Lc[2] - 5;
     mb.poly('FloorSide', [Lc, M, [M[0], M[1], bz], [Lc[0], Lc[1], bz]], [[0, 0], [0, 0.5], [(5 - notch) / 5, 0.5], [1, 0]], outv);
     mb.poly('FloorSide', [M, R, [R[0], R[1], bz], [M[0], M[1], bz]], [[0, 0.5], [0, 1], [1, 1], [(5 - notch) / 5, 0.5]], outv);
   }
   out.set(p.id, { id: p.id, parts: mb.parts });
+}
+
+// ---------------- 专属路块 ----------------
+
+/** 风扇底座的边框花纹：变体在资产本地坐标下有边框的方向 */
+const FAN_VARIANTS: [string, Dir[]][] = [
+  ['Ventilator_4Face', [0, 1, 2, 3]],
+  ['Ventilator_3Edge', [0, 1, 2]],
+  ['Ventilator_2Face_Opposite', [0, 2]],
+  ['Ventilator_2Face_Adjacent', [0, 1]],
+  ['Ventilator_1Edge', [0]],
+  ['Ventilator_NoEdge_Border', []],
+];
+
+function basePart(p: Piece, layers: Layer[]): AssetPart {
+  const z = p.z - 2.5; // 资产原点在方块中心
+  const b = p.base!;
+  if (b.kind === 'trafo') return { name: `TrafoBase_${b.mat ?? 'Wood'}`, pos: [p.x, p.y, z], rotZ: 0 };
+  // Slider 的原点在第一格中心，本地 +Y 沿栅栏方向
+  if (b.kind === 'fence') return { name: 'Slider', pos: [p.x, p.y, z], rotZ: p.rot * 90 - 90 };
+  if (layers.some((L) => L.embedded.has(p.id))) return { name: 'Ventilator_NoEdge_Borderless', pos: [p.x, p.y, z], rotZ: 0 };
+  // 风扇：没接路的边要有边框
+  const fp = footprint(p);
+  // 这一边接上了：有同层的路贴着这一边，或者路从底座下面穿过去、在这一边外面还继续
+  const cx = (fp.x0 + fp.x1) / 2, cy = (fp.y0 + fp.y1) / 2;
+  const outside = (d: Dir): [number, number] => [d === 0 ? fp.x1 + 0.01 : d === 2 ? fp.x0 - 0.01 : cx, d === 1 ? fp.y1 + 0.01 : d === 3 ? fp.y0 - 0.01 : cy];
+  const joined = (d: Dir) => layers.some((L) => L.pieces.includes(p) && L.boxes.some((x) => {
+    if (faceContact(fp, d, footprint(x))) return true;
+    const f = footprint(x), [ox, oy] = outside(d);
+    return overlaps(f, fp) && ox > f.x0 && ox < f.x1 && oy > f.y0 && oy < f.y1;
+  }));
+  const closed = new Set(([0, 1, 2, 3] as Dir[]).filter((d) => !joined(d)));
+  for (const [name, borders] of FAN_VARIANTS) {
+    if (borders.length !== closed.size) continue;
+    for (let k = 0; k < 4; k++) if (borders.every((d) => closed.has(((d + k) % 4) as Dir))) return { name, pos: [p.x, p.y, z], rotZ: k * 90 };
+  }
+  return { name: 'Ventilator_4Face', pos: [p.x, p.y, z], rotZ: 0 };
 }

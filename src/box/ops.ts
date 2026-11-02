@@ -1,0 +1,140 @@
+// 文档上的编辑操作：旋转、合并、切分、复制、绑定、包围盒
+import { Box, Dir, Doc, Elem, anchorRects, boxTopAt, footprint } from './types';
+
+export type V3 = [number, number, number];
+export interface Bounds { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number }
+
+/** 元素的包围盒（机关按对准方块） */
+export function elemBounds(e: Elem): Bounds {
+  const f = footprint(e);
+  if (e.kind === 'box') {
+    const tops = [boxTopAt(e, f.x0, f.y0), boxTopAt(e, f.x1, f.y1)];
+    return { ...f, z0: Math.min(...tops) - e.depth, z1: Math.max(...tops) };
+  }
+  if (e.kind === 'piece') return { ...f, z0: e.z - 5, z1: e.z };
+  const tops = anchorRects(e).map((r) => r.top);
+  const top = tops.length ? Math.max(...tops) : e.z;
+  return { ...f, z0: top - 0.5, z1: top };
+}
+
+export function unionBounds(bs: Bounds[]): Bounds {
+  return {
+    x0: Math.min(...bs.map((b) => b.x0)), y0: Math.min(...bs.map((b) => b.y0)), z0: Math.min(...bs.map((b) => b.z0)),
+    x1: Math.max(...bs.map((b) => b.x1)), y1: Math.max(...bs.map((b) => b.y1)), z1: Math.max(...bs.map((b) => b.z1)),
+  };
+}
+
+export const boundsOf = (doc: Doc, ids: Iterable<number>) => unionBounds([...ids].map((id) => elemBounds(doc.elems[id])));
+
+/** 选中一个元素时，同一个绑定组的元素一起选上 */
+export function expandGroups(doc: Doc, ids: Iterable<number>): Set<number> {
+  const out = new Set<number>();
+  const groups = new Set<number>();
+  for (const id of ids) { const e = doc.elems[id]; if (!e) continue; out.add(id); if (e.group !== undefined) groups.add(e.group); }
+  if (groups.size) for (const e of Object.values(doc.elems)) if (e.group !== undefined && groups.has(e.group)) out.add(e.id);
+  return out;
+}
+
+export function translateElem(e: Elem, d: V3) { e.x += d[0]; e.y += d[1]; e.z += d[2]; }
+
+/** 绕竖直轴转 90°（逆时针），转轴过 (px, py) */
+export function rotateElem(e: Elem, px: number, py: number) {
+  const rot = (x: number, y: number): [number, number] => [px - (y - py), py + (x - px)];
+  if (e.kind === 'box') {
+    const f = footprint(e);
+    const [ax, ay] = rot(f.x0, f.y0), [bx, by] = rot(f.x1, f.y1);
+    e.x = Math.min(ax, bx); e.y = Math.min(ay, by);
+    [e.sx, e.sy] = [e.sy, e.sx];
+    if (e.slope) {
+      // 沿 +X 升高 → 沿 +Y 升高；沿 +Y 升高 → 沿 -X 升高（低的一端换到另一头）
+      if (e.slope.axis === 0) e.slope = { axis: 1, dz: e.slope.dz };
+      else { e.z += e.slope.dz; e.slope = { axis: 0, dz: -e.slope.dz }; }
+    }
+    if (e.open) e.open = ((e.open << 1) | (e.open >> 3)) & 15;
+    return;
+  }
+  [e.x, e.y] = rot(e.x, e.y);
+  e.rot = ((e.rot + 1) % 4) as Dir;
+}
+
+/** 合并：几个同样式、同高度、同厚度的平 box 拼起来正好是一个矩形时，合成一个 */
+export function mergeBoxes(doc: Doc, ids: number[]): { ok: true; id: number } | { ok: false; msg: string } {
+  const bs = ids.map((id) => doc.elems[id]).filter((e): e is Box => e?.kind === 'box');
+  if (bs.length < 2) return { ok: false, msg: '至少选两个路面才能合并' };
+  if (bs.length !== ids.length) return { ok: false, msg: '只有路面能合并' };
+  const a = bs[0];
+  if (bs.some((b) => b.style !== a.style)) return { ok: false, msg: '样式不同的路面不能合并' };
+  if (bs.some((b) => b.slope)) return { ok: false, msg: '倾斜的路面不能合并' };
+  if (bs.some((b) => Math.abs(b.z - a.z) > 1e-3 || Math.abs(b.depth - a.depth) > 1e-3)) return { ok: false, msg: '高度或厚度不同的路面不能合并' };
+  const fs = bs.map(footprint);
+  const bb = { x0: Math.min(...fs.map((f) => f.x0)), y0: Math.min(...fs.map((f) => f.y0)), x1: Math.max(...fs.map((f) => f.x1)), y1: Math.max(...fs.map((f) => f.y1)) };
+  // 拼起来要正好盖满包围矩形
+  const xs = [...new Set(fs.flatMap((f) => [f.x0, f.x1]))].sort((p, q) => p - q);
+  const ys = [...new Set(fs.flatMap((f) => [f.y0, f.y1]))].sort((p, q) => p - q);
+  for (let i = 0; i + 1 < xs.length; i++) for (let j = 0; j + 1 < ys.length; j++) {
+    const cx = (xs[i] + xs[i + 1]) / 2, cy = (ys[j] + ys[j + 1]) / 2;
+    if (xs[i + 1] - xs[i] < 0.01 || ys[j + 1] - ys[j] < 0.01) continue;
+    if (!fs.some((f) => cx > f.x0 && cx < f.x1 && cy > f.y0 && cy < f.y1)) return { ok: false, msg: '这几块拼起来不是一个矩形，没法合并' };
+  }
+  // 开口：原来贴着包围矩形某一边、并且那一边是开口的，合并后那一边也是开口
+  let open = 0;
+  bs.forEach((b, i) => {
+    const f = fs[i];
+    for (const d of [0, 1, 2, 3] as Dir[]) {
+      const on = [Math.abs(f.x1 - bb.x1), Math.abs(f.y1 - bb.y1), Math.abs(f.x0 - bb.x0), Math.abs(f.y0 - bb.y0)][d] < 1e-6;
+      if (on && (b.open ?? 0) & (1 << d)) open |= 1 << d;
+    }
+  });
+  const keep = bs.reduce((p, q) => (q.id < p.id ? q : p));
+  Object.assign(keep, { x: bb.x0, y: bb.y0, sx: bb.x1 - bb.x0, sy: bb.y1 - bb.y0, open: open || undefined });
+  for (const b of bs) if (b !== keep) delete doc.elems[b.id];
+  return { ok: true, id: keep.id };
+}
+
+/** 切分：沿 axis 方向在坐标 t 处切开（axis=0：切线是 x=t），返回新的那一块 */
+export function splitBox(doc: Doc, id: number, axis: 0 | 1, t: number): number | null {
+  const b = doc.elems[id];
+  if (b?.kind !== 'box') return null;
+  const lo = axis === 0 ? b.x : b.y, len = axis === 0 ? b.sx : b.sy;
+  if (t <= lo + 0.01 || t >= lo + len - 0.01) return null;
+  const nb: Box = JSON.parse(JSON.stringify(b));
+  nb.id = doc.nextId++;
+  const l1 = t - lo, l2 = len - l1;
+  if (axis === 0) { b.sx = l1; nb.x = t; nb.sx = l2; } else { b.sy = l1; nb.y = t; nb.sy = l2; }
+  if (b.slope && b.slope.axis === axis) {
+    const dz1 = (b.slope.dz * l1) / len;
+    nb.slope = { axis, dz: b.slope.dz - dz1 };
+    nb.z = b.z + dz1;
+    b.slope = { axis, dz: dz1 };
+  }
+  // 切口两侧不是开口
+  const hi = (axis === 0 ? 0 : 1) as Dir, low = (axis === 0 ? 2 : 3) as Dir;
+  if (b.open) b.open = (b.open & ~(1 << hi)) || undefined;
+  if (nb.open) nb.open = (nb.open & ~(1 << low)) || undefined;
+  doc.elems[nb.id] = nb;
+  return nb.id;
+}
+
+/** 复制：绑定组也换成新的组号 */
+export function duplicate(doc: Doc, ids: Iterable<number>): number[] {
+  let g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0));
+  const remap = new Map<number, number>();
+  const out: number[] = [];
+  for (const id of ids) {
+    const e: Elem = JSON.parse(JSON.stringify(doc.elems[id]));
+    e.id = doc.nextId++;
+    if (e.group !== undefined) { if (!remap.has(e.group)) remap.set(e.group, ++g); e.group = remap.get(e.group); }
+    doc.elems[e.id] = e;
+    out.push(e.id);
+  }
+  return out;
+}
+
+export function groupElems(doc: Doc, ids: Iterable<number>) {
+  const g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0)) + 1;
+  for (const id of ids) doc.elems[id].group = g;
+}
+
+export function ungroupElems(doc: Doc, ids: Iterable<number>) {
+  for (const id of ids) delete doc.elems[id].group;
+}

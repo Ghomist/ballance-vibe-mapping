@@ -1,4 +1,5 @@
 // 原型的测试场景：专挑刁钻的拼法（错位、非整数宽度、窄路、坡、重叠、缝隙）
+import { objType } from '../model/objects';
 import { Box, Dir, Doc, Piece, PieceType, Style, emptyDoc } from './types';
 
 class B {
@@ -6,6 +7,14 @@ class B {
   box(x: number, y: number, sx: number, sy: number, o: { z?: number; style?: Style; depth?: number; slope?: Box['slope']; open?: number } = {}) {
     const id = this.doc.nextId++;
     this.doc.elems[id] = { id, kind: 'box', x, y, z: o.z ?? 0, sx, sy, depth: o.depth ?? 5, style: o.style ?? 'normal', slope: o.slope, open: o.open };
+    return id;
+  }
+  /** 机关：对准方块中心放在 (ax, ay)，对准方块顶面在 top */
+  obj(type: string, ax: number, ay: number, top: number, rot: Dir = 0) {
+    const a = objType(type)?.anchor ?? [0, 0, 0];
+    const c = [1, 0, -1, 0][rot], s = [0, 1, 0, -1][rot];
+    const id = this.doc.nextId++;
+    this.doc.elems[id] = { id, kind: 'obj', type, x: ax - (a[0] * c - a[1] * s), y: ay - (a[0] * s + a[1] * c), z: top - a[2], rot };
     return id;
   }
   piece(type: PieceType, x: number, y: number, rot: Dir, z = 0) {
@@ -87,6 +96,38 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.box(0, 15, 25, 5); b.box(10, 13.5, 6, 8, { style: 'sink' }); // 不同样式压上去
       b.box(0, 30, 30, 5); b.box(12, 25, 5, 15, { z: 2 }); // 高出来的 box 穿过路面
       b.box(40, 0, 5, 30); b.box(32, 12, 21, 5, { z: 6, depth: 1.5 }); // 桥从上面跨过
+      return b.doc;
+    },
+  },
+  {
+    name: '平台与不同样式的路',
+    build: () => {
+      const b = new B();
+      // 平路平台：凹路接进来（自动嵌半宽平凹转换），平路照常接
+      b.box(0, 0, 20, 15); b.box(7.5, -10, 5, 10, { style: 'sink' }); b.box(20, 5, 10, 5);
+      // 凹槽平台：平路接进来（自动嵌半块下沉坡），凹路照常接
+      b.box(40, 0, 20, 15, { style: 'sink' }); b.box(47.5, -10, 5, 10); b.box(60, 5, 10, 5, { style: 'sink' });
+      // 细边框平台：凹路接进来（自动嵌窄转换），平路接进来（下沉坡），不对齐格栅的位置
+      b.box(80, 0, 22, 17, { style: 'ribbon' }); b.box(83.7, -10, 5, 10, { style: 'sink' }); b.box(102, 6.3, 10, 5);
+      // 凹路接平路的侧面（T 字口）
+      b.box(0, 30, 30, 5); b.box(12.5, 35, 5, 10, { style: 'sink' });
+      return b.doc;
+    },
+  },
+  {
+    name: '机关',
+    build: () => {
+      const b = new B();
+      // 风扇直接放在路上（盖住）；风扇拼在两段路之间
+      b.box(0, 0, 30, 5); b.obj('P_Modul_18', 12.5, 2.5, 0);
+      b.box(0, 15, 10, 5); b.obj('P_Modul_18', 12.5, 17.5, 0); b.box(15, 15, 10, 5);
+      // 变球器嵌在凹槽平台中间；单独放的变球器
+      b.box(40, 0, 20, 20, { style: 'sink' }); b.obj('P_Trafo_Wood', 50, 10, -0.7);
+      b.obj('P_Trafo_Paper', 70, 10, 0);
+      // 栅栏路面；软木桥（挡块）两头接路；跷跷板
+      b.box(0, 30, 10, 5); b.obj('P_Modul_01', 12.5, 32.5, 0, 0); b.box(20, 30, 10, 5);
+      // 软木桥：两个对准方块是两头那一格路面，中间断开（断口是开口端）
+      b.box(40, 30, 10, 5, { style: 'sink', open: 1 }); b.obj('P_Modul_29', 56.86 + 10.97, 32.5, 0, 0); b.box(65.33, 30, 10, 5, { style: 'sink', open: 4 });
       return b.doc;
     },
   },
