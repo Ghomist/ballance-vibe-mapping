@@ -33,15 +33,20 @@ export function feats(e: Elem): Feats {
     return out;
   }
   if (e.kind === 'rail') {
-    // 钢轨：起点、终点和段与段的接头（路径中心、双轨最顶端），以及两头左右两根轨的顶端
+    // 钢轨（一段）：两头的中心点、两头左右两根轨的顶端；中间点；直轨的中线
     const out: Feats = { verts: [], mids: [], edges: [] };
-    let st: RailState = { x: e.x, y: e.y, z: e.z, heading: e.heading };
-    const ends: RailState[] = [st];
-    for (const p of e.pieces) { st = advance(st, p); ends.push(st); }
-    for (const s of ends) out.verts.push([s.x, s.y, s.z]);
-    for (const s of [ends[0], ends[ends.length - 1]]) {
+    const s0: RailState = { x: e.x, y: e.y, z: e.z, heading: e.heading };
+    let s1 = s0;
+    for (const p of e.pieces) s1 = advance(s1, p);
+    for (const s of [s0, s1]) {
+      out.verts.push([s.x, s.y, s.z]);
       const h = (s.heading * Math.PI) / 180, lx = -Math.sin(h) * 1.875, ly = Math.cos(h) * 1.875;
-      out.mids.push([s.x + lx, s.y + ly, s.z], [s.x - lx, s.y - ly, s.z]);
+      out.verts.push([s.x + lx, s.y + ly, s.z], [s.x - lx, s.y - ly, s.z]);
+    }
+    if (e.pieces.length === 1) {
+      const m = advance(s0, e.pieces[0], 0.5);
+      out.mids.push([m.x, m.y, m.z]);
+      if (e.pieces[0].angle === 0) out.edges.push([[s0.x, s0.y, s0.z], [s1.x, s1.y, s1.z]]);
     }
     return out;
   }

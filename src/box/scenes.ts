@@ -1,6 +1,6 @@
 // 原型的演示 / 测试场景：每个场景把一类功能的各种拼法摆在一起（错位、非整数宽度、坡、重叠、转换、机关…）
 import { objType } from '../model/objects';
-import type { RailPiece } from '../model/rail';
+import { type RailPiece, advance } from '../model/rail';
 import { Box, Dir, Doc, Piece, PieceType, Style, emptyDoc } from './types';
 
 class B {
@@ -27,6 +27,11 @@ class B {
     const id = this.doc.nextId++;
     this.doc.elems[id] = { id, kind: 'rail', x: x + this.ox, y: y + this.oy, z, heading, pieces };
     return id;
+  }
+  /** 一串首尾相接的钢轨：每一段是一个单独的元素 */
+  rails(x: number, y: number, z: number, heading: number, pieces: RailPiece[]) {
+    let st = { x, y, z, heading };
+    for (const p of pieces) { this.rail(st.x, st.y, st.z, st.heading, [p]); st = advance(st, p); }
   }
   piece(type: PieceType, x: number, y: number, rot: Dir, z = 0) {
     const id = this.doc.nextId++;
@@ -167,12 +172,12 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       const st = (len: number, dz = 0, kind: RailPiece['kind'] = 'double'): RailPiece => ({ kind, len, radius: 0, angle: 0, dz });
       const arc = (angle: number, radius = 5, dz = 0, kind: RailPiece['kind'] = 'double'): RailPiece => ({ kind, len: 0, radius, angle, dz });
       // 路 → 钢轨：直线、左转、上坡、右转 → 接回高处的路
-      b.box(0, 0, 15, 5); b.rail(15, 2.5, 0, 0, [st(10), arc(90), st(10, 5), arc(-90), st(5)]);
+      b.box(0, 0, 15, 5); b.rails(15, 2.5, 0, 0, [st(10), arc(90), st(10, 5), arc(-90), st(5)]);
       b.box(40, 20, 15, 5, { z: 5 });
       // 螺旋（1.5 圈）
-      b.box(0, 40, 10, 5); b.rail(10, 42.5, 0, 0, [st(5), arc(540, 5, 7.5), st(10)]); b.box(-10, 50, 15, 5, { z: 7.5 });
+      b.box(0, 40, 10, 5); b.rails(10, 42.5, 0, 0, [st(5), arc(540, 5, 7.5), st(10)]); b.box(-10, 50, 15, 5, { z: 7.5 });
       // 双轨 → 单双转换 → 单轨
-      b.box(70, 0, 10, 5); b.rail(80, 2.5, 0, 0, [st(10), st(5, 0, 'transition'), st(15, 0, 'mono')]);
+      b.box(70, 0, 10, 5); b.rails(80, 2.5, 0, 0, [st(10), st(5, 0, 'transition'), st(15, 0, 'mono')]);
       return b.doc;
     },
   },

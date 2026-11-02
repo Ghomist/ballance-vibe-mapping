@@ -10,7 +10,7 @@ import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
-import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
+import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState, sampleRail } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
@@ -325,8 +325,15 @@ function cornersOf(e: Elem): P3[] {
 }
 
 function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
-  const c = cornersOf(e);
+  const c = e.kind === 'rail' ? [] : cornersOf(e);
   const segs: P3[] = [];
+  if (e.kind === 'rail') {
+    // 钢轨：沿两根轨（双轨最顶端的高度）画线，两头画横杠
+    const ps = sampleRail(e);
+    const side = (s: RailState, k: number): P3 => { const h = (s.heading * Math.PI) / 180; return [s.x - Math.sin(h) * 1.875 * k, s.y + Math.cos(h) * 1.875 * k, s.z + 0.05]; };
+    for (let i = 0; i + 1 < ps.length; i++) for (const k of [1, -1]) segs.push(side(ps[i], k), side(ps[i + 1], k));
+    for (const s of [ps[0], ps[ps.length - 1]]) segs.push(side(s, 1), side(s, -1));
+  }
   if (c.length === 8) for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
   const geo = new THREE.BufferGeometry().setFromPoints(segs.map((p) => new THREE.Vector3(...p)));
   const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
@@ -336,6 +343,7 @@ function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
 
 /** 选中物体的半透明包裹面 */
 function hullOf(e: Elem, color: number, opacity: number): THREE.Object3D | null {
+  if (e.kind === 'rail') return null; // 钢轨只沿两根轨画选中线，不画方块
   const c = cornersOf(e);
   if (c.length !== 8) return null;
   const quads = [[0, 1, 2, 3], [4, 7, 6, 5], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]];
@@ -373,7 +381,7 @@ let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
 let splitPreview: { a: P3; b: P3 } | null = null;
 /** Ctrl 改尺寸时顶面的测量线（on5：长度正好是 5 的整数倍） */
-let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean } | null = null;
+let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean; plane?: Bounds } | null = null;
 /** 改尺寸时长度吸附到 5 的整数倍的距离（屏幕像素） */
 const SIZE5_PX = 7;
 const measureLabel = document.createElement('div');
@@ -402,8 +410,11 @@ function drawOverlay() {
     if (e && virtualCells(e).length) (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
   }
   // 按住 V：显示鼠标下元素的顶点和边中点
-  if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
-    const f = feats(doc.elems[hoverId]);
+  // 按住 V：有选中的东西时只显示选中物体的顶点 / 边中点（不管鼠标移到哪），否则显示鼠标下的物体
+  const vIds = vHeld && !drag ? (sel.size ? [...sel] : hoverId !== null ? [hoverId] : []) : [];
+  for (const id of vIds) {
+    if (!doc.elems[id]) continue;
+    const f = feats(doc.elems[id]);
     overlay.add(marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
   }
   if (snapGrab) overlay.add(marks([snapGrab], 'dot', 0xff8a4c, 13));
@@ -418,6 +429,7 @@ function drawOverlay() {
   }
   measureLabel.style.display = 'none';
   if (measure) {
+    if (measure.plane) overlay.add(guidePlane({ axis: 2, value: measure.plane.z1, b: measure.plane }));
     const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
     const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
     const side = new THREE.Vector3(...measure.tick);
@@ -454,7 +466,7 @@ const HATCH = (() => {
 
 /** 对齐辅助面：在对齐的那个坐标上画一块斜线填充的面，范围盖住对齐的两个元素 */
 function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
-  const { b } = gd, pad = 0; // 辅助面就和正在操作的物体一样大，不挡视野
+  const { b } = gd, pad = 1.2; // 比正在操作的物体稍大一圈，不画边框，像一堵虚拟的墙
   // 面上的两个方向（u、v）对应的世界坐标分量
   const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
   const lo = [b.x0 - pad, b.y0 - pad, b.z0 - pad], hi = [b.x1 + pad, b.y1 + pad, b.z1 + pad];
@@ -468,8 +480,9 @@ function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Ob
   const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: AXIS_COLOR[gd.axis], map: HATCH, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
   const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineDashedMaterial({ color: AXIS_COLOR[gd.axis], dashSize: 0.6, gapSize: 0.4, transparent: true, opacity: 0.9, depthTest: false }));
   edge.computeLineDistances();
-  face.renderOrder = 4; edge.renderOrder = 5;
-  g.add(face, edge);
+  face.renderOrder = 4;
+  void edge;
+  g.add(face);
   return g;
 }
 
@@ -603,6 +616,7 @@ type Drag =
   | { t: 'lift'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
   | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
+  | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
@@ -638,6 +652,25 @@ el.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
   if (splitMode) { doSplit(e); return; }
+  if (vHeld && sel.size) {
+    const at = new THREE.Vector2(e.clientX, e.clientY);
+    const inside = [...sel].some((id) => {
+      const b = elemBounds(doc.elems[id]);
+      const ss = [b.x0, b.x1].flatMap((x) => [b.y0, b.y1].flatMap((y) => [b.z0, b.z1].map((z) => toScreen([x, y, z]))));
+      const m = 14;
+      return at.x >= Math.min(...ss.map((q) => q.x)) - m && at.x <= Math.max(...ss.map((q) => q.x)) + m && at.y >= Math.min(...ss.map((q) => q.y)) - m && at.y <= Math.max(...ss.map((q) => q.y)) + m;
+    });
+    el.setPointerCapture(e.pointerId);
+    if (!inside) { drag = { t: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey }; return; }
+    snapshot();
+    let grab: P3 | null = null, bd = Infinity;
+    for (const id of sel) { const f = feats(doc.elems[id]); for (const v of [...f.verts, ...f.mids]) { const d = toScreen(v).distanceTo(at); if (d < bd) { bd = d; grab = v; } } }
+    if (!grab) return;
+    drag = { t: 'vsnap', orig: origOf(), grab, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -grab[2]) };
+    snapGrab = grab;
+    drawOverlay(); syncProps(); updateStatus();
+    return;
+  }
   let h = pick(e);
   // 按住 Ctrl / Alt / V 时只操作已经选中的东西：鼠标下面就算是别的路面也不会选到它
   if ((e.ctrlKey || e.altKey || vHeld) && sel.size) {
@@ -654,6 +687,14 @@ el.addEventListener('pointerdown', (e) => {
   if (!h) { drag = { t: 'marquee', sx: e.clientX, sy: e.clientY, add: e.shiftKey }; return; }
   const group = expandGroups(doc, [h.id]);
   const hb = doc.elems[h.id];
+  if (e.altKey && e.shiftKey && hb.kind === 'rail' && hb.pieces.length === 1 && hb.pieces[0].angle === 0) {
+    snapshot();
+    sel = new Set([h.id]);
+    const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
+    drag = { t: 'railTilt', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
+    drawOverlay(); syncProps(); updateStatus();
+    return;
+  }
   if (e.altKey && e.shiftKey && hb.kind === 'box') {
     // Alt+Shift：拖路面的一头上下，拉成坡（只动靠近鼠标的那一端）
     snapshot();
@@ -685,7 +726,7 @@ el.addEventListener('pointerdown', (e) => {
   } else if (e.altKey) {
     const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
     drag = { t: 'lift', orig: origOf(), b: boundsOf(doc, sel), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
-  } else if (e.ctrlKey && elem.kind === 'rail') {
+  } else if (e.ctrlKey && elem.kind === 'rail' && elem.pieces.length === 1 && elem.pieces[0].angle === 0) {
     sel = new Set([h.id]);
     drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
   } else if (e.ctrlKey && elem.kind === 'box') {
@@ -763,6 +804,7 @@ window.addEventListener('pointermove', (e) => {
   if (drag.t === 'size') { resizeTo(drag, p); return; }
   if (drag.t === 'tilt') { tiltTo(drag, p); return; }
   if (drag.t === 'railLen') { railLenTo(drag, p); return; }
+  if (drag.t === 'railTilt') { railTiltTo(drag, p); return; }
   const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
@@ -814,9 +856,11 @@ function resizeTo(d: Extract<Drag, { t: 'size' }>, p: THREE.Vector3) {
     // 测量线：沿改尺寸的方向，放在顶面中线上；数字是松手后的长度
     const f = footprint(b);
     const mid = ax === 0 ? (f.y0 + f.y1) / 2 : (f.x0 + f.x1) / 2;
-    const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, boxTopAt(b, x, y) + 0.08]; };
+    // 坡面路：测量线画在较高那一头高度的水平虚拟面上（量的是 box 的长度，不是坡面的长度）
+    const flatZ = b.slope ? Math.max(b.z, b.z + b.slope.dz) + 0.08 : null;
+    const P = (t: number): P3 => { const x = ax === 0 ? t : mid, y = ax === 0 ? mid : t; return [x, y, flatZ ?? boxTopAt(b, x, y) + 0.08]; };
     const [t0, t1] = ax === 0 ? [f.x0, f.x1] : [f.y0, f.y1];
-    measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(finalLen), on5: snap !== null };
+    measure = { a: P(t0), b: P(t1), tick: ax === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: fmt(finalLen), on5: snap !== null, plane: flatZ !== null ? { ...f, z0: flatZ, z1: flatZ } : undefined };
   }, [start], { preview: (v) => { const b: Box = JSON.parse(d.orig.get(d.id)!); setEdge(b, v[0]); return [b]; } });
   const w = ax === 0 ? o.sy : o.sx;
   dragInfo = `尺寸 ${ax === 0 ? `${fmt(finalLen)} × ${fmt(w)}` : `${fmt(w)} × ${fmt(finalLen)}`}`;
@@ -885,6 +929,36 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
     measure = { a: [x, y, other], b: [x, y, cur], tick: d.axis === 0 ? [0, 0.6, 0] : [0.6, 0, 0], text: `高差 ${fmt(final - other)}${label}`, on5: snap !== null };
   }, [start], { preview: (v) => { const b: Box = JSON.parse(d.orig.get(d.id)!); setEnd(b, v[0]); return [b]; } });
   dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(final - other))}`;
+}
+
+/** Shift+Alt 拖直轨：抬高 / 压低终点那一头。吸附：高差为 5 的倍数、放平、别的路面 / 钢轨在这一头的高度 */
+function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
+  const o = JSON.parse(d.orig.get(d.id)!) as RailElem;
+  const pc = o.pieces[0];
+  const end = advance({ x: o.x, y: o.y, z: o.z, heading: o.heading }, pc);
+  const start = o.z + pc.dz;
+  let raw = start + (p.z - d.start.z);
+  if (gridOn) raw = Math.round(raw);
+  raw = Math.round(raw * 1000) / 1000;
+  const thr = worldPerPx(p) * SIZE5_PX;
+  const cands: number[] = [o.z];
+  const k5 = Math.round((raw - o.z) / 5);
+  if (k5 !== 0) cands.push(o.z + k5 * 5);
+  for (const x of Object.values(doc.elems)) {
+    if (x.id === o.id) continue;
+    if (x.kind === 'box') { const f = footprint(x); if (end.x > f.x0 - 0.5 && end.x < f.x1 + 0.5 && end.y > f.y0 - 0.5 && end.y < f.y1 + 0.5) cands.push(boxTopAt(x, Math.min(Math.max(end.x, f.x0), f.x1), Math.min(Math.max(end.y, f.y0), f.y1))); }
+    if (x.kind === 'rail') for (const v of feats(x).verts) if (Math.hypot(v[0] - end.x, v[1] - end.y) < 0.5) cands.push(v[2]);
+  }
+  const best = cands.filter((v) => Math.abs(v - raw) < thr).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw))[0];
+  const snap = best ?? null;
+  const final = snap ?? raw;
+  drive([raw], snap === null ? null : [snap], (v) => {
+    restore(d.orig);
+    const r = doc.elems[d.id] as RailElem;
+    r.pieces[0].dz = Math.round((v[0] - r.z) * 1000) / 1000;
+    measure = { a: [end.x, end.y, o.z], b: [end.x, end.y, v[0]], tick: [0.6, 0.6, 0], text: `高差 ${fmt(final - o.z)}`, on5: snap !== null };
+  }, [start]);
+  dragInfo = `直轨：长 ${fmt(pc.len)} · 高差 ${fmt(final - o.z)}`;
 }
 
 /** Ctrl 拖钢轨：沿钢轨末端方向拉长 / 缩短最后一段直线（最后一段是弯道时接一段新的直线）；长度靠近 5 的倍数时磁吸 */
@@ -960,12 +1034,12 @@ function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEv
   drag = null;
   const [x0, x1] = [Math.min(d.sx, e.clientX), Math.max(d.sx, e.clientX)], [y0, y1] = [Math.min(d.sy, e.clientY), Math.max(d.sy, e.clientY)];
   if (x1 - x0 < 4 && y1 - y0 < 4) { if (!d.add) sel.clear(); drawOverlay(); syncProps(); updateStatus(); return; }
-  // 框住元素顶面的中心就算选中
+  // 框住元素顶面的中心、或者它的任何一个顶点就算选中
   const hit: number[] = [];
+  const inRect = (s: THREE.Vector2) => s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1;
   for (const it of Object.values(doc.elems)) {
     const b = elemBounds(it);
-    const s = toScreen([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1]);
-    if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) hit.push(it.id);
+    if (inRect(toScreen([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1])) || feats(it).verts.some((v) => inRect(toScreen(v)))) hit.push(it.id);
   }
   const got = expandGroups(doc, hit);
   sel = d.add ? new Set([...sel, ...got]) : got;
@@ -979,6 +1053,8 @@ function newElems(type: string): Elem[] {
   if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
   if (type.startsWith('obj:')) return [{ id, kind: 'obj', type: type.slice(4), x: 0, y: 0, z: 0, rot: 0 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
+  if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
+  if (type === 'rail-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: SPIRAL_RADIUS, angle: 360, dz: SPIRAL_SCREW }] }];
   return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
 }
 
@@ -1265,20 +1341,20 @@ function syncProps() {
     if (one.slope) h += num('dz', '高差', one.slope.dz);
     h += `<div class="row">开口：${['+X', '+Y', '-X', '-Y'].map((n, i) => `<label><input type="checkbox" data-open="${i}"${(one.open ?? 0) & (1 << i) ? ' checked' : ''}>${n}</label>`).join('')}</div>`;
   } else if (one.kind === 'rail') {
-    h += `<div class="title">钢轨</div>`;
+    const pc = one.pieces[0];
+    const shape = pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
+    h += `<div class="title">${shape}</div>`;
     h += num('x', '起点 x', one.x) + num('y', '起点 y', one.y) + num('z', '起点高', one.z);
     h += `<label>朝向</label><select data-k="heading">${[0, 90, 180, 270].map((a) => `<option value="${a}"${a === ((one.heading % 360) + 360) % 360 ? ' selected' : ''}>${['+X', '+Y', '-X', '-Y'][a / 90]}</option>`).join('')}</select>`;
-    one.pieces.forEach((pc, i) => {
-      const type = pc.angle === 0 ? 'straight' : pc.angle > 0 ? 'left' : 'right';
-      h += `<div class="row" style="border-top:1px solid var(--line);padding-top:4px">第 ${i + 1} 段
-        <select data-rp="${i}" data-f="type">${[['straight', '直线'], ['left', '左转'], ['right', '右转']].map(([v, n]) => `<option value="${v}"${v === type ? ' selected' : ''}>${n}</option>`).join('')}</select>
-        <select data-rp="${i}" data-f="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>
-        <button data-rpdel="${i}" title="删除这一段">✕</button></div>`;
-      if (pc.angle === 0) h += `<label>长度</label><input data-rp="${i}" data-f="len" type="number" step="0.5" value="${+pc.len.toFixed(3)}">`;
-      else h += `<label>半径</label><input data-rp="${i}" data-f="radius" type="number" step="0.5" value="${+pc.radius.toFixed(3)}"><label>角度</label><input data-rp="${i}" data-f="angle" type="number" step="90" value="${Math.abs(pc.angle)}">`;
-      h += `<label>高差</label><input data-rp="${i}" data-f="dz" type="number" step="0.5" value="${+pc.dz.toFixed(3)}">`;
-    });
-    h += `<div class="row"><button data-rpadd="straight">+ 直线</button><button data-rpadd="left">+ 左转</button><button data-rpadd="right">+ 右转</button><button data-rpadd="spiral">+ 螺旋</button></div>`;
+    h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    const rnum = (f: string, label: string, v: number, step = 0.5) => `<label>${label}</label><input data-rf="${f}" type="number" step="${step}" value="${+v.toFixed(3)}">`;
+    if (pc.angle === 0) h += rnum('len', '长度', pc.len) + rnum('dz', '高差', pc.dz);
+    else {
+      h += `<label>方向</label><select data-rf="dir"><option value="1"${pc.angle > 0 ? ' selected' : ''}>左转</option><option value="-1"${pc.angle < 0 ? ' selected' : ''}>右转</option></select>`;
+      h += rnum('radius', '半径', pc.radius);
+      if (Math.abs(pc.angle) >= 360) h += rnum('turns', '圈数', Math.abs(pc.angle) / 360, 0.25) + rnum('screw', '每圈升高', pc.dz / (Math.abs(pc.angle) / 360));
+      else h += rnum('angle', '角度', Math.abs(pc.angle), 15) + rnum('dz', '高差', pc.dz);
+    }
   } else if (one.kind === 'piece' && isCheckpoint(one)) {
     const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
     h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
@@ -1317,19 +1393,17 @@ props.addEventListener('change', (ev) => {
   if ((e.kind === 'obj' || e.kind === 'piece') && k === 'rot') e.rot = +t.value as Dir;
   if (e.kind === 'rail') {
     if (k === 'heading') e.heading = +t.value;
-    const i = t.dataset.rp !== undefined ? +t.dataset.rp : -1;
-    const pc = e.pieces[i];
-    if (pc) {
-      const f = t.dataset.f;
-      if (f === 'type') {
-        if (t.value === 'straight') Object.assign(pc, { angle: 0, radius: 0, len: pc.len || 10 });
-        else Object.assign(pc, { len: 0, radius: pc.radius || 5, angle: (t.value === 'left' ? 1 : -1) * (Math.abs(pc.angle) || 90) });
-      } else if (f === 'kind') pc.kind = t.value as RailPiece['kind'];
-      else if (f === 'len') pc.len = Math.max(0.1, +t.value);
-      else if (f === 'radius') pc.radius = Math.max(0.5, +t.value);
-      else if (f === 'angle') pc.angle = Math.sign(pc.angle || 1) * Math.max(1, Math.abs(+t.value));
-      else if (f === 'dz') pc.dz = +t.value;
-    }
+    const pc = e.pieces[0];
+    const f = t.dataset.rf, v = +t.value;
+    const turns = Math.abs(pc.angle) / 360;
+    if (f === 'kind') pc.kind = t.value as RailPiece['kind'];
+    else if (f === 'len') pc.len = Math.max(0.1, v);
+    else if (f === 'dz') pc.dz = v;
+    else if (f === 'radius') pc.radius = Math.max(0.5, v);
+    else if (f === 'dir') pc.angle = Math.abs(pc.angle) * (v > 0 ? 1 : -1);
+    else if (f === 'angle') pc.angle = Math.sign(pc.angle) * Math.min(359, Math.max(1, v));
+    else if (f === 'turns') { const n = Math.max(1, v); pc.dz = (pc.dz / turns) * n; pc.angle = Math.sign(pc.angle) * 360 * n; }
+    else if (f === 'screw') pc.dz = v * turns;
   }
   props.dataset.id = '';
   rebuild();
