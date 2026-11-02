@@ -429,7 +429,6 @@ function drawOverlay() {
   }
   measureLabel.style.display = 'none';
   if (measure) {
-    if (measure.plane) overlay.add(guidePlane({ axis: 2, value: measure.plane.z1, b: measure.plane }));
     const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
     const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
     const side = new THREE.Vector3(...measure.tick);
@@ -449,41 +448,33 @@ function drawOverlay() {
   }
 }
 
-/** 斜线填充的贴图（对齐辅助面用） */
-const HATCH = (() => {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d')!;
-  g.strokeStyle = '#ffffff';
-  g.lineWidth = 6;
-  g.beginPath();
-  for (const o of [-64, 0, 64]) { g.moveTo(o, 64); g.lineTo(o + 64, 0); }
-  g.stroke();
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  return t;
-})();
-
-/** 对齐辅助面：在对齐的那个坐标上画一块斜线填充的面，范围盖住对齐的两个元素 */
+/** 对齐辅助面：在对齐的那个坐标上画一块半透明的面，边缘渐变淡出，像一堵虚拟的墙 */
 function guidePlane(gd: { axis: 0 | 1 | 2; value: number; b: Bounds }): THREE.Object3D {
-  const { b } = gd, pad = 1.2; // 比正在操作的物体稍大一圈，不画边框，像一堵虚拟的墙
-  // 面上的两个方向（u、v）对应的世界坐标分量
+  // 半透明纯色：和正在操作的物体一样大的部分不透明度一致，再往外 FADE 个单位渐变到全透明（没有边框）
+  const { b } = gd, FADE = 0.5, ALPHA = 0.22;
   const [ua, va] = gd.axis === 0 ? [1, 2] : gd.axis === 1 ? [0, 2] : [0, 1];
-  const lo = [b.x0 - pad, b.y0 - pad, b.z0 - pad], hi = [b.x1 + pad, b.y1 + pad, b.z1 + pad];
-  const P = (u: number, v: number) => { const p = [0, 0, 0]; p[gd.axis] = gd.value; p[ua] = u; p[va] = v; return new THREE.Vector3(...p); };
-  const c = [P(lo[ua], lo[va]), P(hi[ua], lo[va]), P(hi[ua], hi[va]), P(lo[ua], hi[va])];
-  const S = 1.6; // 每 1.6 个单位一条斜线
-  const uv = [[lo[ua], lo[va]], [hi[ua], lo[va]], [hi[ua], hi[va]], [lo[ua], hi[va]]].map(([u, v]) => [u / S, v / S]);
-  const geo = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]]);
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 2, 0, 2, 3].flatMap((i) => uv[i]), 2));
-  const g = new THREE.Group();
-  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: AXIS_COLOR[gd.axis], map: HATCH, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
-  const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(c), new THREE.LineDashedMaterial({ color: AXIS_COLOR[gd.axis], dashSize: 0.6, gapSize: 0.4, transparent: true, opacity: 0.9, depthTest: false }));
-  edge.computeLineDistances();
+  const lo = [b.x0, b.y0, b.z0], hi = [b.x1, b.y1, b.z1];
+  const P = (u: number, v: number): number[] => { const p = [0, 0, 0]; p[gd.axis] = gd.value; p[ua] = u; p[va] = v; return p; };
+  const u0 = lo[ua], u1 = hi[ua], v0 = lo[va], v1 = hi[va];
+  const inner = [P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)];
+  const outer = [P(u0 - FADE, v0 - FADE), P(u1 + FADE, v0 - FADE), P(u1 + FADE, v1 + FADE), P(u0 - FADE, v1 + FADE)];
+  const col = new THREE.Color(AXIS_COLOR[gd.axis]);
+  const pos: number[] = [], rgba: number[] = [];
+  const v = (p: number[], a: number) => { pos.push(...p); rgba.push(col.r, col.g, col.b, a); };
+  // 中间：两个三角形
+  for (const k of [0, 1, 2, 0, 2, 3]) v(inner[k], ALPHA);
+  // 四条渐变边：内圈不透明、外圈透明
+  for (let k = 0; k < 4; k++) {
+    const n = (k + 1) % 4;
+    v(inner[k], ALPHA); v(outer[k], 0); v(outer[n], 0);
+    v(inner[k], ALPHA); v(outer[n], 0); v(inner[n], ALPHA);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(rgba, 4));
+  const face = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
   face.renderOrder = 4;
-  void edge;
-  g.add(face);
-  return g;
+  return face;
 }
 
 // ---------------- 拾取与投影 ----------------
