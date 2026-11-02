@@ -14,7 +14,7 @@ import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
 import { exportBoxNmo } from './export';
-import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen } from './types';
+import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
 
 const host = document.getElementById('view')!;
 const statusEl = document.getElementById('status')!;
@@ -321,9 +321,9 @@ function hullOf(e: Elem, color: number, opacity: number): THREE.Object3D | null 
 }
 
 /** 对准方块：虚线框，顶面就是路面、往下 5 */
-function anchorBoxes(o: Obj): THREE.Object3D {
+function anchorBoxes(o: Elem): THREE.Object3D {
   const segs: THREE.Vector3[] = [];
-  for (const r of anchorRects(o)) {
+  for (const r of virtualCells(o)) {
     const z0 = r.top - 5, z1 = r.top + 0.03;
     const c = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
     for (let i = 0; i < 4; i++) {
@@ -371,7 +371,7 @@ function drawOverlay() {
   // 机关的对准方块（辅助方块）：悬停、选中的机关都画出来
   for (const id of new Set([...hoverGroup, ...sel])) {
     const e = doc.elems[id];
-    if (e?.kind === 'obj') (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
+    if (e && virtualCells(e).length) (sel.has(id) ? selLayer : overlay).add(anchorBoxes(e));
   }
   // 按住 V：显示鼠标下元素的顶点和边中点
   if (vHeld && hoverId !== null && doc.elems[hoverId] && !drag) {
@@ -556,7 +556,7 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean }
+  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean; rotOff: number }
   | { t: 'click'; id: number; sx: number; sy: number; orig: Map<number, string>; b: Bounds; start: THREE.Vector3 };
 let drag: Drag | null = null;
 
@@ -589,8 +589,8 @@ el.addEventListener('pointerdown', (e) => {
   if (drag?.t === 'move' && drag.grab) { finishDrag(); return; } // 复制后跟着鼠标走：点击放下
   if (splitMode) { doSplit(e); return; }
   let h = pick(e);
-  // 按住 Ctrl / Alt 时只操作已经选中的东西：鼠标下面就算是别的路面也不会选到它
-  if ((e.ctrlKey || e.altKey) && sel.size) {
+  // 按住 Ctrl / Alt / V 时只操作已经选中的东西：鼠标下面就算是别的路面也不会选到它
+  if ((e.ctrlKey || e.altKey || vHeld) && sel.size) {
     const others = new Set(Object.keys(doc.elems).map(Number).filter((id) => !sel.has(id)));
     const hs = pick(e, others);
     if (hs) h = hs;
@@ -914,7 +914,7 @@ function handleOf(e: Elem): P3 {
 
 function startPlace(type: string) {
   if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
-  drag = { t: 'place', ids: null, type, moved: false };
+  drag = { t: 'place', ids: null, type, moved: false, rotOff: 0 };
 }
 function placeMove(e: PointerEvent) {
   if (drag?.t !== 'place') return;
@@ -936,6 +936,15 @@ function placeMove(e: PointerEvent) {
   // 鼠标下的路面顶面（或地面）
   const h = pick(e, ids);
   const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  // 机关按鼠标下那条路的方向摆（沿路）；栅栏横跨路面；拖动中按 R 再转 90°
+  const under = h ? doc.elems[h.id] : null;
+  for (const [id, js] of orig) {
+    const o = JSON.parse(js) as Elem;
+    if (o.kind !== 'obj') continue;
+    const axis = under?.kind === 'box' ? (under.slope ? under.slope.axis : under.sx >= under.sy ? 0 : 1) : 0;
+    o.rot = ((axis + (o.type === 'P_Modul_01' ? 1 : 0) + drag.rotOff) % 4) as Dir;
+    orig.set(id, JSON.stringify(o));
+  }
   restore(orig);
   const hd = handleOf(doc.elems[drag.ids[0]]);
   let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
@@ -1131,7 +1140,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'g') toggleGrid();
   if (k === 's') toggleAlign();
   if (k === 'k') (splitMode ? exitSplit() : enterSplit());
-  if (k === 'r') doRotate();
+  if (k === 'r') { if (drag?.t === 'place') { drag.rotOff++; placeMove(lastMouse as PointerEvent); } else doRotate(); }
   if (k === 'delete' || k === 'backspace' || k === 'x') doDelete();
   if (k === 'f') frameAll();
   const step = e.shiftKey ? 0.1 : 1;

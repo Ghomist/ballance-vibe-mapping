@@ -137,6 +137,21 @@ export function footprint(e: Elem): Rect {
   return { x0: e.x - hx, y0: e.y - hy, x1: e.x + hx, y1: e.y + hy };
 }
 
+/**
+ * 虚拟路面（虚线方块）：机关的对准方块、盘点路口的那一格（5×5，顶面就是路面，往下 5）。
+ * 悬停 / 选中时画出来，按住 V 时也能吸到它们的顶点，方便把路接上去。
+ */
+export function virtualCells(e: Elem): (Rect & { top: number })[] {
+  if (e.kind === 'obj') return anchorRects(e);
+  if (e.kind !== 'piece' || (e.type !== 'start' && e.type !== 'check')) return [];
+  const port = PREFAB_PORT[e.type];
+  const cell = (d: Dir) => {
+    const cx = e.x + DX[d] * (port - 2.5), cy = e.y + DY[d] * (port - 2.5);
+    return { x0: cx - 2.5, y0: cy - 2.5, x1: cx + 2.5, y1: cy + 2.5, top: e.z };
+  };
+  return e.type === 'start' ? [cell(e.rot)] : [cell(e.rot), cell(opp(e.rot))];
+}
+
 export const isCheckpoint = (e: Elem): boolean => e.kind === 'piece' && (e.type === 'start' || e.type === 'check');
 
 /** box 在 (x, y) 处的顶面高度（未下沉） */

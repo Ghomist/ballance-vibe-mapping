@@ -1,5 +1,5 @@
 // 吸附用的几何特征：顶点、边的中点、边
-import { Elem, anchorRects, boxTopAt, footprint } from './types';
+import { Elem, anchorRects, boxTopAt, footprint, virtualCells } from './types';
 
 export type P3 = [number, number, number];
 export interface Feats { verts: P3[]; mids: P3[]; edges: [P3, P3][] }
@@ -23,7 +23,13 @@ export function feats(e: Elem): Feats {
   }
   if (e.kind === 'piece') {
     const f = footprint(e);
-    return boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
+    const out = boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
+    // 盘点：路口那一格的虚拟路面
+    for (const r of virtualCells(e)) {
+      const v = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, 5);
+      out.verts.push(...v.verts); out.mids.push(...v.mids); out.edges.push(...v.edges);
+    }
+    return out;
   }
   // 机关：对准方块（代表它所在的那一格路面，5×5×5，顶面就是路面）的顶点、边中点、边，再加顶面中心
   const out: Feats = { verts: [], mids: [], edges: [] };
