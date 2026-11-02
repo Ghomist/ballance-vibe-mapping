@@ -2,6 +2,7 @@
 // 连接、花纹、遮挡、机关的专属路块都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
 import { objType } from '../model/objects';
 import { PREFAB_PORT } from '../model/types';
+import { type RailPiece, sampleRail } from '../model/rail';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -82,7 +83,17 @@ export interface Obj extends ElemBase {
   noBase?: boolean;
 }
 
-export type Elem = Box | Piece | Obj;
+/** 钢轨：从起点 (x, y, z) 朝 heading（度）出发，由若干段（直线 / 圆弧 / 螺旋）首尾相接；z 是双轨最顶端的高度 */
+export interface RailElem extends ElemBase {
+  kind: 'rail';
+  x: number;
+  y: number;
+  z: number;
+  heading: number;
+  pieces: RailPiece[];
+}
+
+export type Elem = Box | Piece | Obj | RailElem;
 
 export interface Doc {
   elems: Record<number, Elem>;
@@ -113,6 +124,11 @@ export function anchorRects(o: Obj): (Rect & { top: number })[] {
 
 /** 元素在平面上的范围 */
 export function footprint(e: Elem): Rect {
+  if (e.kind === 'rail') {
+    const ps = sampleRail(e);
+    const pad = 2.25; // 双轨半宽 + 轨道半径
+    return { x0: Math.min(...ps.map((p) => p.x)) - pad, y0: Math.min(...ps.map((p) => p.y)) - pad, x1: Math.max(...ps.map((p) => p.x)) + pad, y1: Math.max(...ps.map((p) => p.y)) + pad };
+  }
   if (e.kind === 'box') return { x0: e.x, y0: e.y, x1: e.x + e.sx, y1: e.y + e.sy };
   if (e.kind === 'obj') {
     const rs = anchorRects(e);

@@ -1,5 +1,6 @@
 // 吸附用的几何特征：顶点、边的中点、边
 import { Elem, anchorRects, boxTopAt, footprint, virtualCells } from './types';
+import { advance, type RailState } from '../model/rail';
 
 export type P3 = [number, number, number];
 export interface Feats { verts: P3[]; mids: P3[]; edges: [P3, P3][] }
@@ -28,6 +29,19 @@ export function feats(e: Elem): Feats {
     for (const r of virtualCells(e)) {
       const v = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, 5);
       out.verts.push(...v.verts); out.mids.push(...v.mids); out.edges.push(...v.edges);
+    }
+    return out;
+  }
+  if (e.kind === 'rail') {
+    // 钢轨：起点、终点和段与段的接头（路径中心、双轨最顶端），以及两头左右两根轨的顶端
+    const out: Feats = { verts: [], mids: [], edges: [] };
+    let st: RailState = { x: e.x, y: e.y, z: e.z, heading: e.heading };
+    const ends: RailState[] = [st];
+    for (const p of e.pieces) { st = advance(st, p); ends.push(st); }
+    for (const s of ends) out.verts.push([s.x, s.y, s.z]);
+    for (const s of [ends[0], ends[ends.length - 1]]) {
+      const h = (s.heading * Math.PI) / 180, lx = -Math.sin(h) * 1.875, ly = Math.cos(h) * 1.875;
+      out.mids.push([s.x + lx, s.y + ly, s.z], [s.x - lx, s.y - ly, s.z]);
     }
     return out;
   }

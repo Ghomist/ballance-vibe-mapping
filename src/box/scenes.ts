@@ -1,5 +1,6 @@
 // 原型的演示 / 测试场景：每个场景把一类功能的各种拼法摆在一起（错位、非整数宽度、坡、重叠、转换、机关…）
 import { objType } from '../model/objects';
+import type { RailPiece } from '../model/rail';
 import { Box, Dir, Doc, Piece, PieceType, Style, emptyDoc } from './types';
 
 class B {
@@ -19,6 +20,12 @@ class B {
     const c = [1, 0, -1, 0][rot], s = [0, 1, 0, -1][rot];
     const id = this.doc.nextId++;
     this.doc.elems[id] = { id, kind: 'obj', type, x: ax + this.ox - (a[0] * c - a[1] * s), y: ay + this.oy - (a[0] * s + a[1] * c), z: top - a[2], rot };
+    return id;
+  }
+  /** 钢轨：起点、朝向（度）和各段；z 是双轨最顶端（接路面时等于路面顶面） */
+  rail(x: number, y: number, z: number, heading: number, pieces: RailPiece[]) {
+    const id = this.doc.nextId++;
+    this.doc.elems[id] = { id, kind: 'rail', x: x + this.ox, y: y + this.oy, z, heading, pieces };
     return id;
   }
   piece(type: PieceType, x: number, y: number, rot: Dir, z = 0) {
@@ -150,6 +157,22 @@ export const SCENES: { name: string; build: () => Doc }[] = [
       b.piece('check', START_PORT + 15 + CHECK_PORT, 2.5, 0); b.box(START_PORT + 15 + 2 * CHECK_PORT, 0, 15, 5);
       b.box(72.5, 0, 5, 10); b.piece('check', 75, 10 + CHECK_PORT, 1);
       b.piece('check', 100, 2.5, 0);
+      return b.doc;
+    },
+  },
+  {
+    name: '钢轨',
+    build: () => {
+      const b = new B();
+      const st = (len: number, dz = 0, kind: RailPiece['kind'] = 'double'): RailPiece => ({ kind, len, radius: 0, angle: 0, dz });
+      const arc = (angle: number, radius = 5, dz = 0, kind: RailPiece['kind'] = 'double'): RailPiece => ({ kind, len: 0, radius, angle, dz });
+      // 路 → 钢轨：直线、左转、上坡、右转 → 接回高处的路
+      b.box(0, 0, 15, 5); b.rail(15, 2.5, 0, 0, [st(10), arc(90), st(10, 5), arc(-90), st(5)]);
+      b.box(40, 20, 15, 5, { z: 5 });
+      // 螺旋（1.5 圈）
+      b.box(0, 40, 10, 5); b.rail(10, 42.5, 0, 0, [st(5), arc(540, 5, 7.5), st(10)]); b.box(-10, 50, 15, 5, { z: 7.5 });
+      // 双轨 → 单双转换 → 单轨
+      b.box(70, 0, 10, 5); b.rail(80, 2.5, 0, 0, [st(10), st(5, 0, 'transition'), st(15, 0, 'mono')]);
       return b.doc;
     },
   },

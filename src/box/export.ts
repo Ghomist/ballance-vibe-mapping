@@ -6,6 +6,7 @@ import { loadNmoLib } from '../export/nmo-lib';
 import { objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { solve } from './solve';
+import { buildRail } from '../geom/rail';
 import { Doc, Obj, Piece, anchorRects } from './types';
 
 const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
@@ -33,6 +34,14 @@ export function exportBoxScene(doc: Doc): SceneDesc {
       parts.push({ mat, pos: part.pos.map(r5), uv: part.uv.map(r5) });
     }
     if (parts.length) meshes.push({ name: `A_Floor_BVM_${String(++fi).padStart(2, '0')}`, kind: 'floor', parts });
+  }
+
+  // ---- 钢轨：一条一个物体 ----
+  let ri = 0;
+  for (const r of elems) {
+    if (r.kind !== 'rail') continue;
+    const rm = buildRail(r);
+    if (rm.pos.length) meshes.push({ name: `A_Rail_BVM_${String(++ri).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: rm.pos.map(r5) }] });
   }
 
   // ---- 挡块：合成一个物体 ----

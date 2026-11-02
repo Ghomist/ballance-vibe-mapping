@@ -8,13 +8,15 @@ import type { MatName } from '../geom/floor';
 import { FAKE_EXTRA, FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
-import { floorTexturesReady, getMaterial } from '../view/materials';
+import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
+import { buildRail } from '../geom/rail';
+import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, splitBox, translateElem, ungroupElems } from './ops';
 import { SCENES } from './scenes';
 import { type P3, feats } from './snap';
 import { solve } from './solve';
 import { exportBoxNmo } from './export';
-import { Box, Dir, Doc, Elem, Obj, PieceType, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
+import { Box, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, anchorRects, baseSpec, boxTopAt, footprint, isCheckpoint, pieceLen, virtualCells } from './types';
 
 const host = document.getElementById('view')!;
 const statusEl = document.getElementById('status')!;
@@ -195,6 +197,23 @@ function rebuildInner() {
     addGroup(e.id, g);
     if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
   }
+  // 钢轨
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'rail') continue;
+    const rm = buildRail(e);
+    if (!rm.pos.length) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(rm.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(rm.nrm, 3));
+    const mesh = new THREE.Mesh(geo, getRailMaterial());
+    mesh.userData.id = e.id;
+    mesh.userData.own = true;
+    const g = new THREE.Group();
+    g.add(mesh);
+    pickables.push(mesh);
+    addGroup(e.id, g);
+    objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
+  }
   if (!drag) save();
   drawOverlay();
   updateStatus();
@@ -296,7 +315,7 @@ const ALIGN_PX = 5;
 
 /** 元素外形的 8 个角：顶面 4 个（x0y0、x1y0、x1y1、x0y1），再是底面 4 个；机关按模型的包围盒 */
 function cornersOf(e: Elem): P3[] {
-  const ob = e.kind === 'obj' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
+  const ob = e.kind === 'obj' || e.kind === 'rail' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
   if (ob) {
     const a = ob.min, b = ob.max;
     return [[a.x, a.y, b.z], [b.x, a.y, b.z], [b.x, b.y, b.z], [a.x, b.y, b.z], [a.x, a.y, a.z], [b.x, a.y, a.z], [b.x, b.y, a.z], [a.x, b.y, a.z]];
@@ -558,6 +577,24 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
   return out;
 }
 
+/** 选中整体（顶面 b.z1 + dz）靠近的平面：和选中东西在平面上有重叠的路面的顶面、凹槽的槽底。返回吸附后的 dz */
+function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
+  const z = b.z1 + dz, thr = worldPerPx(near) * SIZE5_PX;
+  let best: { v: number; d: number } | null = null;
+  for (const e of Object.values(doc.elems)) {
+    if (sel.has(e.id) || e.kind !== 'box' || e.slope) continue;
+    const f = footprint(e);
+    if (Math.min(f.x1, b.x1) - Math.max(f.x0, b.x0) <= 0 || Math.min(f.y1, b.y1) - Math.max(f.y0, b.y0) <= 0) continue;
+    for (const v of e.style === 'normal' ? [e.z] : [e.z, e.z - SINK_DEPTH]) {
+      const dd = Math.abs(v - z);
+      if (dd < thr && (!best || dd < best.d)) best = { v, d: dd };
+    }
+  }
+  if (!best) { guides = []; return null; }
+  guides = [{ axis: 2, value: best.v, b: shiftB(b, [0, 0, best.v - b.z1]) }];
+  return best.v - b.z1;
+}
+
 // ---------------- 拖动 ----------------
 
 type Drag =
@@ -565,6 +602,7 @@ type Drag =
   | { t: 'axis'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; sx: number; sy: number; axis: 0 | 1 | null }
   | { t: 'lift'; orig: Map<number, string>; b: Bounds; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
+  | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
@@ -647,6 +685,9 @@ el.addEventListener('pointerdown', (e) => {
   } else if (e.altKey) {
     const n = camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
     drag = { t: 'lift', orig: origOf(), b: boundsOf(doc, sel), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, h.p), start: h.p };
+  } else if (e.ctrlKey && elem.kind === 'rail') {
+    sel = new Set([h.id]);
+    drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
   } else if (e.ctrlKey && elem.kind === 'box') {
     sel = new Set([h.id]);
     const f = footprint(elem);
@@ -721,6 +762,7 @@ window.addEventListener('pointermove', (e) => {
   if (!p) return;
   if (drag.t === 'size') { resizeTo(drag, p); return; }
   if (drag.t === 'tilt') { tiltTo(drag, p); return; }
+  if (drag.t === 'railLen') { railLenTo(drag, p); return; }
   const raw = p.clone().sub(drag.start);
   if (drag.t === 'move') {
     let d: V3 = [raw.x, raw.y, 0];
@@ -729,7 +771,9 @@ window.addEventListener('pointermove', (e) => {
   } else if (drag.t === 'lift') {
     let d: V3 = [0, 0, raw.z];
     d = gridDelta(drag.b, d, [2]);
-    moveWithSnap(drag.orig, d, alignDelta(drag.b, d, [2], p));
+    // 吸附到平面（一直有）：底下 / 旁边路面的顶面，凹路、细边框凹路还有下沉 0.7 的槽底
+    const pz = planeSnap(drag.b, d[2], p);
+    moveWithSnap(drag.orig, d, pz !== null ? [0, 0, pz] : alignDelta(drag.b, d, [2], p));
   }
   liveUpdate();
 });
@@ -843,6 +887,29 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
   dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(final - other))}`;
 }
 
+/** Ctrl 拖钢轨：沿钢轨末端方向拉长 / 缩短最后一段直线（最后一段是弯道时接一段新的直线）；长度靠近 5 的倍数时磁吸 */
+function railLenTo(d: Extract<Drag, { t: 'railLen' }>, p: THREE.Vector3) {
+  const o = JSON.parse(d.orig.get(d.id)!) as RailElem;
+  let st: RailState = { x: o.x, y: o.y, z: o.z, heading: o.heading };
+  for (const pc of o.pieces) st = advance(st, pc);
+  const h = (st.heading * Math.PI) / 180;
+  const along = (p.x - d.start.x) * Math.cos(h) + (p.y - d.start.y) * Math.sin(h);
+  const last = o.pieces[o.pieces.length - 1];
+  const straight = !!last && last.angle === 0;
+  const base = straight ? last.len : 0;
+  let raw = Math.max(0.5, base + along);
+  if (gridOn) raw = Math.max(1, Math.round(raw));
+  raw = Math.round(raw * 1000) / 1000;
+  const L5 = Math.round(raw / 5) * 5;
+  const snap = L5 > 0 && Math.abs(raw - L5) < worldPerPx(p) * SIZE5_PX ? L5 : null;
+  const setLen = (r: RailElem, v: number) => {
+    if (straight) r.pieces[r.pieces.length - 1].len = v;
+    else r.pieces.push({ kind: last?.kind === 'mono' ? 'mono' : 'double', len: v, radius: 0, angle: 0, dz: 0 });
+  };
+  drive([raw], snap === null ? null : [snap], (v) => { restore(d.orig); setLen(doc.elems[d.id] as RailElem, Math.round(v[0] * 1000) / 1000); }, [base]);
+  dragInfo = `钢轨末段长 ${fmt(snap ?? raw)}`;
+}
+
 window.addEventListener('pointerup', (e) => {
   if (!drag || e.button !== 0) return;
   if (drag.t === 'move' && drag.grab) return; // 跟着鼠标走的复制，点击才放下
@@ -911,11 +978,13 @@ function newElems(type: string): Elem[] {
   const id = doc.nextId++;
   if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
   if (type.startsWith('obj:')) return [{ id, kind: 'obj', type: type.slice(4), x: 0, y: 0, z: 0, rot: 0 }];
+  if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
   return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
 }
 
 /** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
 function handleOf(e: Elem): P3 {
+  if (e.kind === 'rail') return [e.x, e.y, e.z];
   if (isCheckpoint(e)) return [e.x, e.y, e.z];
   if (e.kind === 'obj') {
     const a = anchorRects(e)[0];
@@ -947,20 +1016,36 @@ function placeMove(e: PointerEvent) {
   const ids = new Set(drag.ids);
   const orig = drag.orig!;
   // 鼠标下的路面顶面（或地面）
-  const h = pick(e, ids);
+  // 鼠标下的路面：按每块平路面的顶面平面求交（不看网格，凹槽里被底座挖掉的洞也算在路面上）
+  let h = pick(e, ids);
+  setRay(e);
+  let top: { id: number; p: THREE.Vector3; d: number } | null = null;
+  for (const x of Object.values(doc.elems)) {
+    if (x.kind !== 'box' || x.slope || ids.has(x.id)) continue;
+    const q = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -x.z), new THREE.Vector3());
+    if (!q || q.x < x.x || q.x > x.x + x.sx || q.y < x.y || q.y > x.y + x.sy) continue;
+    const d = q.distanceTo(camera.position);
+    if (!top || d < top.d) top = { id: x.id, p: q, d };
+  }
+  if (top && (!h || top.d <= h.p.distanceTo(camera.position) + 0.01)) h = { id: top.id, p: top.p };
   const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
   // 机关按鼠标下那条路的方向摆（沿路）；栅栏横跨路面；拖动中按 R 再转 90°
   const under = h ? doc.elems[h.id] : null;
   for (const [id, js] of orig) {
     const o = JSON.parse(js) as Elem;
-    if (o.kind !== 'obj') continue;
+    if (o.kind !== 'obj' && o.kind !== 'rail') continue;
     const axis = under?.kind === 'box' ? (under.slope ? under.slope.axis : under.sx >= under.sy ? 0 : 1) : 0;
-    o.rot = ((axis + (o.type === 'P_Modul_01' ? 1 : 0) + drag.rotOff) % 4) as Dir;
+    if (o.kind === 'rail') o.heading = ((axis + drag.rotOff) % 4) * 90;
+    else o.rot = ((axis + (o.type === 'P_Modul_01' ? 1 : 0) + drag.rotOff) % 4) as Dir;
     orig.set(id, JSON.stringify(o));
   }
   restore(orig);
   const hd = handleOf(doc.elems[drag.ids[0]]);
-  let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
+  // 变球器 / 风扇拖到凹路、细边框凹路上：底座顶面直接放到下沉 0.7 的槽底，嵌进凹槽
+  const first = doc.elems[drag.ids[0]];
+  let pz = p.z;
+  if (first.kind === 'obj' && baseSpec(first.type)?.kind !== 'fence' && baseSpec(first.type) && under?.kind === 'box' && under.style !== 'normal' && !under.slope) pz = under.z - SINK_DEPTH;
+  let raw: V3 = [p.x - hd[0], p.y - hd[1], pz - hd[2]];
   if (gridOn) { const b = boundsOf(doc, ids); raw = [Math.round(b.x0 + raw[0]) - b.x0, Math.round(b.y0 + raw[1]) - b.y0, raw[2]]; }
   // 自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就吸过去（磁吸，松手对准）
   moveSel(orig, raw);
@@ -1179,6 +1264,21 @@ function syncProps() {
     h += `<label>倾斜</label><select data-k="axis"><option value="-1">不倾斜</option><option value="0"${one.slope?.axis === 0 ? ' selected' : ''}>沿 X</option><option value="1"${one.slope?.axis === 1 ? ' selected' : ''}>沿 Y</option></select>`;
     if (one.slope) h += num('dz', '高差', one.slope.dz);
     h += `<div class="row">开口：${['+X', '+Y', '-X', '-Y'].map((n, i) => `<label><input type="checkbox" data-open="${i}"${(one.open ?? 0) & (1 << i) ? ' checked' : ''}>${n}</label>`).join('')}</div>`;
+  } else if (one.kind === 'rail') {
+    h += `<div class="title">钢轨</div>`;
+    h += num('x', '起点 x', one.x) + num('y', '起点 y', one.y) + num('z', '起点高', one.z);
+    h += `<label>朝向</label><select data-k="heading">${[0, 90, 180, 270].map((a) => `<option value="${a}"${a === ((one.heading % 360) + 360) % 360 ? ' selected' : ''}>${['+X', '+Y', '-X', '-Y'][a / 90]}</option>`).join('')}</select>`;
+    one.pieces.forEach((pc, i) => {
+      const type = pc.angle === 0 ? 'straight' : pc.angle > 0 ? 'left' : 'right';
+      h += `<div class="row" style="border-top:1px solid var(--line);padding-top:4px">第 ${i + 1} 段
+        <select data-rp="${i}" data-f="type">${[['straight', '直线'], ['left', '左转'], ['right', '右转']].map(([v, n]) => `<option value="${v}"${v === type ? ' selected' : ''}>${n}</option>`).join('')}</select>
+        <select data-rp="${i}" data-f="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>
+        <button data-rpdel="${i}" title="删除这一段">✕</button></div>`;
+      if (pc.angle === 0) h += `<label>长度</label><input data-rp="${i}" data-f="len" type="number" step="0.5" value="${+pc.len.toFixed(3)}">`;
+      else h += `<label>半径</label><input data-rp="${i}" data-f="radius" type="number" step="0.5" value="${+pc.radius.toFixed(3)}"><label>角度</label><input data-rp="${i}" data-f="angle" type="number" step="90" value="${Math.abs(pc.angle)}">`;
+      h += `<label>高差</label><input data-rp="${i}" data-f="dz" type="number" step="0.5" value="${+pc.dz.toFixed(3)}">`;
+    });
+    h += `<div class="row"><button data-rpadd="straight">+ 直线</button><button data-rpadd="left">+ 左转</button><button data-rpadd="right">+ 右转</button><button data-rpadd="spiral">+ 螺旋</button></div>`;
   } else if (one.kind === 'piece' && isCheckpoint(one)) {
     const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
     h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
@@ -1215,6 +1315,40 @@ props.addEventListener('change', (ev) => {
     else if (k === 'sx' || k === 'sy' || k === 'depth') e[k] = Math.max(0.1, +t.value);
   }
   if ((e.kind === 'obj' || e.kind === 'piece') && k === 'rot') e.rot = +t.value as Dir;
+  if (e.kind === 'rail') {
+    if (k === 'heading') e.heading = +t.value;
+    const i = t.dataset.rp !== undefined ? +t.dataset.rp : -1;
+    const pc = e.pieces[i];
+    if (pc) {
+      const f = t.dataset.f;
+      if (f === 'type') {
+        if (t.value === 'straight') Object.assign(pc, { angle: 0, radius: 0, len: pc.len || 10 });
+        else Object.assign(pc, { len: 0, radius: pc.radius || 5, angle: (t.value === 'left' ? 1 : -1) * (Math.abs(pc.angle) || 90) });
+      } else if (f === 'kind') pc.kind = t.value as RailPiece['kind'];
+      else if (f === 'len') pc.len = Math.max(0.1, +t.value);
+      else if (f === 'radius') pc.radius = Math.max(0.5, +t.value);
+      else if (f === 'angle') pc.angle = Math.sign(pc.angle || 1) * Math.max(1, Math.abs(+t.value));
+      else if (f === 'dz') pc.dz = +t.value;
+    }
+  }
+  props.dataset.id = '';
+  rebuild();
+});
+
+// 钢轨的段：添加 / 删除（按钮）
+props.addEventListener('click', (ev) => {
+  const t = ev.target as HTMLElement;
+  const e = sel.size === 1 ? doc.elems[[...sel][0]] : null;
+  if (e?.kind !== 'rail' || (t.dataset.rpadd === undefined && t.dataset.rpdel === undefined)) return;
+  snapshot();
+  if (t.dataset.rpdel !== undefined) { if (e.pieces.length > 1) e.pieces.splice(+t.dataset.rpdel, 1); }
+  else {
+    const kind = e.pieces[e.pieces.length - 1]?.kind === 'mono' ? 'mono' : 'double';
+    const a = t.dataset.rpadd;
+    e.pieces.push(a === 'straight' ? { kind, len: 10, radius: 0, angle: 0, dz: 0 }
+      : a === 'spiral' ? { kind, len: 0, radius: SPIRAL_RADIUS, angle: 360, dz: SPIRAL_SCREW }
+        : { kind, len: 0, radius: 5, angle: a === 'left' ? 90 : -90, dz: 0 });
+  }
   props.dataset.id = '';
   rebuild();
 });

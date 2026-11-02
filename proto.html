@@ -27,6 +27,8 @@
     #props label { color: var(--dim); }
     #props .row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--dim); }
     #props .row label { display: flex; align-items: center; gap: 3px; }
+    #props .row select, #props .row button { width: auto; height: 24px; background: #1b2130; color: var(--fg); border: 1px solid var(--line); border-radius: 5px; font: inherit; cursor: pointer; }
+    #props { max-height: calc(100vh - 100px); overflow-y: auto; }
     #props .title { grid-column: 1 / -1; font-weight: 600; }
     #palette { position: fixed; top: 48px; width: 260px; max-height: 70vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; z-index: 4; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
     #palette[hidden] { display: none; }
@@ -46,6 +48,7 @@
     <button class="add" data-add="transition-narrow">窄转换</button>
     <button class="add" data-add="start" title="起点（四火），全图一个">起点</button>
     <button class="add" data-add="check" title="小节盘点（两火），按放置顺序编小节号">小节</button>
+    <button class="add" data-add="rail" title="钢轨：拖进视图放置（按鼠标下那条路的方向），Ctrl 拖动拉长末段，属性面板里加弯道 / 坡 / 螺旋">钢轨</button>
     <button id="mods" title="机关与装饰：拖进视图放置">机关 ▾</button>
     <div class="sep"></div>
     <button id="split" title="切分：点路面在鼠标处切成两段，Tab 换方向（K）">切分<kbd>K</kbd></button>

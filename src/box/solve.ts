@@ -136,7 +136,7 @@ let slopeOver = new Map<string, 'carve' | 'cover'>();
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
-  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj');
+  const docElems = Object.values(doc.elems).filter((e) => e.kind !== 'obj' && e.kind !== 'rail');
   slopeOver = slopeOverlaps(docElems);
   const auto = autoTransitions(docElems);
   inserted = auto.inserted;
