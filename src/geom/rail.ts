@@ -39,11 +39,15 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     const T = normalize([Math.cos(h), Math.sin(h), slope]);
     const U = normalize(cross(T, L)); // 截面内的“上”
     const c = [p.x + L[0] * lateral, p.y + L[1] * lateral, p.z + zOff];
+    // 首末两圈切成竖直截面（圆管和过端点的竖直面相交）：坡道、螺旋的端面是竖直的，和相接的轨道 / 路面严丝合缝
+    const end = i === 0 || i === pts.length - 1;
+    const stretch = Math.hypot(1, slope); // 竖直面上，截面的「上」方向被拉长 1/cosθ
     const v: number[][] = [], n: number[][] = [];
     for (let k = 0; k < 8; k++) {
       const th = rad(phase + k * 45);
       const d = [L[0] * Math.cos(th) + U[0] * Math.sin(th), L[1] * Math.cos(th) + U[1] * Math.sin(th), L[2] * Math.cos(th) + U[2] * Math.sin(th)];
-      v.push([c[0] + d[0] * RAIL_RADIUS, c[1] + d[1] * RAIL_RADIUS, c[2] + d[2] * RAIL_RADIUS]);
+      if (end) v.push([c[0] + L[0] * Math.cos(th) * RAIL_RADIUS, c[1] + L[1] * Math.cos(th) * RAIL_RADIUS, c[2] + Math.sin(th) * RAIL_RADIUS * stretch]);
+      else v.push([c[0] + d[0] * RAIL_RADIUS, c[1] + d[1] * RAIL_RADIUS, c[2] + d[2] * RAIL_RADIUS]);
       n.push(d);
     }
     rings.push({ c, v, n });
@@ -66,8 +70,10 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     }
   };
   const first = rings[0], last = rings[rings.length - 1];
-  const t0 = normalize(sub(rings[Math.min(1, rings.length - 1)].c, first.c));
-  const t1 = normalize(sub(last.c, rings[Math.max(rings.length - 2, 0)].c));
+  // 端面是竖直的：封盖朝水平方向
+  const flat = (a: number[]) => normalize([a[0], a[1], 0]);
+  const t0 = flat(sub(rings[Math.min(1, rings.length - 1)].c, first.c));
+  const t1 = flat(sub(last.c, rings[Math.max(rings.length - 2, 0)].c));
   cap(first, t0.map((x) => -x), true);
   cap(last, t1, false);
 }
