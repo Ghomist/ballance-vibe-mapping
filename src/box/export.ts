@@ -99,7 +99,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
     const owner = doc.elems[id];
     for (const p of parts) {
       const pos = p.pos.map(r5) as [number, number, number];
-      if (p.kind === 'asset') { assets.push({ asset: p.name, kind: assetKind(p.name), pos, rotZ: p.rotZ }); continue; }
+      if (p.kind === 'asset') { assets.push({ asset: p.name, kind: assetKind(p.name), pos, rotZ: p.rotZ, ...(p.crop ? { crop: p.crop } : {}) }); continue; }
       const cp = owner?.kind === 'piece' ? owner : null;
       // 起点四火不分小节；小节盘点的两火属于上一个小节，重生点属于本小节
       const sector = p.name === 'PS_FourFlames' || !cp ? undefined : p.name === 'PC_TwoFlames' ? sectorOf(cp) - 1 : sectorOf(cp);

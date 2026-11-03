@@ -50,7 +50,7 @@ class B {
 }
 
 /** 起点 / 小节盘点的路口离中心多远 */
-const START_PORT = 12.3861, CHECK_PORT = 9.924;
+const START_PORT = 7.386, CHECK_PORT = 4.924;
 
 export const SCENES: { name: string; build: () => Doc }[] = [
   {
@@ -59,10 +59,10 @@ export const SCENES: { name: string; build: () => Doc }[] = [
     build: () => ({
       elems: {
         1: { id: 1, kind: 'piece', type: 'start', x: 0, y: 0, z: 0, rot: 0 },
-        6: { id: 6, kind: 'box', x: 12.386, y: -2.5, z: 0, sx: 15, sy: 5, depth: 5, style: 'normal' },
-        7: { id: 7, kind: 'piece', type: 'check', x: 37.31, y: 0, z: 0, rot: 0 },
-        8: { id: 8, kind: 'box', x: 47.234, y: -2.5, z: 0, sx: 15, sy: 5, depth: 5, style: 'normal' },
-        9: { id: 9, kind: 'obj', type: 'PE_Balloon', x: 84.304, y: 0.17, z: -0.01, rot: 2 },
+        6: { id: 6, kind: 'box', x: 7.386, y: -2.5, z: 0, sx: 15, sy: 5, depth: 5, style: 'normal' },
+        7: { id: 7, kind: 'piece', type: 'check', x: 27.31, y: 0, z: 0, rot: 0 },
+        8: { id: 8, kind: 'box', x: 32.234, y: -2.5, z: 0, sx: 15, sy: 5, depth: 5, style: 'normal' },
+        9: { id: 9, kind: 'obj', type: 'PE_Balloon', x: 69.304, y: 0.17, z: -0.01, rot: 2 },
       },
       nextId: 10,
     }),

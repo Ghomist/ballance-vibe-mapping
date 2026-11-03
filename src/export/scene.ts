@@ -32,6 +32,8 @@ export interface SceneAsset {
   rot3?: number[];
   /** 拉伸过的木制件：本地 X、Y 的缩放（rot3 里已经带着），UV 要补偿成平铺重复 */
   uvStretch?: [number, number];
+  /** 挖掉模型本地的这些矩形 [x0, x1, y0, y1]（盘点路面去掉自带的延伸路） */
+  crop?: [number, number, number, number][];
 }
 export interface SceneElement {
   /** BBP 元素类型（P_Box、PC_TwoFlames…） */

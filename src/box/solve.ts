@@ -25,7 +25,7 @@ export interface ElemMeshOut {
   sig?: string;
 }
 /** 资产库模型（专属路块、盘点路面）或 BBP 占位符（火焰、重生点）：放在哪、转多少度 */
-export interface AssetPart { name: string; kind: 'asset' | 'element'; pos: [number, number, number]; rotZ: number; objName?: string }
+export interface AssetPart { name: string; kind: 'asset' | 'element'; pos: [number, number, number]; rotZ: number; objName?: string; /** 只留模型本地 x ∈ [x0, x1] 的部分（盘点路面裁掉自带的延伸路） */ crop?: [number, number, number, number][] }
 export interface Solved {
   meshes: Map<number, ElemMeshOut>;
   /** 元素 id（机关或盘点）→ 它的模型：专属路块、盘点路面 + 火焰 + 重生点 */
@@ -1665,8 +1665,22 @@ function basePart(p: Piece, layers: Layer[]): AssetPart {
 const FLAME_CONE = 1.25555;
 /** 资产库里盘点路面的延伸段不正好在中线上，按资产本地坐标挪回来，让延伸段末端正好落在路口上 */
 const CP_FIX: Record<string, [number, number]> = {
+  // 不带延伸的版本圆盘偏了 0.218：挪回来，和接了路的版本对齐（换版本时不会横着跳一下）
+  CheckPoint_NoExtended: [0, -0.218],
   CheckPoint_Extended_OpenEdge: [0, -0.042],
   CheckPoint_DoubleExtended_OpenEdge: [-0.02155, 0.036],
+};
+
+/**
+ * 盘点路面接了路的那一侧：用带延伸的模型，但把延伸出来的那一格普通路裁掉，只留圆盘边上和路相接的花纹（盘点更紧凑，
+ * 路口就在圆盘边上）。裁剪线是模型本地的 x（圆盘边沿正好有一排顶点）。
+ */
+// 挖掉的是路那一条（宽 5）：两边的火焰托盘、圆盘前沿不动
+const CP_CROP: Record<string, [number, number, number, number][]> = {
+  // 起点：圆盘主体到 7.386 为止，再往外是延伸路（开头那 0.67 只有上面一层），一起挖掉
+  StartPoint_Extended_OpenEdge: [[7.386, 1e9, -2.51, 2.51]],
+  CheckPoint_Extended_OpenEdge: [[4.924, 1e9, -2.6, 2.6]],
+  CheckPoint_DoubleExtended_OpenEdge: [[4.946, 1e9, -2.6, 2.6], [-1e9, -4.902, -2.6, 2.6]],
 };
 
 /** 重生点占位符本身朝 -X，转 180° 才和路口 / 设置的重生朝向一致 */
@@ -1681,7 +1695,7 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
   const two = (v: number) => String(v).padStart(2, '0');
   if (p.type === 'start') {
     return [
-      { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot) },
+      { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot), ...(joined(p.rot) ? { crop: CP_CROP.StartPoint_Extended_OpenEdge } : {}) },
       // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
       { name: 'PS_FourFlames', kind: 'element', objName: 'PS_FourFlames_01', pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) + 90 },
       { name: 'PR_Resetpoint', kind: 'element', objName: 'PR_Resetpoint_01', pos: [p.x, p.y, p.z - FLAME_CONE + 3.65], rotZ: spawnRot(p) },
@@ -1694,7 +1708,7 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
   const rr = (deg(r as Dir) * Math.PI) / 180;
   const fx = p.x + f[0] * Math.cos(rr) - f[1] * Math.sin(rr), fy = p.y + f[0] * Math.sin(rr) + f[1] * Math.cos(rr);
   return [
-    { name, kind: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir) },
+    { name, kind: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir), ...(CP_CROP[name] ? { crop: CP_CROP[name] } : {}) },
     { name: 'PC_TwoFlames', kind: 'element', objName: `PC_TwoFlames_${two(sector - 1)}`, pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) },
     { name: 'PR_Resetpoint', kind: 'element', objName: `PR_Resetpoint_${two(sector)}`, pos: [p.x, p.y, p.z - FLAME_CONE + 3.3258], rotZ: spawnRot(p) },
   ];

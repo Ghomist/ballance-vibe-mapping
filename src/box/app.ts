@@ -16,6 +16,7 @@ import { type M3, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
 import { stretchUV } from '../view/uvstretch';
+import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
 import { ASSET_INFO, assetInfo } from './asset-info';
 import { renderThumb, thumbnail } from '../view/thumbs';
@@ -176,6 +177,26 @@ function stretchedPieces(name: string, pieces: AssetPiece[], s: [number, number]
   }
   return hit;
 }
+/** 盘点路面裁掉延伸路：按模型名 + 裁剪范围缓存 */
+const cropCache = new Map<string, AssetPiece[]>();
+function croppedPieces(name: string, pieces: AssetPiece[], c: [number, number, number, number][]): AssetPiece[] {
+  const key = `${name}#${JSON.stringify(c)}`;
+  let hit = cropCache.get(key);
+  if (!hit) {
+    hit = pieces.map((pc) => {
+      const g = pc.geometry.index ? pc.geometry.toNonIndexed() : pc.geometry;
+      const pa = g.getAttribute('position'), n = g.getAttribute('normal'), t = g.getAttribute('uv');
+      const r = cutBoxes({ pos: Array.from(pa.array), uv: t ? Array.from(t.array) : new Array(pa.count * 2).fill(0), nrm: n ? Array.from(n.array) : undefined }, c);
+      const out = new THREE.BufferGeometry();
+      out.setAttribute('position', new THREE.Float32BufferAttribute(r.pos, 3));
+      out.setAttribute('uv', new THREE.Float32BufferAttribute(r.uv, 2));
+      if (r.nrm) out.setAttribute('normal', new THREE.Float32BufferAttribute(r.nrm, 3)); else out.computeVertexNormals();
+      return { ...pc, geometry: out };
+    });
+    cropCache.set(key, hit);
+  }
+  return hit;
+}
 /** 一组网格的包围盒，不算只做视觉效果的部分 */
 function solidBox(g: THREE.Object3D): THREE.Box3 {
   g.updateMatrixWorld(true);
@@ -276,7 +297,8 @@ function rebuildInner() {
   for (const [id, parts] of solved.assets) {
     const g = new THREE.Group();
     for (const part of parts) {
-      const pieces = getAsset(part.kind, part.name) ?? (part.kind === 'asset' ? [fallbackBox(5, 5, 5)] : []);
+      const raw = getAsset(part.kind, part.name) ?? (part.kind === 'asset' ? [fallbackBox(5, 5, 5)] : []);
+      const pieces = part.crop && raw.length && getAsset(part.kind, part.name) ? croppedPieces(part.name, raw, part.crop) : raw;
       addMeshes(g, pieces, id, (m) => { m.position.set(...part.pos); m.rotation.z = (part.rotZ * Math.PI) / 180; });
     }
     addGroup(id, g);

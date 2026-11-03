@@ -8,6 +8,7 @@ import { NmoDoc, NmoDocMesh, NmoDocObject, writeNmo } from './nmo';
 import { loadNmoLib, NmoLib } from './nmo-lib';
 import { Model } from '../model/types';
 import { stretchTriUV } from '../view/uvstretch';
+import { cutBoxes } from '../view/clipmesh';
 
 const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
   floor: ['Phys_Floors', 'Sound_HitID_01', 'Sound_RollID_01', 'Shadow'],
@@ -241,10 +242,28 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     doc.meshes[i].mtls = m.mtls.map(material);
     return i;
   };
+  /** 裁掉一部分的模型（盘点路面去掉延伸路）：每个面拆开、按本地 x 裁剪，材质槽照旧（Virtools 坐标里 x 不变） */
+  const croppedMesh = (name: string, c: [number, number, number, number][]) => {
+    const key = `${name}#${JSON.stringify(c)}`;
+    let i = meshIdx.get(key);
+    if (i !== undefined) return i;
+    const m = lib.meshes[name];
+    const pos: number[] = [], nml: number[] = [], uv: number[] = [], faces: number[] = [], faceMtl: number[] = [];
+    for (let f = 0; f * 3 < m.faces.length; f++) {
+      const vi = [0, 1, 2].map((k) => m.faces[f * 3 + k]);
+      const r = cutBoxes({ pos: vi.flatMap((v) => [m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2]]), uv: vi.flatMap((v) => [m.uv[v * 2], m.uv[v * 2 + 1]]), nrm: vi.flatMap((v) => [m.nml[v * 3], m.nml[v * 3 + 1], m.nml[v * 3 + 2]]) }, c, 2);
+      for (let k = 0; k * 3 < r.pos.length; k++) { faces.push(pos.length / 3); pos.push(...r.pos.slice(k * 3, k * 3 + 3)); nml.push(...r.nrm!.slice(k * 3, k * 3 + 3)); uv.push(...r.uv.slice(k * 2, k * 2 + 2)); if (k % 3 === 2) faceMtl.push(m.faceMtl[f]); }
+    }
+    i = doc.meshes.length;
+    doc.meshes.push({ name: unique(`${name}_Crop`), litMode: m.litMode, pos, nml, uv, faces, faceMtl, mtls: [] });
+    meshIdx.set(key, i);
+    doc.meshes[i].mtls = m.mtls.map(material);
+    return i;
+  };
   for (const a of desc.assets) {
     const src = lib.assets[a.asset];
     if (!src) continue;
-    const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : libMesh(src.mesh);
+    const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
     addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
   }
   const counters = new Map<string, number>();

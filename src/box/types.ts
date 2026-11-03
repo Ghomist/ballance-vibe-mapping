@@ -1,7 +1,8 @@
 // 重构版的数据模型：地图由互相独立的 box（路面）、素材件和机关组成，元素之间不存任何连接关系。
 // 连接、花纹、遮挡、机关的专属路块都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
 import { objType } from '../model/objects';
-import { PREFAB_PORT } from '../model/types';
+/** 盘点路面的路口离中心多远：圆盘边沿（自带的延伸路裁掉了，见 solve.ts 的 CP_CROP） */
+export const CP_PORT = { start: 7.386, check: 4.924 } as const;
 import { type RailPiece, sampleRail } from '../model/rail';
 import { assetInfo } from './asset-info';
 import { type M3, type Quat, type V3, I3, apply, fromQuat, mul, rotZ } from './xform';
@@ -223,7 +224,7 @@ export function footprint(e: Elem): Rect {
   }
   if (e.type === 'start' || e.type === 'check') {
     // 盘点路面：沿路口方向的一条 5 宽的带子，末端就是路口（起点只有 rot 一侧，后面是圆盘）
-    const a = e.type === 'start' ? -2.5 : -PREFAB_PORT.check, b = PREFAB_PORT[e.type];
+    const a = e.type === 'start' ? -2.5 : -CP_PORT.check, b = CP_PORT[e.type];
     const [lo, hi] = e.rot === 0 || e.rot === 1 ? [a, b] : [-b, -a];
     return e.rot % 2 === 0 ? { x0: e.x + lo, y0: e.y - 2.5, x1: e.x + hi, y1: e.y + 2.5 } : { x0: e.x - 2.5, y0: e.y + lo, x1: e.x + 2.5, y1: e.y + hi };
   }
@@ -237,14 +238,8 @@ export function footprint(e: Elem): Rect {
  * 悬停 / 选中时画出来，按住 V 时也能吸到它们的顶点，方便把路接上去。
  */
 export function virtualCells(e: Elem): (Rect & { top: number; depth?: number })[] {
-  if (e.kind === 'obj') return anchorRects(e);
-  if (e.kind !== 'piece' || (e.type !== 'start' && e.type !== 'check')) return [];
-  const port = PREFAB_PORT[e.type];
-  const cell = (d: Dir) => {
-    const cx = e.x + DX[d] * (port - 2.5), cy = e.y + DY[d] * (port - 2.5);
-    return { x0: cx - 2.5, y0: cy - 2.5, x1: cx + 2.5, y1: cy + 2.5, top: e.z };
-  };
-  return e.type === 'start' ? [cell(e.rot)] : [cell(e.rot), cell(opp(e.rot))];
+  // 盘点的路口就在圆盘边上（延伸路裁掉了）：不再要虚拟路面，吸附点就是路口那条边的顶点和中点
+  return e.kind === 'obj' ? anchorRects(e) : [];
 }
 
 export const isCheckpoint = (e: Elem): boolean => e.kind === 'piece' && (e.type === 'start' || e.type === 'check');
