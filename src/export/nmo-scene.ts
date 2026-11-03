@@ -18,12 +18,11 @@ const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
 const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_', zone: 'DepthTestCubes_' };
 const ASSET_PREFIX = { floor: 'A_Floor_', rail: 'A_Rail_', deco: 'D_' } as const;
 
-/**
- * 资产库物体的组，按制图手册的归组规则补齐：能走的路面（Phys_Floors）都要在 Shadow 里（球的影子才会投在上面）。
- * 资产库里只有特殊路块 15（Modul_15）漏了 Shadow。
- */
-export function assetGroups(groups: string[]): string[] {
-  return groups.includes('Phys_Floors') && !groups.includes('Shadow') ? [...groups, 'Shadow'] : groups;
+/** 不投影子的资产库物体：特殊路块 15、木制 U 形槽（原版里就不在 Shadow 组） */
+const NO_SHADOW = new Set(['Modul_15', 'Modul_11']);
+/** 资产库物体导出时的组：不投影子的去掉 Shadow，其余照资产库 */
+export function assetGroups(name: string, groups: string[]): string[] {
+  return NO_SHADOW.has(name) ? groups.filter((g) => g !== 'Shadow') : groups;
 }
 
 export const sectorGroup = (i: number) => (i === 9 ? 'Sector_9' : `Sector_${String(i).padStart(2, '0')}`);
@@ -246,7 +245,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const src = lib.assets[a.asset];
     if (!src) continue;
     const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : libMesh(src.mesh);
-    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(src.groups));
+    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {
