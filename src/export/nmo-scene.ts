@@ -18,6 +18,14 @@ const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
 const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_', zone: 'DepthTestCubes_' };
 const ASSET_PREFIX = { floor: 'A_Floor_', rail: 'A_Rail_', deco: 'D_' } as const;
 
+/**
+ * 资产库物体的组，按制图手册的归组规则补齐：能走的路面（Phys_Floors）都要在 Shadow 里（球的影子才会投在上面）。
+ * 资产库里只有特殊路块 15（Modul_15）漏了 Shadow。
+ */
+export function assetGroups(groups: string[]): string[] {
+  return groups.includes('Phys_Floors') && !groups.includes('Shadow') ? [...groups, 'Shadow'] : groups;
+}
+
 export const sectorGroup = (i: number) => (i === 9 ? 'Sector_9' : `Sector_${String(i).padStart(2, '0')}`);
 const two = (i: number) => String(i).padStart(2, '0');
 
@@ -238,7 +246,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const src = lib.assets[a.asset];
     if (!src) continue;
     const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : libMesh(src.mesh);
-    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, src.groups);
+    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(src.groups));
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {

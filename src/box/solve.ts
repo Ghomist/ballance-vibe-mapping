@@ -17,8 +17,13 @@ import {
   basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
 } from './types';
 import { type M3, apply, rotZ } from './xform';
+import { ShapeUtils, Vector2 } from 'three';
 
-export interface ElemMeshOut { id: number; parts: Partial<Record<MatName, MeshPart>> }
+export interface ElemMeshOut {
+  id: number; parts: Partial<Record<MatName, MeshPart>>;
+  /** 网格内容的签名：一样就说明网格没变，编辑器可以直接沿用上一次生成的 three.js 网格 */
+  sig?: string;
+}
 /** 资产库模型（专属路块、盘点路面）或 BBP 占位符（火焰、重生点）：放在哪、转多少度 */
 export interface AssetPart { name: string; kind: 'asset' | 'element'; pos: [number, number, number]; rotZ: number; objName?: string }
 export interface Solved {
@@ -32,22 +37,52 @@ export interface Solved {
 }
 
 const EPS = 1e-7;
+
+/** 粗略的空间网格：按包围盒放进边长 CELL 的格子，查询时只看附近格子里的东西（避免大地图上两两比较） */
+class Grid<T> {
+  private cells = new Map<number, T[]>();
+  constructor(private size = 10) {}
+  /** 格子编号（坐标在 ±百万格以内） */
+  private static key = (i: number, j: number) => (i + 1048576) * 2097152 + (j + 1048576);
+  add(item: T, x0: number, y0: number, x1: number, y1: number) {
+    const s = this.size;
+    for (let i = Math.floor(x0 / s); i <= Math.floor(x1 / s); i++) for (let j = Math.floor(y0 / s); j <= Math.floor(y1 / s); j++) {
+      const k = Grid.key(i, j);
+      const l = this.cells.get(k);
+      if (l) l.push(item); else this.cells.set(k, [item]);
+    }
+  }
+  /** 和矩形范围相交的格子里的东西（可能有多余的，调用方再精确判断；不重复） */
+  query(x0: number, y0: number, x1: number, y1: number): T[] {
+    const s = this.size, i0 = Math.floor(x0 / s), i1 = Math.floor(x1 / s), j0 = Math.floor(y0 / s), j1 = Math.floor(y1 / s);
+    if (i0 === i1 && j0 === j1) return this.cells.get(Grid.key(i0, j0)) ?? [];
+    const out: T[] = [], seen = new Set<T>();
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      for (const it of this.cells.get(Grid.key(i, j)) ?? []) if (!seen.has(it)) { seen.add(it); out.push(it); }
+    }
+    return out;
+  }
+}
+/** 当前朝向的路面、素材件的空间网格（frameCells 里建） */
+let elemGrid = new Grid<Elem>(10);
 const UP: V3 = [0, 0, 1];
 
 // ---------------- 网格 ----------------
 
 class MeshBuilder {
   parts: Partial<Record<MatName, MeshPart>> = {};
-  tri(mat: MatName, p: V3[], uv: V2[], outward: V3) {
+  /** own：这个三角形属于哪个元素（不填就不记） */
+  tri(mat: MatName, p: V3[], uv: V2[], outward: V3, own?: number) {
     const e1 = sub(p[1], p[0]), e2 = sub(p[2], p[0]);
     const n = cross(e1, e2);
     if (Math.hypot(...n) < 1e-12) return;
     if (dot(n, outward) < 0) { p = [p[0], p[2], p[1]]; uv = [uv[0], uv[2], uv[1]]; }
     const part = (this.parts[mat] ??= { pos: [], uv: [] });
     for (let i = 0; i < 3; i++) { part.pos.push(...p[i]); part.uv.push(...uv[i]); }
+    if (own !== undefined) (part.own ??= []).push(own);
   }
-  poly(mat: MatName, p: V3[], uv: V2[], outward: V3) {
-    for (let i = 1; i + 1 < p.length; i++) this.tri(mat, [p[0], p[i], p[i + 1]], [uv[0], uv[i], uv[i + 1]], outward);
+  poly(mat: MatName, p: V3[], uv: V2[], outward: V3, own?: number) {
+    for (let i = 1; i + 1 < p.length; i++) this.tri(mat, [p[0], p[i], p[i + 1]], [uv[0], uv[i], uv[i + 1]], outward, own);
   }
 }
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -144,6 +179,16 @@ let inserted = new Set<string>();
 let slopeOver = new Map<string, 'carve' | 'cover'>();
 /** 调试开关：merge 关掉时不合并小块（用来对比合并前后的结果） */
 export const solveOpts = { merge: true };
+/**
+ * 网格缓存：每片连通的路面按「它的网格依赖的所有东西」生成签名，签名没变就直接用上一次的网格。
+ * 拖动一块路面时只有它附近的几片要重新切分、三角化（这是求解里最花时间的部分）。每次求解后只留下这次用到的。
+ */
+let meshCache = new Map<string, ElemMeshOut>();
+let nextMeshCache = new Map<string, ElemMeshOut>();
+/** 清空网格缓存（测试用：对比用缓存和不用缓存的结果） */
+export function clearSolveCache() { meshCache = new Map(); }
+/** 上一次求解里网格缓存命中 / 没命中的片数（调试用） */
+export const solveStats = { hit: 0, miss: 0 };
 /** 自动生成的转换件的编号（负数，整张图唯一） */
 let autoSeq = 0;
 
@@ -155,6 +200,12 @@ let autoSeq = 0;
 export function solve(doc: Doc): Solved {
   runSeq = 0;
   autoSeq = 0;
+  nextMeshCache = new Map();
+  solveStats.hit = solveStats.miss = 0;
+  try { return solveAll(doc); } finally { meshCache = nextMeshCache; }
+}
+
+function solveAll(doc: Doc): Solved {
   const out: Solved = { meshes: new Map(), assets: new Map(), owner: new Map(), loops: [] };
   const frames = new Map<number, Elem[]>();
   const tilted: Box[] = [];
@@ -171,14 +222,16 @@ export function solve(doc: Doc): Solved {
   for (const c of ctxs) frameRuns(c);
   crossField(ctxs);
   // 外沿：各个朝向的边都换到世界坐标后一起连成环（不同朝向的路面接在一起时，外沿也连成一个环）
-  const edges: OEdge[] = [];
+  // 只有护栏工具要用它，所以用到时才算（拖动路面时不用算）
+  const edgeFns: (() => OEdge[])[] = [];
   for (const c of ctxs) {
     const r = frameMesh(c);
     const m = c.ang ? rotZ(c.ang) : null;
     mergeSolved(out, r, m, [0, 0, 0], c.ang);
-    for (const e of r.edges) edges.push(m ? { a: apply(m, e.a), b: apply(m, e.b), out: apply(m, [...e.out, 0]).slice(0, 2) as [number, number] } : e);
+    edgeFns.push(() => r.edges().map((e) => (m ? { a: apply(m, e.a), b: apply(m, e.b), out: apply(m, [...e.out, 0]).slice(0, 2) as [number, number] } : e)));
   }
-  out.loops = loopsFromEdges(edges);
+  let loops: Loop[] | null = null;
+  Object.defineProperty(out, 'loops', { get: () => (loops ??= loopsFromEdges(edgeFns.flatMap((f) => f()))), enumerable: true, configurable: true });
   for (const b of tilted) {
     const { m, t } = elemXf(b);
     const c = frameCells([{ ...b, q: undefined }], 0);
@@ -349,11 +402,15 @@ function gsegDist(r: { x0: number; y0: number; x1: number; y1: number }, g: GSeg
 function mergeSolved(out: Solved, r: Omit<Solved, 'loops'>, m: M3 | null, t: V3, yaw: number) {
   const tp = (p: V3): V3 => { if (!m) return p; const w = apply(m, p); return [w[0] + t[0], w[1] + t[1], w[2] + t[2]]; };
   for (const [id, mesh] of r.meshes) {
-    if (m) for (const part of Object.values(mesh.parts)) {
-      const pos = part!.pos;
-      for (let i = 0; i < pos.length; i += 3) { const w = tp([pos[i], pos[i + 1], pos[i + 2]]); pos[i] = w[0]; pos[i + 1] = w[1]; pos[i + 2] = w[2]; }
+    if (!m) { out.meshes.set(id, mesh); continue; }
+    // 转到世界坐标：写到新的数组里（网格可能是缓存里的，不能改）
+    const parts: ElemMeshOut['parts'] = {};
+    for (const [k, part] of Object.entries(mesh.parts) as [MatName, MeshPart][]) {
+      const src = part.pos, pos = new Array<number>(src.length);
+      for (let i = 0; i < src.length; i += 3) { const w = tp([src[i], src[i + 1], src[i + 2]]); pos[i] = w[0]; pos[i + 1] = w[1]; pos[i + 2] = w[2]; }
+      parts[k] = { ...part, pos };
     }
-    out.meshes.set(id, mesh);
+    out.meshes.set(id, { id, parts, sig: mesh.sig && `${mesh.sig}@${JSON.stringify([m, t])}` });
   }
   for (const [id, parts] of r.assets) out.assets.set(id, m ? parts.map((p) => ({ ...p, pos: tp(p.pos), rotZ: p.rotZ + yaw })) : parts);
   for (const [k, v] of r.owner) out.owner.set(k, v);
@@ -395,8 +452,44 @@ function frameCells(all: Elem[], ang: number): FrameCtx {
     }
     if (!joined) { const L = flatLayer(layers.length, pieceStyles(p)[1], [], p.z); L.pieces.push(p); layers.push(L); }
   }
+  // 同样式、同高度的层再按连通块拆开（路面、素材件贴着 / 压着才算连着）：不连着的两片互不影响
+  //（一片里任何一点到自己外沿的距离都不会比到别的片的外沿远），拆开后每层的格子网格只覆盖自己那一片，大地图上快很多
+  const split: Layer[] = [];
+  for (const L of layers) {
+    const ms: (Box | Piece)[] = [...L.boxes, ...L.pieces];
+    if (ms.length <= 1) { split.push(L); continue; }
+    const fps = ms.map((m) => footprint(m));
+    const par = ms.map((_, i) => i);
+    const find = (i: number): number => (par[i] === i ? i : (par[i] = find(par[i])));
+    const g = new Grid<number>(10);
+    fps.forEach((f, i) => g.add(i, f.x0, f.y0, f.x1, f.y1));
+    fps.forEach((a, i) => {
+      for (const j of g.query(a.x0 - EPS_TOUCH, a.y0 - EPS_TOUCH, a.x1 + EPS_TOUCH, a.y1 + EPS_TOUCH)) {
+        if (j <= i) continue;
+        const b = fps[j];
+        const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+        if (ox >= -EPS_TOUCH && oy >= -EPS_TOUCH && Math.max(ox, oy) > EPS_TOUCH) par[find(i)] = find(j);
+      }
+    });
+    const groups = new Map<number, number[]>();
+    ms.forEach((_, i) => { const k = find(i); (groups.get(k) ?? groups.set(k, []).get(k)!).push(i); });
+    if (groups.size === 1) { split.push(L); continue; }
+    for (const idx of groups.values()) {
+      const bs = idx.map((i) => ms[i]).filter((m): m is Box => m.kind === 'box');
+      const ps = idx.map((i) => ms[i]).filter((m): m is Piece => m.kind === 'piece');
+      const C = flatLayer(0, L.style, bs, L.z);
+      C.pieces = ps;
+      for (const p of ps) if (L.embedded.has(p.id)) C.embedded.add(p.id);
+      split.push(C);
+    }
+  }
+  layers.length = 0;
+  for (const L of split) { L.id = layers.length; layers.push(L); }
   for (const b of boxes.filter(isSlope)) layers.push(slopeLayer(layers.length, b));
 
+  // 所有路面、素材件按位置放进网格：找挡住某一层的东西时只看附近的
+  elemGrid = new Grid<Elem>(10);
+  for (const e of elems) { const f = footprint(e); elemGrid.add(e, f.x0, f.y0, f.x1, f.y1); }
   findFolds(layers);
   for (const L of layers) (L.slope ? buildSlopeCells : buildFlatCells)(L, elems);
   return { ang, elems, pieces, layers, owner: auto.owner };
@@ -409,7 +502,7 @@ function frameRuns(c: FrameCtx) {
 }
 
 /** 一个朝向：网格、资产、护栏用的外沿（本朝向坐标） */
-function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'loops'> & { edges: OEdge[] } {
+function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'loops'> & { edges: () => OEdge[] } {
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
   const assets = new Map<number, AssetPart[]>();
@@ -419,14 +512,19 @@ function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'lo
     else if (p.type === 'start' || p.type === 'check') assets.set(p.id, checkpointParts(p, layers, p.sector ?? checks.indexOf(p) + 2));
     else meshPiece(p, layers, out);
   }
-  // 外沿：每层的边（展开坐标）换回世界坐标，跨层（坡和平路）首尾相接的自然连成一个环
+  return { meshes: out, assets, owner, edges: () => outlineEdges(elems, pieces, layers) };
+}
+
+/** 护栏用的外沿：每层的边（展开坐标）换回世界坐标，跨层（坡和平路）首尾相接的自然连成一个环 */
+function outlineEdges(elems: Elem[], pieces: Piece[], layers: Layer[]): OEdge[] {
   const oedges: OEdge[] = [];
   // 盘点路面的侧边不算（实际的模型是圆盘，比 5 宽的带子大）：外沿在盘点处断开，护栏不会穿过盘点
   const cp = new Set(pieces.filter((p) => p.type === 'start' || p.type === 'check').map((p) => p.id));
   // 外面紧挨着差不多一样高的路面（样式不同、坡插进平台留下的槽口、底座…）的边也不算：那里球还能滚过去，不该放护栏
   const floors = elems.filter((e): e is Box | Piece => e.kind === 'box' || e.kind === 'piece');
-  const continues = (x: number, y: number, z: number) => floors.some((f) => {
-    const fp = footprint(f);
+  const floorGrid = new Grid<{ f: Box | Piece; fp: ReturnType<typeof footprint> }>(10);
+  for (const f of floors) { const fp = footprint(f); floorGrid.add({ f, fp }, fp.x0, fp.y0, fp.x1, fp.y1); }
+  const continues = (x: number, y: number, z: number) => floorGrid.query(x, y, x, y).some(({ f, fp }) => {
     if (x <= fp.x0 || x >= fp.x1 || y <= fp.y0 || y >= fp.y1) return false;
     const top = f.kind === 'box' ? boxTopAt(f, x, y) : f.z;
     return Math.abs(top - z) < 1;
@@ -436,15 +534,19 @@ function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'lo
     const P = (t: number) => L.world(...((r.ax === 0 ? [t, r.c] : [r.c, t]) as [number, number]), 0) as [number, number, number];
     // 按 1 的步长切开，逐小段看外面是不是还有路面
     const n = Math.max(1, Math.ceil(r.b - r.a));
+    // 连续的几小段外面都没有路面：并成一条（坡上的边是直线，并起来不变形）
+    let runStart: number | null = null;
+    const flush = (tEnd: number) => { if (runStart !== null) pushEdge(oedges, P(runStart), P(tEnd), [DX[r.n], DY[r.n]]); runStart = null; };
     for (let k = 0; k < n; k++) {
       const t0 = r.a + ((r.b - r.a) * k) / n, t1 = r.a + ((r.b - r.a) * (k + 1)) / n;
       const A = P(t0), B = P(t1);
       const mx = (A[0] + B[0]) / 2 + DX[r.n] * 0.05, my = (A[1] + B[1]) / 2 + DY[r.n] * 0.05;
-      if (continues(mx, my, (A[2] + B[2]) / 2)) continue;
-      pushEdge(oedges, A, B, [DX[r.n], DY[r.n]]);
+      if (continues(mx, my, (A[2] + B[2]) / 2)) { flush(t0); continue; }
+      if (runStart === null) runStart = t0;
     }
+    flush(r.b);
   }
-  return { meshes: out, assets, owner, edges: oedges };
+  return oedges;
 }
 
 /**
@@ -455,10 +557,12 @@ function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'lo
 function slopeOverlaps(elems: Elem[]): Map<string, 'carve' | 'cover'> {
   const out = new Map<string, 'carve' | 'cover'>();
   const flats = elems.filter((e): e is Box => e.kind === 'box' && !isSlope(e));
+  const fg = new Grid<Box>(10);
+  for (const B of flats) { const f = footprint(B); fg.add(B, f.x0, f.y0, f.x1, f.y1); }
   for (const S of elems) {
     if (!isSlope(S)) continue;
     const fs = footprint(S), ax = S.slope.axis;
-    for (const B of flats) {
+    for (const B of fg.query(fs.x0, fs.y0, fs.x1, fs.y1)) {
       const fb = footprint(B);
       if (!overlaps(fs, fb)) continue;
       for (const hi of [false, true]) {
@@ -501,7 +605,9 @@ function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, n
   const pieces: Piece[] = [];
   const owner = new Map<number, number>();
   const inserted = new Set<string>();
-  for (const A of roads) for (const B of flats) {
+  const fg = new Grid<Box>(10);
+  for (const B of flats) { const f = footprint(B); fg.add(B, f.x0, f.y0, f.x1, f.y1); }
+  for (const A of roads) for (const B of (() => { const f = footprint(A); return fg.query(f.x0 - EPS_TOUCH, f.y0 - EPS_TOUCH, f.x1 + EPS_TOUCH, f.y1 + EPS_TOUCH); })()) {
     if (A === B || A.style === B.style || A.style === 'ribbon') continue;
     // 路在接平台那一头的高度（平路就是 z；坡只能用沿坡方向的两头去接）
     const endZ = (d: Dir) => {
@@ -663,7 +769,8 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
   for (const f of fps.values()) { bx0 = Math.min(bx0, f.x0); by0 = Math.min(by0, f.y0); bx1 = Math.max(bx1, f.x1); by1 = Math.max(by1, f.y1); }
   const memberIds = new Set(members.map((e) => e.id));
-  const occluders = elems.filter((e) => !memberIds.has(e.id) && overlaps(footprint(e), { x0: bx0, y0: by0, x1: bx1, y1: by1 }));
+  void elems;
+  const occluders = elemGrid.query(bx0, by0, bx1, by1).filter((e) => !memberIds.has(e.id) && overlaps(footprint(e), { x0: bx0, y0: by0, x1: bx1, y1: by1 }));
   const xs: number[] = [], ys: number[] = [];
   for (const e of [...members, ...occluders]) {
     const f = footprint(e);
@@ -850,7 +957,15 @@ function linkRuns(layers: Layer[], pieces: Piece[]) {
   const ends = runs.map((r) => [world(r, r.a), world(r, r.b)] as const);
   const along = (r: Run, p: V3) => r.layer.dev(p[0], p[1])[r.ax];
   const links: { i: number; j: number; p: V3 }[] = [];
-  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+  // 只有同方向、同朝外、在同一条线上（横向坐标差不到 EPS_TOUCH）的边才可能相接：按这条线分桶，只比较相邻桶里的
+  const bucket = (i: number) => Math.floor(ends[i][0][1 - runs[i].ax] / 0.01);
+  const buckets = new Map<string, number[]>();
+  runs.forEach((r, i) => { const k = `${r.ax}|${r.n}|${bucket(i)}`; (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(i); });
+  const pairs: [number, number][] = [];
+  runs.forEach((r, i) => {
+    for (const db of [-1, 0, 1]) for (const j of buckets.get(`${r.ax}|${r.n}|${bucket(i) + db}`) ?? []) if (j > i) pairs.push([i, j]);
+  });
+  for (const [i, j] of pairs) {
     const r = runs[i], q = runs[j];
     if (r.layer === q.layer || r.ax !== q.ax || r.n !== q.n) continue;
     const [a0, a1] = ends[i], [b0, b1] = ends[j];
@@ -982,9 +1097,46 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
   const st = MAT[L.style];
   const builders = new Map<number, MeshBuilder>();
   const mb = (id: number) => { let m = builders.get(id); if (!m) builders.set(id, (m = new MeshBuilder())); return m; };
-  const tops = new Map<number, V3[]>(); // 每个 box 顶面网格的顶点（展开坐标 + 下沉量），画开口端面用
-  const pending = new Map<number, { poly: Poly; w: Lin }[]>();
-  const isBox = (id: number) => L.boxes.some((b) => b.id === id);
+  const tops = new Map<number, V3[]>(); // 每片路面顶面网格的顶点（展开坐标 + 下沉量），画开口端面用
+  const boxIds = new Map(L.boxes.map((b) => [b.id, b]));
+  const isBox = (id: number) => boxIds.has(id);
+  // 连通的一片路面（贴着 / 压着的格子矩形连在一起）合成一个网格，网格的编号取这一片里最小的元素 id；
+  // 这样花纹的分块不会被路面之间的分界线切开。每个三角形另外记下它属于哪个元素（点选用）。
+  const boxRects = L.rects.filter((r) => isBox(r.owner));
+  const par = boxRects.map((_, i) => i);
+  const find = (i: number): number => (par[i] === i ? i : (par[i] = find(par[i])));
+  const idxGrid = new Grid<number>(10);
+  boxRects.forEach((r, i) => idxGrid.add(i, r.x0, r.y0, r.x1, r.y1));
+  for (let i = 0; i < boxRects.length; i++) for (const j of idxGrid.query(boxRects[i].x0 - EPS, boxRects[i].y0 - EPS, boxRects[i].x1 + EPS, boxRects[i].y1 + EPS)) {
+    if (j <= i) continue;
+    const a = boxRects[i], b = boxRects[j];
+    const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+    if (a.owner === b.owner || (ox >= -EPS && oy >= -EPS && Math.max(ox, oy) > EPS)) par[find(i)] = find(j);
+  }
+  const repOfRoot = new Map<number, number>();
+  boxRects.forEach((r, i) => { const k = find(i); repOfRoot.set(k, Math.min(repOfRoot.get(k) ?? Infinity, r.owner)); });
+  const repOfRect = new Map(boxRects.map((r, i) => [r, repOfRoot.get(find(i))!]));
+  const repOfOwner = new Map(boxRects.map((r) => [r.owner, repOfRect.get(r)!]));
+  /** 点 (x, y) 在哪个元素的格子里（三角形的重心，找不到就取最近的） */
+  const ownerAt = (x: number, y: number) => {
+    let best = boxRects[0]?.owner ?? 0, bd = Infinity;
+    const cand = rectGrid.query(x - 1, y - 1, x + 1, y + 1);
+    for (const r of cand.length ? cand : boxRects) {
+      const d = Math.max(r.x0 - x, x - r.x1, r.y0 - y, y - r.y1);
+      if (d < bd) { bd = d; best = r.owner; }
+      if (d <= 0) break;
+    }
+    return best;
+  };
+  // 外沿按位置放进网格：每一块只看附近的外沿（一层是全图同样式、同高度的路面，外沿可能很多）
+  const compSig = new Map<number, string>();
+  const segGrid = new Grid<FSeg>(10);
+  const segIndex = new Map(segs.map((e, i) => [e, i]));
+  for (const e of segs) segGrid.add(e, e.ax === 0 ? e.a : e.c, e.ax === 0 ? e.c : e.a, e.ax === 0 ? e.b : e.c, e.ax === 0 ? e.c : e.b);
+  const rectGrid = new Grid<(typeof boxRects)[number]>(10);
+  for (const r of boxRects) rectGrid.add(r, r.x0, r.y0, r.x1, r.y1);
+  /** 每片路面：线性函数（距离、花纹）→ 用这个函数的小块 */
+  const pending = new Map<number, Map<string, { w: Lin; polys: Poly[] }>>();
   const vOf = (l: Lin, p: V2) => {
     if (l.v) return linVal({ k: l.v } as Lin, p) / 5;
     const c = p[l.vAx] + l.t[l.vAx];
@@ -1005,8 +1157,11 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
   };
   const gPerp = (g: GSeg): Lin => ({ k: [g.nIn[0], g.nIn[1], -(g.nIn[0] * g.p0[0] + g.nIn[1] * g.p0[1])], run: null, vAx: 0, t: [0, 0], v: g.v });
   const jointAt = (c: V2) => joints.find((j) => Math.abs(j.c[0] - c[0]) < 1e-5 && Math.abs(j.c[1] - c[1]) < 1e-5);
-  const pickJoint = (j: Joint, cen: V2): Lin => {
+  /** 折角拼接的函数；这一块在两条边的外侧（带符号的距离是负的）时不适用，返回 null 用普通的距离函数 */
+  const pickJoint = (j: Joint, cen: V2): Lin | null => {
     const side = linVal(j.own, cen) >= linVal(j.g, cen) ? j.own : j.g;
+    // 两条边的外侧还是路面：那是第三块路面盖住的地方（例如同朝向的另一块路面压在这个角上），不归这个折角管
+    if (linVal(side, cen) < -1e-9) return null;
     // 封顶那一块：等距线垂直于平分线，花纹相位沿等距线走（不然贴图会被斜着拉长）
     return linVal({ k: j.cap } as Lin, cen) > linVal(side, cen) ? { k: j.cap, run: null, vAx: 0, t: [0, 0], v: j.capV } : side;
   };
@@ -1036,7 +1191,8 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       const p = cen[e.ax];
       const end = p < e.a - 1e-9 ? e.a : p > e.b + 1e-9 ? e.b : null;
       const j = end === null ? null : jointAt(e.ax === 0 ? [end, e.c] : [e.c, end]);
-      if (j) return pickJoint(j, cen);
+      const jl = j && pickJoint(j, cen);
+      if (jl) return jl;
     }
     return segLin(e, cen);
   };
@@ -1045,14 +1201,45 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       const along = (cen[0] - g.p0[0]) * g.t[0] + (cen[1] - g.p0[1]) * g.t[1];
       const end: V2 | null = along < -1e-9 ? g.p0 : along > g.len + 1e-9 ? [g.p0[0] + g.t[0] * g.len, g.p0[1] + g.t[1] * g.len] : null;
       const j = end && jointAt(end);
-      if (j) return pickJoint(j, cen);
+      const jl = j && pickJoint(j, cen);
+      if (jl) return jl;
     }
     return gsegLin(g, cen);
   };
 
+  // 每片路面的签名：图层（样式、高度、坡）、它的格子和元素、它的外沿，附近（会进距离场的）外沿和它们的花纹相位、
+  // 别的朝向压上来的成员和外沿、是否合并。签名一样，网格就一样
+  const cached = new Map<number, ElemMeshOut>();
+  {
+    const comps = new Map<number, (typeof boxRects)[number][]>();
+    for (const r of boxRects) { const k = repOfRect.get(r)!; (comps.get(k) ?? comps.set(k, []).get(k)!).push(r); }
+    const runSig = (r: Run | null | undefined): unknown => (r ? [r.ax, r.c, r.a, r.b, r.n, r.s, r.o] : 0);
+    for (const [rep, rs] of comps) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of rs) { x0 = Math.min(x0, r.x0); y0 = Math.min(y0, r.y0); x1 = Math.max(x1, r.x1); y1 = Math.max(y1, r.y1); }
+      const owners = new Set(rs.map((r) => r.owner));
+      const near = new Set<FSeg>();
+      for (const r of rs) for (const e of segGrid.query(r.x0 - BAND, r.y0 - BAND, r.x1 + BAND, r.y1 + BAND)) near.add(e);
+      const pad = BAND * 2;
+      const sig = JSON.stringify([
+        solveOpts.merge, L.style, L.z, L.slope ?? null,
+        rs.map((r) => [r.x0, r.y0, r.x1, r.y1, r.owner]),
+        [...owners].map((o) => boxIds.get(o)),
+        L.edges.filter((e) => owners.has(e.owner)).map((e) => [e.ax, e.c, e.a, e.b, e.n, e.kind, e.forced ?? 0, e.owner]),
+        [...near].map((e) => [e.ax, e.c, e.a, e.b, e.t, runSig(e.r), runSig(e.r.adjA), runSig(e.r.adjB), e.r.layer === L ? 0 : 1]),
+        (L.gsegs ?? []).filter((g) => { const ex = g.p0[0] + g.t[0] * g.len, ey = g.p0[1] + g.t[1] * g.len; return Math.max(g.p0[0], ex) > x0 - pad && Math.min(g.p0[0], ex) < x1 + pad && Math.max(g.p0[1], ey) > y0 - pad && Math.min(g.p0[1], ey) < y1 + pad; }),
+        (L.foreign ?? []).filter((f) => f.x1 > x0 - EPS && f.x0 < x1 + EPS && f.y1 > y0 - EPS && f.y0 < y1 + EPS).map((f) => [f.poly, f.id, f.piece]),
+      ]);
+      compSig.set(rep, sig);
+      const hit = meshCache.get(sig);
+      if (hit) { cached.set(rep, hit); nextMeshCache.set(sig, hit); solveStats.hit++; } else solveStats.miss++;
+    }
+  }
+
   for (const r of L.rects) {
-    if (!isBox(r.owner)) continue;
-    const near = segs.filter((e) => rectDist(r, e) <= BAND + 1e-9);
+    if (!isBox(r.owner) || cached.has(repOfRect.get(r)!)) continue;
+    // 按外沿原来的顺序排：距离一样的两个函数取排在前面的那个，顺序变了花纹相位就可能换成另一条边的
+    const near = segGrid.query(r.x0 - BAND, r.y0 - BAND, r.x1 + BAND, r.y1 + BAND).filter((e) => rectDist(r, e) <= BAND + 1e-9).sort((a, b) => segIndex.get(a)! - segIndex.get(b)!);
     // 别的朝向的外沿：切比雪夫距离 ≥ 欧氏距离 / √2，欧氏距离在 BAND·√2 以内的才可能起作用
     const gnear = (L.gsegs ?? []).filter((g) => gsegDist(r, g) < BAND * Math.SQRT2);
     let polys: Poly[] = [[[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]]];
@@ -1112,9 +1299,14 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
     polys = bps.map((b) => b.p);
     const boxes = new Map(bps.map((b) => [b.p, b]));
     const clampLin: Lin = { k: [0, 0, BAND], run: null, vAx: 0, t: [0, 0], clamp: true };
-    // 先攒起来，整块路面算完后把同一个函数的相邻小块合并再出网格
-    const list = pending.get(r.owner) ?? (pending.set(r.owner, []), pending.get(r.owner)!);
-    const emit = (poly: Poly, w: Lin) => { list.push({ poly, w }); };
+    // 先攒起来，整片路面算完后把同一个函数的小块并成多边形再出网格
+    const rep = repOfRect.get(r)!;
+    const groups = pending.get(rep) ?? (pending.set(rep, new Map()), pending.get(rep)!);
+    const emit = (poly: Poly, w: Lin) => {
+      const k = solveOpts.merge ? linKey(w) : `${groups.size}`;
+      const g = groups.get(k);
+      if (g) g.polys.push(poly); else groups.set(k, { w, polys: [poly] });
+    };
     for (const poly of polys) {
       const cen = centroid(poly);
       // 只有离这一块不超过 BAND 的外沿可能成为最近的
@@ -1125,33 +1317,60 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       resolve(poly, [clampLin, ...cands.map((e) => ownLin(e, cen)), ...gc.map((g) => gLin(g, cen))], emit, 0);
     }
   }
-  for (const [owner, list] of pending) {
-    const m = mb(owner);
-    const tv = tops.get(owner) ?? (tops.set(owner, []), tops.get(owner)!);
-    for (const { poly, w } of mergePieces(list)) {
-      const pts: V3[] = [], uvs: V2[] = [];
-      for (const p of poly) {
-        const d = clamp(linVal(w, p), 0, BAND);
-        const depth = (st.sink * d) / BAND;
-        pts.push(L.world(p[0], p[1], depth));
-        tv.push([p[0], p[1], depth]);
-        uvs.push(w.clamp ? [p[0] / 5, p[1] / 5] : [(st.uScale * d) / BAND, vOf(w, p)]);
+  for (const [rep, groups] of pending) {
+    const m = mb(rep);
+    const tv = tops.get(rep) ?? (tops.set(rep, []), tops.get(rep)!);
+    for (const { w, polys } of groups.values()) {
+      for (const tri of solveOpts.merge ? unionTriangulate(polys) : polys.flatMap((p) => p.slice(1, -1).map((_, i) => [p[0], p[i + 1], p[i + 2]]))) {
+        const pts: V3[] = [], uvs: V2[] = [];
+        for (const p of tri) {
+          const d = clamp(linVal(w, p), 0, BAND);
+          const depth = (st.sink * d) / BAND;
+          pts.push(L.world(p[0], p[1], depth));
+          tv.push([p[0], p[1], depth]);
+          uvs.push(w.clamp ? [p[0] / 5, p[1] / 5] : [(st.uScale * d) / BAND, vOf(w, p)]);
+        }
+        const c = centroid(tri);
+        m.tri(w.clamp ? 'FloorTopBorderless' : st.band, pts, uvs, UP, ownerAt(c[0], c[1]));
       }
-      m.poly(w.clamp ? 'FloorTopBorderless' : st.band, pts, uvs, UP);
     }
   }
 
-  // 侧面：外沿是竖直的平面；开口按顶面实际的下沉画出凹槽截面
-  for (const e of L.edges) {
-    if (!isBox(e.owner)) continue;
-    const b = L.boxes.find((x) => x.id === e.owner)!;
+  // 侧面：外沿是竖直的平面；开口按顶面实际的下沉画出凹槽截面。
+  // 同一片路面、厚度一样的路面在同一条线上首尾相接的外沿并成一段（一个四边形），不按元素断开
+  const sideEdges: (Edge & { rep: number })[] = [];
+  if (cached.size < compSig.size) {
+    const byKey = new Map<string, (Edge & { rep: number })[]>();
+    for (const e of L.edges) {
+      if (!isBox(e.owner)) continue;
+      const rep = repOfOwner.get(e.owner) ?? e.owner;
+      const depth = boxIds.get(e.owner)!.depth;
+      const k = `${rep}|${depth}|${e.kind}|${e.ax}|${e.c}|${e.n}`;
+      const l = byKey.get(k) ?? (byKey.set(k, []), byKey.get(k)!);
+      l.push({ ...e, rep });
+    }
+    for (const l of byKey.values()) {
+      l.sort((p, q) => p.a - q.a);
+      let cur = { ...l[0] };
+      for (let i = 1; i < l.length; i++) {
+        if (l[i].a <= cur.b + EPS) cur.b = Math.max(cur.b, l[i].b);
+        else { sideEdges.push(cur); cur = { ...l[i] }; }
+      }
+      sideEdges.push(cur);
+    }
+  }
+  for (const e of sideEdges) {
+    if (cached.has(e.rep)) continue;
+    const b = boxIds.get(e.owner)!;
+    // 侧面的三角形属于哪个元素：从侧面中点往路面里挪一点看是谁的格子
+    const sideOwner = (t: number) => { const [x, y] = e.ax === 0 ? [t, e.c] : [e.c, t]; return ownerAt(x - DX[e.n] * 0.01, y - DY[e.n] * 0.01); };
     const out3: V3 = [DX[e.n], DY[e.n], 0];
     const run = L.runs.find((r) => r.ax === e.ax && Math.abs(r.c - e.c) < EPS && r.n === e.n && r.a <= e.a + EPS && r.b >= e.b - EPS);
     const v = (t: number) => (run ? (run.s * t + run.o) / 5 : t / 5);
     const P = (t: number): V2 => (e.ax === 0 ? [t, e.c] : [e.c, t]);
     let ts: [number, number][] = [[e.a, 0], [e.b, 0]];
     if (e.kind === 'open') {
-      const on = (tops.get(e.owner) ?? []).filter((p) => Math.abs(p[1 - e.ax] - e.c) < 1e-6 && p[e.ax] >= e.a - 1e-6 && p[e.ax] <= e.b + 1e-6);
+      const on = (tops.get(e.rep) ?? []).filter((p) => Math.abs(p[1 - e.ax] - e.c) < 1e-6 && p[e.ax] >= e.a - 1e-6 && p[e.ax] <= e.b + 1e-6);
       const byT = new Map<string, [number, number]>();
       for (const p of on) byT.set(p[e.ax].toFixed(6), [p[e.ax], p[2]]);
       ts = [...byT.values()].sort((p, q) => p[0] - q[0]);
@@ -1161,64 +1380,166 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       const A = L.world(...P(t0), d0), B = L.world(...P(t1), d1);
       const A0 = L.world(...P(t0), 0), B0 = L.world(...P(t1), 0);
       const Ab: V3 = [A[0], A[1], A0[2] - b.depth], Bb: V3 = [B[0], B[1], B0[2] - b.depth];
+      const own = sideOwner((t0 + t1) / 2);
       if (b.depth <= 5 + 1e-9) {
-        mb(e.owner).poly('FloorSide', [A, B, Bb, Ab], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [b.depth / 5, v(t1)], [b.depth / 5, v(t0)]], out3);
+        mb(e.rep).poly('FloorSide', [A, B, Bb, Ab], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [b.depth / 5, v(t1)], [b.depth / 5, v(t0)]], out3, own);
         continue;
       }
       // 厚度超过 5：和 BBP（raw_floor_side）一样，上面 5 用带边框的顶面贴图，再往下用无边框的顶面贴图
       const Am: V3 = [A[0], A[1], A0[2] - 5], Bm: V3 = [B[0], B[1], B0[2] - 5];
       const hb = (b.depth - 5) / 5;
-      mb(e.owner).poly('LightingFloorTopBorder', [A, B, Bm, Am], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [1, v(t1)], [1, v(t0)]], out3);
-      mb(e.owner).poly('LightingFloorTopBorderless', [Am, Bm, Bb, Ab], [[0, v(t0)], [0, v(t1)], [hb, v(t1)], [hb, v(t0)]], out3);
+      mb(e.rep).poly('LightingFloorTopBorder', [A, B, Bm, Am], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [1, v(t1)], [1, v(t0)]], out3, own);
+      mb(e.rep).poly('LightingFloorTopBorderless', [Am, Bm, Bb, Ab], [[0, v(t0)], [0, v(t1)], [hb, v(t1)], [hb, v(t0)]], out3, own);
     }
+  }
+  // 新算的放进缓存；命中缓存的直接用（复制一份数组，后面可能还要往里追加）
+  const copyParts = (src: ElemMeshOut['parts']) => {
+    const parts: ElemMeshOut['parts'] = {};
+    for (const [k, p] of Object.entries(src) as [MatName, MeshPart][]) parts[k] = { pos: p.pos.slice(), uv: p.uv.slice(), ...(p.own ? { own: p.own.slice() } : {}) };
+    return parts;
+  };
+  for (const [id, m] of builders) { const sig = compSig.get(id); if (sig !== undefined) nextMeshCache.set(sig, { id, parts: copyParts(m.parts) }); }
+  for (const [id, hit] of cached) {
+    const b = new MeshBuilder();
+    b.parts = copyParts(hit.parts);
+    builders.set(id, b);
   }
   for (const [id, m] of builders) {
     const prev = out.get(id);
-    if (!prev) { out.set(id, { id, parts: m.parts }); continue; }
+    if (!prev) { out.set(id, { id, parts: m.parts, sig: compSig.get(id) }); continue; }
+    prev.sig = undefined;
     for (const [k, part] of Object.entries(m.parts) as [MatName, MeshPart][]) {
       const t = (prev.parts[k] ??= { pos: [], uv: [] });
       t.pos.push(...part.pos); t.uv.push(...part.uv);
+      if (part.own) (t.own ??= []).push(...part.own);
     }
   }
 }
 
-/**
- * 合并小块：切分时很多线（远处外沿的端点垂线、45° 线……）其实没改变这里用哪个函数，切出来的相邻小块用的是同一个线性函数。
- * 同一个函数（距离、花纹都一样）的两块拼起来仍是凸多边形时合成一块（凸包面积 = 两块面积之和），顶点上的 UV、高度不变。
- */
-function mergePieces(items: { poly: Poly; w: Lin }[]): { poly: Poly; w: Lin }[] {
-  if (!solveOpts.merge) return items;
+/** 线性函数（距离 + 花纹）的键：一样的函数在同一片路面里的小块可以并成一块 */
+function linKey(l: Lin): string {
   const r9 = (v: number) => Math.round(v * 1e9);
-  const key = (l: Lin) => (l.clamp ? 'c' : [...l.k.map(r9), ...(l.v ? ['v', ...l.v.map(r9)] : ['r', l.run?.id ?? -1, l.vAx, r9(l.t[0]), r9(l.t[1])])].join(','));
-  type It = { poly: Poly; w: Lin; area: number; x0: number; y0: number; x1: number; y1: number };
-  const mk = (poly: Poly, w: Lin): It => ({ poly, w, area: area(poly), x0: Math.min(...poly.map((p) => p[0])), y0: Math.min(...poly.map((p) => p[1])), x1: Math.max(...poly.map((p) => p[0])), y1: Math.max(...poly.map((p) => p[1])) });
-  const groups = new Map<string, It[]>();
-  for (const it of items) { const k = key(it.w); let g = groups.get(k); if (!g) groups.set(k, (g = [])); g.push(mk(it.poly, it.w)); }
-  const out: { poly: Poly; w: Lin }[] = [];
-  for (const g of groups.values()) {
-    for (let i = 0; i < g.length; i++) {
-      for (let j = i + 1; j < g.length; j++) {
-        const a = g[i], b = g[j];
-        if (a.x1 < b.x0 - 1e-7 || b.x1 < a.x0 - 1e-7 || a.y1 < b.y0 - 1e-7 || b.y1 < a.y0 - 1e-7) continue;
-        const h = convexHull([...a.poly, ...b.poly]);
-        if (Math.abs(area(h) - a.area - b.area) > 1e-7 * Math.max(1, a.area + b.area)) continue;
-        g[i] = mk(h, a.w);
-        g.splice(j, 1);
-        j = i; // 合并后重新和剩下的比
-      }
-    }
-    for (const it of g) out.push({ poly: it.poly, w: it.w });
-  }
-  return out;
+  return l.clamp ? 'c' : [...l.k.map(r9), ...(l.v ? ['v', ...l.v.map(r9)] : ['r', l.run?.id ?? -1, l.vAx, r9(l.t[0]), r9(l.t[1])])].join(',');
 }
-/** 凸包（逆时针，去掉共线点） */
-function convexHull(ps: V2[]): Poly {
-  const pts = [...ps].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cr = (o: V2, a: V2, b: V2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lo: V2[] = [], hi: V2[] = [];
-  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 1e-9) lo.pop(); lo.push(p); }
-  for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (hi.length >= 2 && cr(hi[hi.length - 2], hi[hi.length - 1], p) <= 1e-9) hi.pop(); hi.push(p); }
-  return [...lo.slice(0, -1), ...hi.slice(0, -1)];
+
+/**
+ * 同一个线性函数的小块（凸多边形，互不重叠）并成多边形（可以凹、可以有洞），去掉共线的点，再三角化。
+ * 小块之间的公共边成对抵消（一边的顶点落在另一边上时先把边切开），剩下的边连成环：逆时针的是外圈，顺时针的是洞。
+ * 函数在整块上是同一个线性函数，所以顶点上算出的 UV、高度和原来逐块算的完全一样，n 个顶点的多边形只要 n − 2 个三角形。
+ */
+function unionTriangulate(polys: Poly[]): V2[][] {
+  // 只有一块（凸多边形）：去掉共线点后扇形三角化就是最少的
+  if (polys.length === 1) {
+    const ring = dropCollinear(polys[0]);
+    return ring.length < 3 ? [] : ring.slice(1, -1).map((_, i) => [ring[0], ring[i + 1], ring[i + 2]]);
+  }
+  const Q = 1e6;
+  const key = (p: V2) => `${Math.round(p[0] * Q)},${Math.round(p[1] * Q)}`;
+  const pts = new Map<string, V2>();
+  const rings = polys.map((p) => (signedArea(p) < 0 ? [...p].reverse() : p));
+  for (const r of rings) for (const p of r) if (!pts.has(key(p))) pts.set(key(p), p);
+  const vgrid = new Grid<[string, V2]>(2.5);
+  for (const e of pts.entries()) vgrid.add(e, e[1][0], e[1][1], e[1][0], e[1][1]);
+  // 有向边（顶点落在边上的先切开），统计次数
+  const cnt = new Map<string, number>();
+  const ends = new Map<string, [string, string]>();
+  for (const r of rings) for (let i = 0; i < r.length; i++) {
+    const a = r[i], b = r[(i + 1) % r.length];
+    const ka = key(a), kb = key(b);
+    if (ka === kb) continue;
+    const dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy;
+    const mids: [number, string][] = [];
+    const x0 = Math.min(a[0], b[0]) - 1e-7, x1 = Math.max(a[0], b[0]) + 1e-7, y0 = Math.min(a[1], b[1]) - 1e-7, y1 = Math.max(a[1], b[1]) + 1e-7;
+    for (const [k, p] of vgrid.query(x0, y0, x1, y1)) {
+      if (k === ka || k === kb || p[0] < x0 || p[0] > x1 || p[1] < y0 || p[1] > y1) continue;
+      const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+      if (t <= 1e-9 || t >= 1 - 1e-9) continue;
+      if (Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / Math.sqrt(len2) > 1e-7) continue;
+      mids.push([t, k]);
+    }
+    mids.sort((p, q) => p[0] - q[0]);
+    const chain = [ka, ...mids.map((m) => m[1]), kb];
+    for (let j = 0; j + 1 < chain.length; j++) {
+      const ek = `${chain[j]}>${chain[j + 1]}`;
+      cnt.set(ek, (cnt.get(ek) ?? 0) + 1);
+      ends.set(ek, [chain[j], chain[j + 1]]);
+    }
+  }
+  // 公共边抵消：a→b 和 b→a 各去掉一次
+  const out = new Map<string, string[]>();
+  let left = 0;
+  for (const [ek, n] of cnt) {
+    const [a, b] = ends.get(ek)!;
+    const m = n - (cnt.get(`${b}>${a}`) ?? 0);
+    for (let i = 0; i < m; i++) { (out.get(a) ?? (out.set(a, []), out.get(a)!)).push(b); left++; }
+  }
+  // 连成环：一个点有好几条出边（两块只在一个点相碰）时取向右拐得最多的那条，保证每个环不自交
+  const loops: V2[][] = [];
+  while (left > 0) {
+    const start = [...out.keys()].find((k) => out.get(k)!.length)!;
+    const loop: string[] = [start];
+    let prev = start, cur = out.get(start)!.pop()!;
+    left--;
+    let guard = 0;
+    while (cur !== start && guard++ < 100000) {
+      loop.push(cur);
+      const cands = out.get(cur) ?? [];
+      if (!cands.length) break;
+      let bi = 0;
+      if (cands.length > 1) {
+        const P = pts.get(prev)!, C = pts.get(cur)!;
+        const din: V2 = [C[0] - P[0], C[1] - P[1]];
+        let best = Infinity;
+        cands.forEach((k, i) => {
+          const N = pts.get(k)!, d: V2 = [N[0] - C[0], N[1] - C[1]];
+          const ang = Math.atan2(din[0] * d[1] - din[1] * d[0], din[0] * d[0] + din[1] * d[1]);
+          if (ang < best) { best = ang; bi = i; }
+        });
+      }
+      prev = cur;
+      cur = cands.splice(bi, 1)[0];
+      left--;
+    }
+    const ring = dropCollinear(loop.map((k) => pts.get(k)!));
+    if (ring.length >= 3 && Math.abs(signedArea(ring)) > 1e-10) loops.push(ring);
+  }
+  // 外圈（逆时针）带上落在它里面的洞（顺时针），用 earcut 三角化
+  const outers = loops.filter((l) => signedArea(l) > 0), holes = loops.filter((l) => signedArea(l) < 0);
+  const tris: V2[][] = [];
+  for (const o of outers) {
+    const hs = holes.filter((h) => pointInRing(h[0], o) && !outers.some((o2) => o2 !== o && pointInRing(h[0], o2) && pointInRing(o2[0], o)));
+    if (o.length === 3 && !hs.length) { tris.push(o); continue; }
+    const verts = [o, ...hs].flat();
+    for (const f of ShapeUtils.triangulateShape(o.map((p) => new Vector2(p[0], p[1])), hs.map((h) => h.map((p) => new Vector2(p[0], p[1]))))) tris.push(f.map((i) => verts[i]));
+  }
+  return tris;
+}
+/** 去掉多边形上共线的点（三角形不动） */
+function dropCollinear(poly: Poly): Poly {
+  const ring = [...poly];
+  for (let changed = true; changed && ring.length > 3;) {
+    changed = false;
+    for (let i = 0; i < ring.length && ring.length > 3; i++) {
+      const a = ring[(i + ring.length - 1) % ring.length], p = ring[i], b = ring[(i + 1) % ring.length];
+      const cr = (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0]);
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      if (Math.abs(cr) / l < 1e-7 && (p[0] - a[0]) * (b[0] - p[0]) + (p[1] - a[1]) * (b[1] - p[1]) >= 0) { ring.splice(i, 1); i--; changed = true; }
+    }
+  }
+  return ring;
+}
+function signedArea(p: Poly) {
+  let s = 0;
+  for (let i = 0; i < p.length; i++) { const q = p[(i + 1) % p.length]; s += p[i][0] * q[1] - q[0] * p[i][1]; }
+  return s / 2;
+}
+function pointInRing(p: V2, ring: Poly) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
 }
 
 /** 在凸多边形里找出处处最小的那个线性函数；没有就沿两个函数相等的线切开再找 */
@@ -1233,8 +1554,12 @@ function resolve(poly: Poly, lins: Lin[], emit: (p: Poly, w: Lin) => void, depth
   const a = lins[i0].k, b = lins[i1].k;
   const s = splitPoly(poly, [a[0] - b[0], a[1] - b[1], b[2] - a[2]]);
   if (!s) {
-    // 两个函数在这块里不相交：较大的那个在这里永远不会是最小值，去掉它再找
-    const drop = vals[i0].every((v, kk) => v >= vals[i1][kk] - 1e-9) ? i0 : i1;
+    // 两个函数在这块里不相交（相等的线只擦到边界）：去掉处处不比另一个小的那个再找。
+    // 容差要和上面判断「处处最小」的一致：相等的线正好落在这块的边上时，两边在那几个顶点上只差舍入误差，
+    // 用更紧的容差会把真正最小的那个去掉（花纹贴图被拉成一条条的）
+    const ge = (a: number, b: number) => vals[a].every((v, kk) => v >= vals[b][kk] - 1e-7);
+    const sum = (a: number) => vals[a].reduce((s, v) => s + v, 0);
+    const drop = ge(i0, i1) ? i0 : ge(i1, i0) ? i1 : sum(i0) >= sum(i1) ? i0 : i1;
     resolve(poly, lins.filter((_, i) => i !== drop), emit, depth + 1);
     return;
   }

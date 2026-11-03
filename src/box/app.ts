@@ -22,7 +22,7 @@ import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
 import { type P3, feats as featsRaw } from './snap';
-import { solve } from './solve';
+import { solve, solveStats } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
@@ -86,10 +86,12 @@ const STORE = 'bvm.box.doc';
 /** 本机偏好，连同顶栏开关这些临时状态（格栅、对齐、小节、死亡区显示、漫游速度、素材库收起），刷新后保持 */
 interface Prefs {
   side: 'left' | 'right'; gridStep: number; modelView: boolean; theme: 'dark' | 'light'; tab: string;
-  grid: boolean; align: boolean; sectors: boolean; sector: number; zones: boolean; flySpeed: number; folded: boolean;
+  grid: boolean; align: boolean; sectors: boolean; sector: number; flySpeed: number; folded: boolean;
+  /** 显示死亡区（换了键名：之前默认隐藏时存下的 zones 不再沿用，默认显示） */
+  zonesShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zones: false, flySpeed: 80, folded: false };
+  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, flySpeed: 80, folded: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 const savePrefs = () => { try { localStorage.setItem('bvm.box.prefs', JSON.stringify(prefs)); } catch { /* 存不了就算了 */ } };
@@ -108,7 +110,8 @@ let vHeld = false;
 let splitMode = false;
 /** 护栏工具：点路面外沿放一整条直边的护栏，按住拖动沿外沿放一段 */
 let guardMode = false;
-let loops: Loop[] = [];
+/** 上一次的求解结果：外沿环（护栏用）是用到时才算的 */
+let lastSolved: { loops: Loop[] } = { loops: [] };
 let guardPreview: Route | null = null;
 /** 护栏工具的拖动：从 s0 沿外沿拖；replace：正在拖某条护栏的端头 */
 let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean } | null = null;
@@ -138,7 +141,7 @@ function xfGroup(e: Elem): THREE.Group {
   return g;
 }
 /** 死亡区是否显示（顶栏的开关；导出时总是隐藏） */
-let zonesOn = prefs.zones; // 死亡区默认不显示
+let zonesOn = prefs.zonesShown; // 死亡区默认显示
 const ZONE_MAT = new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
 const ZONE_EDGE = new THREE.LineBasicMaterial({ color: 0xff6a6a, transparent: true, opacity: 0.85 });
 
@@ -185,9 +188,12 @@ const PROXY_MAT = new THREE.MeshBasicMaterial({ visible: false });
 
 /** 清掉上一次生成的网格（资产库模型的几何体是共用的，不能释放） */
 function clearWorld() {
-  world.traverse((o) => { if ((o as THREE.Mesh).geometry && o.userData.own) (o as THREE.Mesh).geometry.dispose(); });
+  // keep：路面网格按签名缓存，下一次没变就接着用，不在这里释放（换掉时再释放）
+  world.traverse((o) => { if ((o as THREE.Mesh).geometry && o.userData.own && !o.userData.keep) (o as THREE.Mesh).geometry.dispose(); });
   world.clear();
 }
+/** 路面网格缓存：求解结果的签名（加上切分线开关）→ 上次生成的 three.js 组 */
+let floorGroups = new Map<string, THREE.Group>();
 
 /** 每个元素的网格组（拖动时直接平移它们，不用每次都重算整张图） */
 const elemGroups = new Map<number, THREE.Group[]>();
@@ -222,27 +228,49 @@ function rebuildInner() {
   objBoxes.clear();
   const t0 = performance.now();
   const solved = solve(doc);
-  loops = solved.loops;
+  lastSolved = solved;
   lastSolve.ms = performance.now() - t0;
   let tris = 0;
+  const usedGroups = new Map<string, THREE.Group>();
   for (const m of solved.meshes.values()) {
+    const ownerId = doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id;
+    const gk = m.sig ? `${m.sig}|${wireOn}` : null;
+    const reuse = gk ? floorGroups.get(gk) : undefined;
+    if (reuse && gk) {
+      // 网格没变：直接沿用（拖动时大部分路面都是这样，省掉重新建几何体）
+      usedGroups.set(gk, reuse);
+      reuse.position.set(0, 0, 0);
+      reuse.traverse((o) => { if ((o as THREE.Mesh).isMesh) { pickables.push(o); tris += ((o as THREE.Mesh).geometry.getAttribute('position').count) / 3; } });
+      addGroup(ownerId, reuse);
+      continue;
+    }
     const g = new THREE.Group();
-    for (const [mat, part] of Object.entries(m.parts) as [MatName, { pos: number[]; uv: number[] }][]) {
+    // 连通的一片路面是一个网格：记下它包含哪些元素（拖动的缓动只在它们全都在动时才挪这个网格）
+    const owners = new Set<number>();
+    for (const [mat, part] of Object.entries(m.parts) as [MatName, { pos: number[]; uv: number[]; own?: number[] }][]) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(part.pos, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(part.uv, 2));
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, getMaterial(mat));
       mesh.userData.own = true;
+      if (gk) mesh.userData.keep = true;
       // 自动生成的转换件属于它嵌进去的那块路面
       mesh.userData.id = doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id;
+      // 每个三角形属于哪个元素：点选时按点中的三角形分出是哪一块路面
+      if (part.own) { mesh.userData.faceOwner = part.own; for (const o of part.own) owners.add(o); }
       g.add(mesh);
       pickables.push(mesh);
       tris += part.pos.length / 9;
       if (wireOn) { const w = new THREE.LineSegments(new THREE.WireframeGeometry(geo), WIRE_MAT); w.userData.own = true; g.add(w); }
     }
-    addGroup(doc.elems[m.id] ? m.id : solved.owner.get(m.id) ?? m.id, g);
+    if (owners.size > 1) g.userData.owners = owners;
+    if (gk) { g.traverse((o) => { o.userData.keep = true; }); usedGroups.set(gk, g); }
+    addGroup(ownerId, g);
   }
+  // 这次没用上的缓存网格：释放
+  for (const [k, g] of floorGroups) if (!usedGroups.has(k)) g.traverse((o) => { const me = o as THREE.Mesh; if (me.geometry) me.geometry.dispose(); });
+  floorGroups = usedGroups;
   lastSolve.tris = tris;
   // 专属路块、盘点路面（资产库模型 + 火焰 / 重生点占位符）
   for (const [id, parts] of solved.assets) {
@@ -497,8 +525,9 @@ sectorEye.classList.toggle('active', showSectors);
 const zoneEye = document.getElementById('zone-eye')!;
 zoneEye.classList.toggle('active', zonesOn);
 zoneEye.addEventListener('click', () => {
+  zoneEye.classList.remove('attn');
   zonesOn = !zonesOn;
-  prefs.zones = zonesOn; savePrefs();
+  prefs.zonesShown = zonesOn; savePrefs();
   zoneEye.classList.toggle('active', zonesOn);
   zoneEye.blur();
   if (!zonesOn) for (const id of [...sel]) if (doc.elems[id]?.kind === 'zone') sel.delete(id);
@@ -869,10 +898,30 @@ function setRay(e: { clientX: number; clientY: number }) {
 function pick(e: { clientX: number; clientY: number }, skip?: Set<number>): { id: number; p: THREE.Vector3 } | null {
   setRay(e);
   for (const h of ray.intersectObjects(pickables, false)) {
-    const id = h.object.userData.id as number;
+    const id = hitOwner(h);
     if (!skip?.has(id) && doc.elems[id]) return { id, p: h.point.clone() };
   }
   return null;
+}
+/**
+ * 点中的是哪个元素。连通的一片路面是一个网格，三角形可能跨过两块路面的分界，所以按点中的位置判断：
+ * 这片里包含这个点的路面中 id 最小的（和求解器分格子的规则一样）；都不包含时用三角形记下的元素。
+ */
+function hitOwner(h: THREE.Intersection): number {
+  const fo = h.object.userData.faceOwner as number[] | undefined;
+  const byFace = fo && h.faceIndex != null ? fo[h.faceIndex] : undefined;
+  const owners = h.object.parent?.userData.owners as Set<number> | undefined;
+  if (owners) {
+    let best: number | null = null;
+    for (const o of owners) {
+      const e = doc.elems[o];
+      if (e?.kind !== 'box') continue;
+      const [x, y] = toLocal(e, [h.point.x, h.point.y, h.point.z]);
+      if (x >= e.x - 1e-4 && x <= e.x + e.sx + 1e-4 && y >= e.y - 1e-4 && y <= e.y + e.sy + 1e-4 && (best === null || o < best)) best = o;
+    }
+    if (best !== null) return best;
+  }
+  return byFace ?? (h.object.userData.id as number);
 }
 function planeHit(e: { clientX: number; clientY: number }, plane: THREE.Plane) {
   setRay(e);
@@ -1745,9 +1794,9 @@ function startGuardLen(id: number, end: 0 | 1): boolean {
   const g = doc.elems[id] as Extract<Elem, { kind: 'guard' }>;
   const fixedP = end === 0 ? g.pts[g.pts.length - 1] : g.pts[0];
   const movP = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
-  const pf = project(loops, fixedP, 1);
+  const pf = project(lastSolved.loops, fixedP, 1);
   if (!pf) return false;
-  const l = loops[pf.loop];
+  const l = lastSolved.loops[pf.loop];
   const pm = project([l], movP, 1);
   if (!pm) return false;
   // 展开弧长：终点在起点之后（闭合环上可能要加一圈）
@@ -1759,7 +1808,7 @@ function startGuardLen(id: number, end: 0 | 1): boolean {
 
 /** 拖护栏的一头：沿外沿走；格栅开着时长度取整；长度靠近 5 的倍数、或者走到外沿的拐角时磁吸 */
 function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
-  const l = loops[d.loop];
+  const l = lastSolved.loops[d.loop];
   if (!l) return;
   const sgn = d.moveB ? 1 : -1;
   let s = projectNear(l, p.x, p.y, d.sNear);
@@ -1909,6 +1958,13 @@ function handleOf(e: Elem): P3 {
 
 function startPlace(type: string) {
   if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
+  // 死亡区正隐藏着：放下去也看不到，提醒一下，顶栏的「死亡区」按钮闪几下
+  if (type === 'zone' && !zonesOn) {
+    flash('死亡区当前是隐藏的，放下后看不到——点顶栏的「死亡区」打开查看', true);
+    zoneEye.classList.remove('attn');
+    void zoneEye.offsetWidth; // 重新触发动画
+    zoneEye.classList.add('attn');
+  }
   drag = { t: 'place', ids: null, type, moved: false, rotOff: 0 };
   document.body.classList.add('placing');
 }
@@ -2238,7 +2294,7 @@ function guardEndAt(e: { clientX: number; clientY: number }): { id: number; end:
 function guardHover(e: PointerEvent) {
   const p = surfacePoint(e);
   if (guardDrag) {
-    const l = loops[guardDrag.loop];
+    const l = lastSolved.loops[guardDrag.loop];
     const pr = p ? project([l], p, 3) : null;
     if (pr) guardPreview = shortPath(l, guardDrag.s0, pr.s);
     if (pr && Math.abs(pr.s - guardDrag.s0) > 0.3) guardDrag.moved = true;
@@ -2246,7 +2302,7 @@ function guardHover(e: PointerEvent) {
     const end = guardEndAt(e);
     guardEndHover = end;
     el.style.cursor = end ? 'ew-resize' : '';
-    guardPreview = end ? null : p ? edgeAt(loops, p) : null;
+    guardPreview = end ? null : p ? edgeAt(lastSolved.loops, p) : null;
   }
   dragInfo = guardPreview ? `护栏长 ${fmt(routeLen(guardPreview))}` : '';
   drawOverlay(); updateStatus();
@@ -2265,7 +2321,7 @@ function guardDown(e: PointerEvent) {
   }
   const p = surfacePoint(e);
   if (!p) return;
-  const pr = project(loops, p, 1.5);
+  const pr = project(lastSolved.loops, p, 1.5);
   if (!pr || pr.dist > 1.5) return;
   el.setPointerCapture(e.pointerId);
   guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, moved: false };
@@ -2274,7 +2330,7 @@ function guardUp(e: PointerEvent) {
   const gd = guardDrag!;
   guardDrag = null;
   // 点一下：整条直边；拖动：从按下的地方沿外沿走到松开的地方
-  const route = gd.moved ? guardPreview : edgeAt(loops, gd.a);
+  const route = gd.moved ? guardPreview : edgeAt(lastSolved.loops, gd.a);
   if (route && route.pts.length > 1 && routeLen(route) > 0.2) {
     snapshot();
     const id = gd.replace ?? doc.nextId++;
@@ -2950,6 +3006,8 @@ function frameSelection() {
   if (!ids.length) { flash('场景是空的'); return; }
   const box = new THREE.Box3();
   for (const id of ids) {
+    // 路面按它自己的范围（它的网格可能是和别的路面连在一起的一整片）
+    if (doc.elems[id]?.kind === 'box') { const b = elemBounds(doc.elems[id]); box.union(new THREE.Box3(new THREE.Vector3(b.x0, b.y0, b.z0), new THREE.Vector3(b.x1, b.y1, b.z1))); continue; }
     for (const g of elemGroups.get(id) ?? []) box.union(solidBox(g));
     const b = elemBounds(doc.elems[id]);
     if (!elemGroups.get(id)?.length) box.union(new THREE.Box3(new THREE.Vector3(b.x0, b.y0, b.z0), new THREE.Vector3(b.x1, b.y1, b.z1)));
@@ -3024,8 +3082,11 @@ renderer.setAnimationLoop(() => {
   // 画面上的缓动：平移类拖动把网格挪 (val - final)，选中框一起挪；改形状的拖动重画选中框
   const off = anim?.ids ? anim.val.map((v, i) => v - anim!.final[i]) : [0, 0, 0];
   for (const [id, gs] of elemGroups) {
-    const m = !!anim?.ids?.has(id);
-    for (const g of gs) g.position.set(m ? off[0] : 0, m ? off[1] : 0, m ? off[2] : 0);
+    for (const g of gs) {
+      const own = g.userData.owners as Set<number> | undefined;
+      const m = !!anim?.ids && (own ? [...own].every((o) => anim!.ids!.has(o)) : anim.ids.has(id));
+      g.position.set(m ? off[0] : 0, m ? off[1] : 0, m ? off[2] : 0);
+    }
   }
   selLayer.position.set(off[0], off[1], off[2]);
   if (moving && anim?.preview) drawOverlay();
@@ -3052,6 +3113,8 @@ renderer.setAnimationLoop(() => {
   camState: () => ({ t: controls.target.toArray(), d: camera.position.distanceTo(controls.target) }),
   camPos: () => camera.position.toArray(),
   get rebuildTimes() { return rebuildTimes; },
+  get solveMs() { return lastSolve.ms; },
+  get solveStats() { return { ...solveStats }; },
   get groups() { return elemGroups; },
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },

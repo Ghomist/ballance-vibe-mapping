@@ -191,3 +191,10 @@ body.placing, body.placing * { cursor: grabbing !important; }
   font: 600 11px/1 "Segoe UI", system-ui, "Microsoft YaHei", sans-serif; letter-spacing: 0.2px;
   -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
 }
+
+/* 死亡区隐藏时拖出死亡区：顶栏的「死亡区」按钮闪几下提醒 */
+@keyframes attn-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 106, 106, 0); } 50% { box-shadow: 0 0 0 4px rgba(255, 106, 106, 0.55); border-color: #ff6a6a; color: #ffb0b0; } }
+#zone-eye.attn { animation: attn-pulse 0.6s ease-in-out 4; }
+
+/* 状态栏里的警告（flash 的 warn）是 #status 里面的 span */
+#status .warn { color: #ffb35c; }

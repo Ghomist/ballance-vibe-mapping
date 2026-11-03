@@ -17,7 +17,7 @@ export type MatName =
 export type V3 = [number, number, number];
 export type V2 = [number, number];
 
-export interface MeshPart { pos: number[]; uv: number[] }
+export interface MeshPart { pos: number[]; uv: number[]; /** 每个三角形属于哪个元素（连通的一片路面合成一个网格时，点选靠它分出是哪一块） */ own?: number[] }
 export interface ElemMesh {
   /** 元素 id（节点或直道） */
   id: number;
