@@ -27,11 +27,6 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
   const pieces = fake ? getAsset('fake', fake) : getAsset(!t || t.cat === 'deco' ? 'asset' : 'element', type);
   if (!pieces || !texturesReady(pieces)) return null;
   const fix = (fake && FAKE_FIX[fake]) || {};
-  const scene = new THREE.Scene();
-  scene.add(new THREE.AmbientLight(0xffffff, 1.4));
-  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-  sun.position.set(3, -4, 6);
-  scene.add(sun);
   const group = new THREE.Group();
   for (const pc of pieces) {
     // 占位符本身是半透明的，预览用不透明的同色材质看得更清楚
@@ -45,7 +40,18 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
     mesh.position.set(fix.dx ?? 0, fix.dy ?? 0, fix.dz ?? 0);
     group.add(mesh);
   }
-  scene.add(group);
+  const url = renderThumb(group);
+  cache.set(key, url);
+  return url;
+}
+
+/** 把一组网格从斜上方渲染成预览图（dataURL）：相机按包围盒取景 */
+export function renderThumb(group: THREE.Object3D): string {
+  const scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, 1.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(3, -4, 6);
+  scene.add(sun, group);
   const box = new THREE.Box3().setFromObject(group);
   const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, size * 10);
@@ -55,7 +61,6 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
   const r = getRenderer();
   r.setClearColor(0x000000, 0);
   r.render(scene, cam);
-  const url = r.domElement.toDataURL('image/png');
-  cache.set(key, url);
-  return url;
+  scene.remove(group);
+  return r.domElement.toDataURL('image/png');
 }

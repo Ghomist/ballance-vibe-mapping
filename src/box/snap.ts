@@ -1,5 +1,5 @@
 // 吸附用的几何特征：顶点、边的中点、边
-import { Elem, anchorRects, assetBounds, boxTopAt, footprint, virtualCells } from './types';
+import { Elem, anchorRects, assetBounds, boxTopAt, footprint, toWorld, virtualCells } from './types';
 import { advance, type RailState } from '../model/rail';
 
 export type P3 = [number, number, number];
@@ -17,7 +17,16 @@ const boxFeats = (corners: (x: number, y: number) => [number, number], x0: numbe
   return { verts: [...top, ...bot], edges, mids: edges.map(([a, b]) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]) };
 };
 
+/** 吸附点（世界坐标）：在元素自己的坐标里算，再转到世界 */
 export function feats(e: Elem): Feats {
+  const f = localFeats(e);
+  if ((e.kind === 'rail' || e.kind === 'guard') || (!e.ang && !e.q)) return f;
+  const w = (p: P3) => toWorld(e, p);
+  return { verts: f.verts.map(w), mids: f.mids.map(w), edges: f.edges.map(([a, b]) => [w(a), w(b)]) };
+}
+
+function localFeats(e: Elem): Feats {
+  if (e.kind === 'zone') return boxFeats(() => [e.z, 0], e.x, e.y, e.x + e.sx, e.y + e.sy, e.depth);
   if (e.kind === 'box') {
     const f = footprint(e);
     return boxFeats((x, y) => [boxTopAt(e, x, y), 0], f.x0, f.y0, f.x1, f.y1, e.depth);
@@ -27,7 +36,7 @@ export function feats(e: Elem): Feats {
     const out = boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
     // 盘点：路口那一格的虚拟路面
     for (const r of virtualCells(e)) {
-      const v = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, 5);
+      const v = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, r.depth ?? 5);
       out.verts.push(...v.verts); out.mids.push(...v.mids); out.edges.push(...v.edges);
     }
     return out;
@@ -55,7 +64,7 @@ export function feats(e: Elem): Feats {
   // 机关：对准方块（代表它所在的那一格路面，5×5×5，顶面就是路面）的顶点、边中点、边，再加顶面中心
   const out: Feats = { verts: [], mids: [], edges: [] };
   for (const r of anchorRects(e)) {
-    const f = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, 5);
+    const f = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, r.depth);
     out.verts.push(...f.verts);
     out.mids.push(...f.mids, [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.top]);
     out.edges.push(...f.edges);

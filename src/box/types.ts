@@ -4,6 +4,7 @@ import { objType } from '../model/objects';
 import { PREFAB_PORT } from '../model/types';
 import { type RailPiece, sampleRail } from '../model/rail';
 import { assetInfo } from './asset-info';
+import { type M3, type Quat, type V3, I3, apply, fromQuat, mul, rotZ } from './xform';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
 export const DX = [1, 0, -1, 0] as const;
@@ -25,7 +26,17 @@ interface ElemBase {
   group?: number;
 }
 
-export interface Box extends ElemBase {
+/**
+ * 可以任意转向的元素：ang 是朝向坐标系绕 Z 的角度 [0, 90)，元素的坐标（x、y、rot、矩形）都在这个坐标系里；
+ * q 是倾斜（绕 X / Y 转过）后的朝向，绕元素的中心（路面、死亡区）或原点（机关、特殊路面）转；有 q 时 ang 为 0。
+ * 世界坐标 = Rz(ang)·(c + Q·(p − c))。
+ */
+interface Oriented {
+  ang?: number;
+  q?: Quat;
+}
+
+export interface Box extends ElemBase, Oriented {
   kind: 'box';
   /** 最小角（x、y 最小的那个角） */
   x: number;
@@ -41,6 +52,8 @@ export interface Box extends ElemBase {
   slope?: { axis: 0 | 1; dz: number };
   /** 开口的侧面（位掩码，1<<Dir）：这一侧不画边框，端面露出凹槽截面（例如路接机关的断口） */
   open?: number;
+  /** 封口的侧面（位掩码）：这一侧一定画边框，就算贴着别的路面也不连成一片（优先于自动解算） */
+  closed?: number;
 }
 
 /**
@@ -53,7 +66,7 @@ export type PieceType = 'transition' | 'transition-narrow' | 'transition-half' |
 export type BaseKind = 'trafo' | 'fan' | 'fence';
 
 /** 素材件：形状固定，只能平移和按 90° 旋转 */
-export interface Piece extends ElemBase {
+export interface Piece extends ElemBase, Oriented {
   kind: 'piece';
   type: PieceType;
   /** 中心（专属路块：机关对准的那一格的中心） */
@@ -74,7 +87,7 @@ export interface Piece extends ElemBase {
 }
 
 /** 机关 / 装饰：BBP 占位符或资产库模型；需要专属路块和挡块的机关自动带上 */
-export interface Obj extends ElemBase {
+export interface Obj extends ElemBase, Oriented {
   kind: 'obj';
   type: string;
   /** 物体原点 */
@@ -114,21 +127,43 @@ export interface GuardElem extends ElemBase {
 }
 
 /** 特殊路面：资产库里形状固定的模型（木制路面、特殊路块、钢轨交叉），按资产原点摆放，只能按 90° 旋转 */
-export interface AssetElem extends ElemBase {
+export interface AssetElem extends ElemBase, Oriented {
   kind: 'asset';
   name: string;
   x: number;
   y: number;
   z: number;
   rot: Dir;
+  /** 沿模型本地 X、Y 的缩放（Ctrl 拉伸木制件） */
+  scale?: [number, number];
 }
 
-export type Elem = Box | Piece | Obj | RailElem | GuardElem | AssetElem;
+/** 死亡区：半透明的长方体，球碰到它的包围盒就死；导出时隐藏，归到 DepthTestCubes 组 */
+export interface ZoneElem extends ElemBase, Oriented {
+  kind: 'zone';
+  /** 最小角与顶面高度，和路面一样 */
+  x: number;
+  y: number;
+  z: number;
+  sx: number;
+  sy: number;
+  depth: number;
+}
+
+export type Elem = Box | Piece | Obj | RailElem | GuardElem | AssetElem | ZoneElem;
+export type OrientedElem = Box | Piece | Obj | AssetElem | ZoneElem;
+export const isOriented = (e: Elem): e is OrientedElem => e.kind === 'box' || e.kind === 'piece' || e.kind === 'obj' || e.kind === 'asset' || e.kind === 'zone';
+/** 绕 X / Y 转过（倾斜）的元素：不参与路面求解 */
+export const isTilted = (e: Elem) => isOriented(e) && !!e.q;
+/** 能绕 X / Y 转的元素 */
+export const canTilt = (e: Elem) => e.kind === 'box' || e.kind === 'obj' || e.kind === 'asset' || e.kind === 'zone';
 
 /** 特殊路面的包围盒（世界坐标）：本地包围盒按朝向转过去 */
 export function assetBounds(e: AssetElem): Rect & { z0: number; z1: number } {
   const inf = assetInfo(e.name);
-  const mn = inf?.min ?? [-2.5, -2.5, -2.5], mx = inf?.max ?? [2.5, 2.5, 2.5];
+  const [ks, kt] = e.scale ?? [1, 1];
+  const mn0 = inf?.min ?? [-2.5, -2.5, -2.5], mx0 = inf?.max ?? [2.5, 2.5, 2.5];
+  const mn = [mn0[0] * ks, mn0[1] * kt, mn0[2]], mx = [mx0[0] * ks, mx0[1] * kt, mx0[2]];
   const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
   const xs: number[] = [], ys: number[] = [];
   for (const x of [mn[0], mx[0]]) for (const y of [mn[1], mx[1]]) { xs.push(e.x + x * c - y * s); ys.push(e.y + x * s + y * c); }
@@ -151,8 +186,8 @@ export const pieceLen = (p: Piece) => (p.type === 'transition' ? 5 : 2.5);
 
 export type Rect = { x0: number; y0: number; x1: number; y1: number };
 
-/** 机关的对准方块（世界坐标的矩形和顶面高度） */
-export function anchorRects(o: Obj): (Rect & { top: number })[] {
+/** 机关的对准方块（朝向坐标系里的矩形、顶面高度和厚度） */
+export function anchorRects(o: Obj): (Rect & { top: number; depth: number })[] {
   const t = objType(o.type);
   if (!t?.anchor) return [];
   const c = [1, 0, -1, 0][o.rot], s = [0, 1, 0, -1][o.rot];
@@ -160,11 +195,11 @@ export function anchorRects(o: Obj): (Rect & { top: number })[] {
     const sx = a[3] ?? 5, sy = a[4] ?? 5;
     const hx = (o.rot % 2 ? sy : sx) / 2, hy = (o.rot % 2 ? sx : sy) / 2;
     const x = o.x + a[0] * c - a[1] * s, y = o.y + a[0] * s + a[1] * c;
-    return { x0: x - hx, y0: y - hy, x1: x + hx, y1: y + hy, top: o.z + a[2] };
+    return { x0: x - hx, y0: y - hy, x1: x + hx, y1: y + hy, top: o.z + a[2], depth: a[5] ?? 5 };
   });
 }
 
-/** 元素在平面上的范围 */
+/** 元素在平面上的范围（朝向坐标系里；钢轨、护栏是世界坐标） */
 export function footprint(e: Elem): Rect {
   if (e.kind === 'asset') { const b = assetBounds(e); return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; }
   if (e.kind === 'guard') return { x0: Math.min(...e.pts.map((p) => p[0])) - 0.5, y0: Math.min(...e.pts.map((p) => p[1])) - 0.5, x1: Math.max(...e.pts.map((p) => p[0])) + 0.5, y1: Math.max(...e.pts.map((p) => p[1])) + 0.5 };
@@ -173,7 +208,7 @@ export function footprint(e: Elem): Rect {
     const pad = 2.25; // 双轨半宽 + 轨道半径
     return { x0: Math.min(...ps.map((p) => p.x)) - pad, y0: Math.min(...ps.map((p) => p.y)) - pad, x1: Math.max(...ps.map((p) => p.x)) + pad, y1: Math.max(...ps.map((p) => p.y)) + pad };
   }
-  if (e.kind === 'box') return { x0: e.x, y0: e.y, x1: e.x + e.sx, y1: e.y + e.sy };
+  if (e.kind === 'box' || e.kind === 'zone') return { x0: e.x, y0: e.y, x1: e.x + e.sx, y1: e.y + e.sy };
   if (e.kind === 'obj') {
     const rs = anchorRects(e);
     if (!rs.length) return { x0: e.x - 1, y0: e.y - 1, x1: e.x + 1, y1: e.y + 1 };
@@ -201,7 +236,7 @@ export function footprint(e: Elem): Rect {
  * 虚拟路面（虚线方块）：机关的对准方块、盘点路口的那一格（5×5，顶面就是路面，往下 5）。
  * 悬停 / 选中时画出来，按住 V 时也能吸到它们的顶点，方便把路接上去。
  */
-export function virtualCells(e: Elem): (Rect & { top: number })[] {
+export function virtualCells(e: Elem): (Rect & { top: number; depth?: number })[] {
   if (e.kind === 'obj') return anchorRects(e);
   if (e.kind !== 'piece' || (e.type !== 'start' && e.type !== 'check')) return [];
   const port = PREFAB_PORT[e.type];
@@ -261,8 +296,60 @@ export function baseSpec(type: string): Piece['base'] | null {
 
 /** 机关的专属路块：放在对准方块那一格，顶面与对准方块顶面齐平 */
 export function basePiece(o: Obj): Piece | null {
-  const spec = o.noBase ? null : baseSpec(o.type);
+  const spec = o.noBase || o.q ? null : baseSpec(o.type);
   const a = anchorRects(o)[0];
   if (!spec || !a) return null;
-  return { id: o.id, kind: 'piece', type: 'base', x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2, z: a.top, rot: o.rot, base: spec };
+  return { id: o.id, kind: 'piece', type: 'base', x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2, z: a.top, rot: o.rot, base: spec, ang: o.ang };
 }
+
+/** 元素在自己坐标里的包围盒（朝向坐标系，倾斜前） */
+export function localBounds(e: OrientedElem): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } {
+  const f = footprint(e);
+  if (e.kind === 'box') {
+    const tops = [boxTopAt(e, f.x0, f.y0), boxTopAt(e, f.x1, f.y1)];
+    return { ...f, z0: Math.min(...tops) - e.depth, z1: Math.max(...tops) };
+  }
+  if (e.kind === 'zone') return { ...f, z0: e.z - e.depth, z1: e.z };
+  if (e.kind === 'piece') return { ...f, z0: e.z - 5, z1: e.z };
+  if (e.kind === 'asset') return assetBounds(e);
+  const rs = anchorRects(e);
+  const top = rs.length ? Math.max(...rs.map((r) => r.top)) : e.z;
+  // 带厚度的对准方块（灯塔的塔底地板）按它的厚度；机关按一层薄片
+  const depth = rs.length && objType(e.type)?.anchor?.[5] !== undefined ? rs[0].depth : 0.5;
+  return { ...f, z0: top - depth, z1: top };
+}
+
+/** 倾斜的转轴：路面、死亡区绕自己的中心，机关、特殊路面绕原点 */
+export function pivotOf(e: OrientedElem): V3 {
+  if (e.kind === 'box' || e.kind === 'zone') { const b = localBounds(e); return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2]; }
+  return [e.x, e.y, e.z];
+}
+
+/** 元素坐标 → 世界坐标的变换：world = m·p + t */
+export function elemXf(e: Elem): { m: M3; t: V3 } {
+  if (!isOriented(e) || (!e.ang && !e.q)) return { m: I3, t: [0, 0, 0] };
+  const R = e.ang ? rotZ(e.ang) : I3;
+  if (!e.q) return { m: R, t: [0, 0, 0] };
+  const Q = fromQuat(e.q), c = pivotOf(e), qc = apply(Q, c);
+  return { m: mul(R, Q), t: apply(R, [c[0] - qc[0], c[1] - qc[1], c[2] - qc[2]]) };
+}
+export function toWorld(e: Elem, p: V3): V3 {
+  if (!isOriented(e) || (!e.ang && !e.q)) return p;
+  const { m, t } = elemXf(e), w = apply(m, p);
+  return [w[0] + t[0], w[1] + t[1], w[2] + t[2]];
+}
+/** 世界坐标 → 元素坐标 */
+export function toLocal(e: Elem, p: V3): V3 {
+  if (!isOriented(e) || (!e.ang && !e.q)) return p;
+  const { m, t } = elemXf(e);
+  const v: V3 = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+  return [m[0] * v[0] + m[3] * v[1] + m[6] * v[2], m[1] * v[0] + m[4] * v[1] + m[7] * v[2], m[2] * v[0] + m[5] * v[1] + m[8] * v[2]];
+}
+/** 世界里的方向 → 元素坐标里的方向 */
+export function dirToLocal(e: Elem, d: V3): V3 {
+  if (!isOriented(e) || (!e.ang && !e.q)) return d;
+  const { m } = elemXf(e);
+  return [m[0] * d[0] + m[3] * d[1] + m[6] * d[2], m[1] * d[0] + m[4] * d[1] + m[7] * d[2], m[2] * d[0] + m[5] * d[1] + m[8] * d[2]];
+}
+/** 绕 Z 的总朝向（度）：机关、素材件是 ang + rot·90 */
+export const yawDeg = (e: Piece | Obj | AssetElem) => (e.ang ?? 0) + e.rot * 90;

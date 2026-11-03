@@ -10,7 +10,9 @@ import type { Dir } from '../model/types';
 
 export type MatName =
   | 'FloorTopBorder' | 'FloorTopBorderless' | 'FloorTopFlat'
-  | 'FloorTopProfil' | 'FloorTopProfilFlat' | 'FloorSide';
+  | 'FloorTopProfil' | 'FloorTopProfilFlat' | 'FloorSide'
+  /** 厚度超过 5 的路面侧面（BBP：上 5 带边框、往下无边框） */
+  | 'LightingFloorTopBorder' | 'LightingFloorTopBorderless';
 
 export type V3 = [number, number, number];
 export type V2 = [number, number];

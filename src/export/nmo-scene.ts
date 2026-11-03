@@ -7,24 +7,26 @@ import { exportScene, SceneDesc, SceneMesh } from './scene';
 import { NmoDoc, NmoDocMesh, NmoDocObject, writeNmo } from './nmo';
 import { loadNmoLib, NmoLib } from './nmo-lib';
 import { Model } from '../model/types';
+import { stretchTriUV } from '../view/uvstretch';
 
 const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
   floor: ['Phys_Floors', 'Sound_HitID_01', 'Sound_RollID_01', 'Shadow'],
   rail: ['Phys_FloorRails', 'Sound_HitID_03', 'Sound_RollID_03'],
   stopper: ['Phys_FloorStopper'],
+  zone: ['DepthTestCubes'],
 };
-const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_' };
+const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_', zone: 'DepthTestCubes_' };
 const ASSET_PREFIX = { floor: 'A_Floor_', rail: 'A_Rail_', deco: 'D_' } as const;
 
 export const sectorGroup = (i: number) => (i === 9 ? 'Sector_9' : `Sector_${String(i).padStart(2, '0')}`);
 const two = (i: number) => String(i).padStart(2, '0');
 
 /** Blender 坐标（Z 朝上）下的 平移 · 绕 Z 旋转 · 绕 Y 俯仰，转成 Virtools 世界矩阵（按行） */
-export function vxMatrix(pos: [number, number, number], rotZ: number, pitch = 0): number[] {
+export function vxMatrix(pos: [number, number, number], rotZ: number, pitch = 0, rot3?: number[]): number[] {
   const z = (rotZ * Math.PI) / 180, y = (pitch * Math.PI) / 180;
   const cz = Math.cos(z), sz = Math.sin(z), cy = Math.cos(y), sy = Math.sin(y);
-  // B = Rz · Ry（列向量约定）
-  const B = [
+  // B = Rz · Ry（列向量约定）；给了完整朝向就直接用
+  const B = rot3 ? [rot3.slice(0, 3), rot3.slice(3, 6), rot3.slice(6, 9)] : [
     [cz * cy, -sz, cz * sy],
     [sz * cy, cz, sz * sy],
     [-sy, 0, cy],
@@ -210,12 +212,33 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const name = unique(m.name.startsWith(MESH_PREFIX[m.kind]) ? m.name : MESH_PREFIX[m.kind] + m.name);
     const mi = doc.meshes.length;
     doc.meshes.push({ ...baked, name, litMode: 1, mtls: baked.mtls.map((k) => material(lib.floorMaterials[k] ?? null)) });
-    addObject({ name, mesh: mi, matrix: identity }, MESH_GROUPS[m.kind]);
+    // 死亡区：导出时隐藏（游戏只看它的包围盒）
+    addObject({ name, mesh: mi, matrix: identity, ...(m.kind === 'zone' ? { visible: false } : {}) }, MESH_GROUPS[m.kind]);
   }
+  /** 拉伸过的木制件：复制一份网格，UV 按三角形补偿成平铺（顶点拆开不共用；Virtools 坐标里 Blender 的 Y 是第 3 个分量） */
+  const stretchedMesh = (name: string, s: [number, number]) => {
+    const key = `${name}@${s[0]},${s[1]}`;
+    let i = meshIdx.get(key);
+    if (i !== undefined) return i;
+    const m = lib.meshes[name];
+    const pos: number[] = [], nml: number[] = [], uv: number[] = [], faces: number[] = [];
+    for (let f = 0; f * 3 < m.faces.length; f++) {
+      const vi = [0, 1, 2].map((k) => m.faces[f * 3 + k]);
+      const p = vi.map((v) => [m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2]]);
+      const u = stretchTriUV(p, vi.map((v) => [m.uv[v * 2], m.uv[v * 2 + 1]]), s[0], s[1], 0, 2);
+      vi.forEach((v, k) => { pos.push(...p[k]); nml.push(m.nml[v * 3], m.nml[v * 3 + 1], m.nml[v * 3 + 2]); uv.push(...u[k]); faces.push(f * 3 + k); });
+    }
+    i = doc.meshes.length;
+    doc.meshes.push({ name: unique(`${name}_Stretch`), litMode: m.litMode, pos, nml, uv, faces, faceMtl: [...m.faceMtl], mtls: [] });
+    meshIdx.set(key, i);
+    doc.meshes[i].mtls = m.mtls.map(material);
+    return i;
+  };
   for (const a of desc.assets) {
     const src = lib.assets[a.asset];
     if (!src) continue;
-    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh: libMesh(src.mesh), matrix: vxMatrix(a.pos, a.rotZ, a.pitch) }, src.groups);
+    const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : libMesh(src.mesh);
+    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, src.groups);
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {
@@ -236,7 +259,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
         groups = [e.type, sectorGroup(sector)];
       }
     }
-    addObject({ name: unique(name), mesh: libMesh(src.mesh), matrix: vxMatrix(e.pos, e.rotZ) }, groups);
+    addObject({ name: unique(name), mesh: libMesh(src.mesh), matrix: vxMatrix(e.pos, e.rotZ, 0, e.rot3) }, groups);
   }
   return doc;
 }

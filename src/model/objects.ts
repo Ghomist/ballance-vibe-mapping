@@ -27,8 +27,8 @@ export interface Obj {
   noStopper?: boolean;
 }
 
-/** 对准方块：本地中心 x、y，顶面 z（= 路面高度），以及大小（默认 5×5） */
-export type Anchor = [number, number, number] | [number, number, number, number, number];
+/** 对准方块：本地中心 x、y，顶面 z（= 路面高度），以及大小（默认 5×5）、厚度（默认 5） */
+export type Anchor = [number, number, number] | [number, number, number, number, number] | [number, number, number, number, number, number];
 
 /** 机关的所有对准方块（世界坐标的中心、半宽、顶面相对原点的高度） */
 export function anchorBlocks(o: { type: string; x: number; y: number; z: number; rot: number }) {
@@ -94,8 +94,9 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: [[1, 2]] },
   { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
-  { type: 'Latern', cat: 'deco', label: '灯塔' },
-  { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）' },
+  // 灯塔：对准方块是塔底那块 5×5 的地板（厚 2.23，顶面就是塔里的地面），像一格路面一样对齐
+  { type: 'Latern', cat: 'deco', label: '灯塔', anchor: [0, 0, 2.23, 5, 5, 2.23] },
+  { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）', anchor: [0, 0, 95.74, 5, 5, 2.23] },
   // 柱子：对准方块是柱子顶上的那一格路面（顶面 = 路面），柱头顶在这一格路面的底下作为支撑
   { type: 'LaternColumn', cat: 'deco', label: '柱子（支撑）', anchor: [0, 0, 98.51] },
 ];

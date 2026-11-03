@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
 
-export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Material }
+export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Material; /** 模型里这一部分的名字 */ name?: string }
 
 interface AssetPartJSON {
   name: string | null; texture: string | null; color?: number[];
@@ -102,7 +102,7 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
       ...(p.blend === 'add' ? { blending: THREE.AdditiveBlending, depthWrite: false } : {}),
       ...(p.opacity !== undefined && p.opacity < 1 ? { transparent: true, opacity: p.opacity, depthWrite: false, side: THREE.DoubleSide } : {}),
     });
-    return { geometry: g, material: mat };
+    return { geometry: g, material: mat, name: p.name ?? undefined };
   });
 }
 

@@ -9,6 +9,8 @@ const TEXTURE_FILES: Record<MatName, string> = {
   FloorTopProfil: 'Floor_Top_Profil.bmp',
   FloorTopProfilFlat: 'Floor_Top_ProfilFlat.bmp',
   FloorSide: 'Floor_Side.bmp',
+  LightingFloorTopBorder: 'Floor_Top_Border.bmp',
+  LightingFloorTopBorderless: 'Floor_Top_Borderless.bmp',
 };
 
 const FALLBACK_COLORS: Record<MatName, number> = {
@@ -18,6 +20,8 @@ const FALLBACK_COLORS: Record<MatName, number> = {
   FloorTopProfil: 0xb8a88a,
   FloorTopProfilFlat: 0xc0b090,
   FloorSide: 0x8a7a66,
+  LightingFloorTopBorder: 0xb8a88a,
+  LightingFloorTopBorderless: 0xc0b090,
 };
 
 const cache = new Map<MatName, THREE.Material>();

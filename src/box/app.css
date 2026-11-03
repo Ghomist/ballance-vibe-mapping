@@ -91,3 +91,103 @@ body.placing, body.placing * { cursor: grabbing !important; }
 #fly-hud .speed .bar i { display: block; height: 100%; background: #7cd6ff; transition: width 0.1s; }
 #fly-hud .speed b { min-width: 26px; text-align: right; color: #fff; }
 #fly-hud .tip { color: rgba(207, 232, 255, 0.6); font-size: 11px; }
+
+/* ---------------- 悬停提示（src/view/tooltip.ts） ---------------- */
+#tooltip {
+  position: fixed; z-index: 100; left: 0; top: 0; max-width: 280px; padding: 7px 10px 8px; pointer-events: none;
+  background: var(--tip-bg); color: var(--text); border: 1px solid var(--tip-line); border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px); font: 12px/1.45 system-ui, "Microsoft YaHei", sans-serif;
+  opacity: 0; transform: translateY(var(--tip-dy, 4px)) scale(0.98); transform-origin: var(--arrow-x, 50%) top;
+  transition: opacity 0.12s ease, transform 0.14s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+#tooltip[data-side='above'] { --tip-dy: -4px; transform-origin: var(--arrow-x, 50%) bottom; }
+#tooltip.shown { opacity: 1; transform: none; }
+#tooltip.measuring { transition: none; visibility: hidden; }
+#tooltip .tip-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+#tooltip .tip-head b { font-weight: 600; white-space: nowrap; }
+#tooltip .tip-desc { color: var(--text-2); margin-top: 3px; }
+#tooltip .tip-keys { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+#tooltip .tip-keys i { font-style: normal; color: var(--text-3); font-size: 10px; padding: 0 1px; }
+#tooltip .tip-keys i.or { padding: 0 3px; }
+#tooltip kbd {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+  border: 1px solid var(--tip-line); border-bottom-width: 2px; border-radius: 4px; background: var(--tip-kbd);
+  color: var(--text); font: 600 10.5px/1 ui-monospace, Consolas, monospace;
+}
+#tooltip .tip-arrow {
+  position: absolute; left: var(--arrow-x, 50%); width: 8px; height: 8px; margin-left: -5px;
+  background: var(--tip-bg); border: 1px solid var(--tip-line); transform: rotate(45deg);
+}
+#tooltip[data-side='below'] .tip-arrow { top: -5px; border-right: none; border-bottom: none; }
+#tooltip[data-side='above'] .tip-arrow { bottom: -5px; border-left: none; border-top: none; }
+:root { --tip-bg: rgba(24, 30, 42, 0.96); --tip-line: #46516b; --tip-kbd: rgba(255, 255, 255, 0.06); }
+[data-theme='light'] { --tip-bg: rgba(255, 255, 255, 0.97); --tip-line: #cdd5e2; --tip-kbd: #f2f5fa; }
+
+/* ---------------- 旋转模式：转轴中心到鼠标的虚线 ---------------- */
+#rot-line { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 20; pointer-events: none; display: none; }
+#rot-line.on { display: block; }
+#rot-line line { stroke: #ffd34c; stroke-width: 1.5; stroke-dasharray: 5 4; }
+#rot-line circle { fill: #ffd34c; stroke: rgba(12, 16, 26, 0.9); stroke-width: 2; }
+
+/* 属性面板：标题下的小字、行内按钮 */
+#props .title small { display: block; font-weight: 400; color: var(--text-3); font-size: 11px; margin-top: 2px; }
+#props .inline { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+#props .inline button { height: 24px; padding: 0 10px; font-size: 12px; }
+#props .muted { color: var(--text-3); }
+
+/* ---------------- 属性面板：下拉、分段开关、药丸统一样式 ---------------- */
+#props select {
+  appearance: none; -webkit-appearance: none; padding: 0 24px 0 8px; cursor: pointer;
+  background: var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%238a96ad' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 6px center / 12px;
+}
+#props select:hover, #props input[type=number]:hover { border-color: var(--line-2); }
+#props select option { background: var(--menu); color: var(--text); }
+#props .sub { grid-column: 1 / -1; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--text); font-weight: 600; }
+#props .sub small { display: block; font-weight: 400; color: var(--text-3); font-size: 11px; margin-top: 1px; }
+#props .seg-toggle { display: flex; width: 100%; box-sizing: border-box; height: 26px; }
+#props .seg-toggle button { flex: 1; height: 20px; padding: 0 4px; font-size: 12px; }
+#props .seg-toggle button[data-v='open'].on { background: #2fa866; }
+#props .seg-toggle button[data-v='closed'].on { background: #d9822b; }
+#props .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+#props .chip {
+  height: 24px; padding: 0 10px 0 22px; border-radius: 12px; position: relative; font-size: 12px;
+  background: var(--field); border: 1px solid var(--line); color: var(--text-2);
+}
+#props .chip::before {
+  content: ''; position: absolute; left: 8px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+  background: var(--text-3); transition: background 0.12s;
+}
+#props .chip.on { color: var(--text); border-color: var(--accent); }
+#props .chip.on::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+/* ---------------- 视图立方体（右上角） ---------------- */
+#viewcube { position: absolute; z-index: 4; top: 10px; right: 290px; width: 112px; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: right 0.18s ease; }
+#viewcube canvas { display: block; width: 112px; height: 112px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.35)); }
+#viewcube .vc-label {
+  padding: 1px 9px; border-radius: 9px; font: 600 11px system-ui, "Microsoft YaHei", sans-serif; color: var(--text-2);
+  background: var(--menu); border: 1px solid var(--line); cursor: default; user-select: none;
+}
+#viewcube.ortho .vc-label { color: #0b2a14; background: #6fe0a0; border-color: #6fe0a0; cursor: pointer; }
+
+/* ---------------- 修饰键：鼠标指针 + 指针旁边的模式提示 ---------------- */
+#viewport canvas.mod-cursor { cursor: var(--mod-cursor) !important; }
+#mod-chip {
+  position: fixed; z-index: 40; pointer-events: none; display: flex; align-items: center; gap: 4px; padding: 4px 9px 4px 6px;
+  border-radius: 8px; background: var(--tip-bg); border: 1px solid var(--tip-line); color: var(--text);
+  font: 600 11.5px system-ui, "Microsoft YaHei", sans-serif; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); white-space: nowrap;
+}
+#mod-chip[hidden] { display: none; }
+#mod-chip svg { width: 18px; height: 18px; color: var(--accent-2); margin-right: 2px; }
+#mod-chip kbd {
+  display: inline-flex; align-items: center; height: 17px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--tip-line); border-bottom-width: 2px;
+  background: var(--tip-kbd); font: 600 10px ui-monospace, Consolas, monospace;
+}
+#mod-chip span { margin-left: 3px; color: var(--text-2); font-weight: 500; }
+
+/* 底部按键提示的按键：原来 font 简写无效，退回了浏览器默认的等宽字体（有锯齿），这里换成界面字体 */
+#hints kbd {
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 18px; height: 18px; padding: 0 5px;
+  font: 600 11px/1 "Segoe UI", system-ui, "Microsoft YaHei", sans-serif; letter-spacing: 0.2px;
+  -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
+}

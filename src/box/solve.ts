@@ -14,8 +14,9 @@ import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
 import { type Edge as OEdge, type Loop, loopsFromEdges, push as pushEdge } from '../model/outline';
 import {
   BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Piece, SINK_DEPTH, Style,
-  basePiece, boxTopAt, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
+  basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
 } from './types';
+import { type M3, apply, rotZ } from './xform';
 
 export interface ElemMeshOut { id: number; parts: Partial<Record<MatName, MeshPart>> }
 /** 资产库模型（专属路块、盘点路面）或 BBP 占位符（火焰、重生点）：放在哪、转多少度 */
@@ -86,7 +87,7 @@ const centroid = (p: Poly): V2 => [p.reduce((s, q) => s + q[0], 0) / p.length, p
 // ---------------- 层 ----------------
 
 /** 外沿上的一段（展开坐标）：沿 ax 方向（0：沿 x，1：沿 y），位于 c 这条线上，从 a 到 b，朝外方向 n */
-interface Edge { ax: 0 | 1; c: number; a: number; b: number; n: Dir; owner: number; kind: 'exp' | 'open' }
+interface Edge { ax: 0 | 1; c: number; a: number; b: number; n: Dir; owner: number; kind: 'exp' | 'open'; /** 手动封口：别的路面贴着也是外沿 */ forced?: boolean }
 
 interface Run {
   id: number;
@@ -130,6 +131,10 @@ interface Layer {
   edges: Edge[];
   runs: Run[];
   folds: Fold[];
+  /** 别的朝向里压在本层上的同样式、同高度的成员（见 crossCover） */
+  foreign?: Foreign[];
+  /** 别的朝向的外沿（见 crossField） */
+  gsegs?: GSeg[];
 }
 
 let runSeq = 0;
@@ -137,11 +142,227 @@ let runSeq = 0;
 let inserted = new Set<string>();
 /** 坡插进平台（"坡:平台"）：掏空平台，或者叠在平台上 */
 let slopeOver = new Map<string, 'carve' | 'cover'>();
+/** 调试开关：merge 关掉时不合并小块（用来对比合并前后的结果） */
+export const solveOpts = { merge: true };
+/** 自动生成的转换件的编号（负数，整张图唯一） */
+let autoSeq = 0;
 
+/**
+ * 整张图：按朝向分组，同一朝向（绕 Z 的角度相同）的路面、素材件、机关在它们自己的坐标系里求解，再转回世界坐标。
+ * 不同朝向、同样式、同高度的平路面之间也一起解算（见 crossFrames）：重叠处互相挖掉、落在对方里面的外沿不算外沿、
+ * 对方的外沿进入自己的距离场，所以接缝两边花纹连续。倾斜（绕 X / Y 转过）的路面各自单独生成，不和别的路面一起求解。
+ */
 export function solve(doc: Doc): Solved {
   runSeq = 0;
-  const bases = Object.values(doc.elems).flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
-  const docElems = Object.values(doc.elems).filter((e) => e.kind === 'box' || e.kind === 'piece');
+  autoSeq = 0;
+  const out: Solved = { meshes: new Map(), assets: new Map(), owner: new Map(), loops: [] };
+  const frames = new Map<number, Elem[]>();
+  const tilted: Box[] = [];
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'box' && e.kind !== 'piece' && e.kind !== 'obj') continue;
+    if (e.q) { if (e.kind === 'box') tilted.push(e); continue; }
+    const k = e.ang ?? 0;
+    let l = frames.get(k);
+    if (!l) frames.set(k, (l = []));
+    l.push(e);
+  }
+  const ctxs = [...frames].map(([ang, es]) => frameCells(es, ang));
+  crossCover(ctxs);
+  for (const c of ctxs) frameRuns(c);
+  crossField(ctxs);
+  // 外沿：各个朝向的边都换到世界坐标后一起连成环（不同朝向的路面接在一起时，外沿也连成一个环）
+  const edges: OEdge[] = [];
+  for (const c of ctxs) {
+    const r = frameMesh(c);
+    const m = c.ang ? rotZ(c.ang) : null;
+    mergeSolved(out, r, m, [0, 0, 0], c.ang);
+    for (const e of r.edges) edges.push(m ? { a: apply(m, e.a), b: apply(m, e.b), out: apply(m, [...e.out, 0]).slice(0, 2) as [number, number] } : e);
+  }
+  out.loops = loopsFromEdges(edges);
+  for (const b of tilted) {
+    const { m, t } = elemXf(b);
+    const c = frameCells([{ ...b, q: undefined }], 0);
+    frameRuns(c);
+    mergeSolved(out, frameMesh(c), m, t, 0);
+  }
+  return out;
+}
+
+// ---------------- 不同朝向之间 ----------------
+
+/** 一个朝向的求解上下文 */
+interface FrameCtx { ang: number; elems: Elem[]; pieces: Piece[]; layers: Layer[]; owner: Map<number, number> }
+
+/** 别的朝向里同样式、同高度的平路面成员（换到本层坐标里的凸四边形） */
+interface Foreign { poly: V2[]; id: number; piece: boolean; x0: number; y0: number; x1: number; y1: number }
+
+/** 朝向 from 的坐标 → 朝向 to 的坐标（绕 Z 转 from − to） */
+function frameMap(from: number, to: number): (p: V2) => V2 {
+  const a = ((from - to) * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return ([x, y]) => [c * x - s * y, s * x + c * y];
+}
+/** 两个平层能不能一起解算：都不是坡、样式相同、一样高、朝向不同 */
+const partners = (A: FrameCtx, L: Layer, B: FrameCtx, M: Layer) => A !== B && !L.slope && !M.slope && L.style === M.style && Math.abs(L.z - M.z) <= EPS_TOUCH;
+
+/** 成员的矩形（本朝向坐标）的四个角 */
+const rectPoly = (f: { x0: number; y0: number; x1: number; y1: number }): V2[] => [[f.x0, f.y0], [f.x1, f.y0], [f.x1, f.y1], [f.x0, f.y1]];
+
+/**
+ * 第一步（格子算完、外沿还没并成边之前）：记下别的朝向里压在本层上的成员（画网格时挖掉输的那部分），
+ * 并把本层落在它们里面的外沿去掉（那里路面还连着，不是外沿）。
+ */
+function crossCover(ctxs: FrameCtx[]) {
+  for (const A of ctxs) for (const L of A.layers) {
+    if (L.slope || !L.edges.length) continue;
+    const bx = L.rects.reduce((b, r) => ({ x0: Math.min(b.x0, r.x0), y0: Math.min(b.y0, r.y0), x1: Math.max(b.x1, r.x1), y1: Math.max(b.y1, r.y1) }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+    const fs: Foreign[] = [];
+    for (const B of ctxs) for (const M of B.layers) {
+      if (!partners(A, L, B, M)) continue;
+      const map = frameMap(B.ang, A.ang);
+      for (const m of [...M.boxes, ...M.pieces]) {
+        if (M.embedded.has(m.id)) continue;
+        const poly = rectPoly(footprint(m)).map(map);
+        const f: Foreign = { poly, id: m.id, piece: m.kind === 'piece', x0: Math.min(...poly.map((p) => p[0])), y0: Math.min(...poly.map((p) => p[1])), x1: Math.max(...poly.map((p) => p[0])), y1: Math.max(...poly.map((p) => p[1])) };
+        if (f.x1 < bx.x0 - EPS || f.x0 > bx.x1 + EPS || f.y1 < bx.y0 - EPS || f.y0 > bx.y1 + EPS) continue;
+        fs.push(f);
+      }
+    }
+    if (!fs.length) continue;
+    L.foreign = fs;
+    // 外沿落在别的朝向的成员里面的部分去掉
+    const next: Edge[] = [];
+    for (const e of L.edges) {
+      if (e.forced) { next.push(e); continue; }
+      const P = (t: number): V2 => (e.ax === 0 ? [t, e.c] : [e.c, t]);
+      let keep: [number, number][] = [[e.a, e.b]];
+      for (const f of fs) {
+        const cut = clipSeg(P(e.a), P(e.b), f.poly);
+        if (!cut) continue;
+        const c0 = e.a + (e.b - e.a) * cut[0], c1 = e.a + (e.b - e.a) * cut[1];
+        keep = keep.flatMap(([u, v]) => [[u, Math.min(v, c0)], [Math.max(u, c1), v]] as [number, number][]).filter(([u, v]) => v - u > 1e-6);
+      }
+      for (const [u, v] of keep) next.push({ ...e, a: u, b: v });
+    }
+    L.edges = next;
+  }
+}
+
+/** 线段 p→q 落在凸多边形内部的参数区间（Cyrus–Beck）；只擦到边界或在外面时返回 null */
+function clipSeg(p: V2, q: V2, poly: V2[]): [number, number] | null {
+  let t0 = 0, t1 = 1;
+  const d: V2 = [q[0] - p[0], q[1] - p[1]];
+  // 多边形的绕向：按面积符号定内侧
+  let ar = 0;
+  for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; ar += a[0] * b[1] - b[0] * a[1]; }
+  const sg = ar > 0 ? 1 : -1;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    // 内侧法线
+    const n: V2 = [-(b[1] - a[1]) * sg, (b[0] - a[0]) * sg];
+    const den = n[0] * d[0] + n[1] * d[1];
+    const num = n[0] * (p[0] - a[0]) + n[1] * (p[1] - a[1]);
+    if (Math.abs(den) < 1e-12) { if (num <= 1e-9) return null; continue; }
+    const t = -num / den;
+    if (den > 0) t0 = Math.max(t0, t); else t1 = Math.min(t1, t);
+    if (t1 - t0 <= 1e-9) return null;
+  }
+  return [t0, t1];
+}
+
+/** 点是否严格在凸多边形内部 */
+function insidePoly(p: V2, poly: V2[]): boolean {
+  let pos = 0, neg = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const c = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    if (c > 1e-9) pos++; else if (c < -1e-9) neg++; else return false;
+  }
+  return pos === 0 || neg === 0;
+}
+
+/** 别的朝向里的一条外沿（换到本层坐标）：p0 → p1，v 按它自己那一层的花纹相位算（换成本层坐标里的线性函数） */
+interface GSeg { p0: V2; t: V2; len: number; v: Line; vA: Line; vB: Line; /** 朝路面里面的单位法线 */ nIn: V2 }
+
+/** 第二步（外沿并成边、相位定好以后）：把别的朝向里同样式、同高度的平层的外沿加进本层的距离场 */
+function crossField(ctxs: FrameCtx[]) {
+  for (const A of ctxs) for (const L of A.layers) {
+    if (L.slope || !L.rects.length) continue;
+    const segs: GSeg[] = [];
+    for (const B of ctxs) for (const M of B.layers) {
+      if (!partners(A, L, B, M)) continue;
+      const map = frameMap(B.ang, A.ang);
+      // 本层坐标 → M 的坐标：M 里沿 ax 的坐标 = 本层坐标的线性函数
+      const back = frameMap(A.ang, B.ang);
+      const o = back([0, 0]), ex = back([1, 0]), ey = back([0, 1]);
+      const coord = (ax: 0 | 1): Line => [ex[ax] - o[ax], ey[ax] - o[ax], o[ax]];
+      const vOfRun = (r: Run | undefined, ax: 0 | 1): Line => {
+        const k = coord(ax);
+        return r ? [r.s * k[0], r.s * k[1], r.s * k[2] + r.o] : k;
+      };
+      for (const r of M.runs) {
+        const P = (t: number): V2 => map(r.ax === 0 ? [t, r.c] : [r.c, t]);
+        const p0 = P(r.a), p1 = P(r.b);
+        const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+        if (len < 1e-9) continue;
+        const adj = (q: Run | undefined): Line => (q ? vOfRun(q, q.ax) : vOfRun(undefined, (1 - r.ax) as 0 | 1));
+        const o0 = map([0, 0]), ni = map([-DX[r.n], -DY[r.n]]);
+        segs.push({ p0, t: [(p1[0] - p0[0]) / len, (p1[1] - p0[1]) / len], len, v: vOfRun(r, r.ax), vA: adj(r.adjA), vB: adj(r.adjB), nIn: [ni[0] - o0[0], ni[1] - o0[1]] });
+      }
+    }
+    if (segs.length) L.gsegs = segs;
+  }
+}
+
+/** 别的朝向的外沿在本块（中心 cen）里的距离函数：和 segLin 一样，只是边的方向任意 */
+function gsegLin(g: GSeg, cen: V2): Lin {
+  const n: V2 = [-g.t[1], g.t[0]];
+  const d0 = n[0] * g.p0[0] + n[1] * g.p0[1], a0 = g.t[0] * g.p0[0] + g.t[1] * g.p0[1];
+  const q = n[0] * cen[0] + n[1] * cen[1] - d0, along = g.t[0] * cen[0] + g.t[1] * cen[1] - a0;
+  const s = q >= 0 ? 1 : -1;
+  const perp = s * q, overA = -along, overB = along - g.len;
+  if (perp >= overA && perp >= overB) return { k: [s * n[0], s * n[1], -s * d0], run: null, vAx: 0, t: [0, 0], v: g.v };
+  return overA > overB
+    ? { k: [-g.t[0], -g.t[1], a0], run: null, vAx: 0, t: [0, 0], v: g.vA }
+    : { k: [g.t[0], g.t[1], -a0 - g.len], run: null, vAx: 0, t: [0, 0], v: g.vB };
+}
+/** 别的朝向的外沿的转折线：边线、两个端点处的垂线和两条 45° 线 */
+function gsegLines(g: GSeg): Line[] {
+  const n: V2 = [-g.t[1], g.t[0]];
+  const out: Line[] = [[n[0], n[1], n[0] * g.p0[0] + n[1] * g.p0[1]]];
+  for (const e of [g.p0, [g.p0[0] + g.t[0] * g.len, g.p0[1] + g.t[1] * g.len] as V2]) {
+    out.push([g.t[0], g.t[1], g.t[0] * e[0] + g.t[1] * e[1]]);
+    const u: V2 = [n[0] - g.t[0], n[1] - g.t[1]], w: V2 = [n[0] + g.t[0], n[1] + g.t[1]];
+    out.push([u[0], u[1], u[0] * e[0] + u[1] * e[1]], [w[0], w[1], w[0] * e[0] + w[1] * e[1]]);
+  }
+  return out;
+}
+/** 矩形到任意方向线段的距离（欧氏，作为切比雪夫距离的上界筛选用：切比雪夫 ≥ 欧氏 / √2） */
+function gsegDist(r: { x0: number; y0: number; x1: number; y1: number }, g: GSeg): number {
+  const p1: V2 = [g.p0[0] + g.t[0] * g.len, g.p0[1] + g.t[1] * g.len];
+  if (clipSeg(g.p0, p1, rectPoly(r)) || insidePoly(g.p0, rectPoly(r))) return 0;
+  const ptRect = (p: V2) => Math.hypot(Math.max(0, r.x0 - p[0], p[0] - r.x1), Math.max(0, r.y0 - p[1], p[1] - r.y1));
+  const ptSeg = (p: V2) => { const t = clamp((p[0] - g.p0[0]) * g.t[0] + (p[1] - g.p0[1]) * g.t[1], 0, g.len); return Math.hypot(p[0] - g.p0[0] - g.t[0] * t, p[1] - g.p0[1] - g.t[1] * t); };
+  return Math.min(ptRect(g.p0), ptRect(p1), ...rectPoly(r).map(ptSeg));
+}
+
+/** 把一个朝向坐标系里的求解结果转到世界坐标，合并进 out */
+function mergeSolved(out: Solved, r: Omit<Solved, 'loops'>, m: M3 | null, t: V3, yaw: number) {
+  const tp = (p: V3): V3 => { if (!m) return p; const w = apply(m, p); return [w[0] + t[0], w[1] + t[1], w[2] + t[2]]; };
+  for (const [id, mesh] of r.meshes) {
+    if (m) for (const part of Object.values(mesh.parts)) {
+      const pos = part!.pos;
+      for (let i = 0; i < pos.length; i += 3) { const w = tp([pos[i], pos[i + 1], pos[i + 2]]); pos[i] = w[0]; pos[i + 1] = w[1]; pos[i + 2] = w[2]; }
+    }
+    out.meshes.set(id, mesh);
+  }
+  for (const [id, parts] of r.assets) out.assets.set(id, m ? parts.map((p) => ({ ...p, pos: tp(p.pos), rotZ: p.rotZ + yaw })) : parts);
+  for (const [k, v] of r.owner) out.owner.set(k, v);
+}
+
+/** 一个朝向：分层、折线、格子与外沿（到合并外沿之前） */
+function frameCells(all: Elem[], ang: number): FrameCtx {
+  const bases = all.flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
+  const docElems = all.filter((e) => e.kind === 'box' || e.kind === 'piece');
   slopeOver = slopeOverlaps(docElems);
   const auto = autoTransitions(docElems);
   inserted = auto.inserted;
@@ -178,9 +399,17 @@ export function solve(doc: Doc): Solved {
 
   findFolds(layers);
   for (const L of layers) (L.slope ? buildSlopeCells : buildFlatCells)(L, elems);
-  for (const L of layers) buildRuns(L);
-  linkRuns(layers, pieces);
+  return { ang, elems, pieces, layers, owner: auto.owner };
+}
 
+/** 一个朝向：外沿并成边、定花纹相位 */
+function frameRuns(c: FrameCtx) {
+  for (const L of c.layers) buildRuns(L);
+  linkRuns(c.layers, c.pieces);
+}
+
+/** 一个朝向：网格、资产、护栏用的外沿（本朝向坐标） */
+function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'loops'> & { edges: OEdge[] } {
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
   const assets = new Map<number, AssetPart[]>();
@@ -215,7 +444,7 @@ export function solve(doc: Doc): Solved {
       pushEdge(oedges, A, B, [DX[r.n], DY[r.n]]);
     }
   }
-  return { meshes: out, assets, owner: auto.owner, loops: loopsFromEdges(oedges) };
+  return { meshes: out, assets, owner, edges: oedges };
 }
 
 /**
@@ -298,7 +527,7 @@ function autoTransitions(elems: Elem[]): { pieces: Piece[]; owner: Map<number, n
       if (Math.abs(c1 - c0 - 5) > EPS_TOUCH || c0 < e0 - EPS_TOUCH || c1 > e1 + EPS_TOUCH || e1 - e0 < 5 + EPS_TOUCH || b1 - b0 < 2.5 - EPS_TOUCH) continue;
       const c = (c0 + c1) / 2;
       const along = line + (pos ? 1.25 : -1.25);
-      const p: Piece = { id: -(pieces.length + 1), kind: 'piece', type, x: ax === 0 ? along : c, y: ax === 0 ? c : along, z: B.z, rot: d, inner: type === 'ramp' ? B.style : undefined };
+      const p: Piece = { id: -(++autoSeq), kind: 'piece', type, x: ax === 0 ? along : c, y: ax === 0 ? c : along, z: B.z, rot: d, inner: type === 'ramp' ? B.style : undefined };
       if (placed.some((x) => overlaps(footprint(x), footprint(p)))) continue; // 已经手动放了转换件
       pieces.push(p);
       owner.set(p.id, B.id);
@@ -485,6 +714,13 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
     own[i * ny + j] = o;
   }
   const at = (i: number, j: number) => (i < 0 || j < 0 || i >= nx || j >= ny ? 0 : own[i * ny + j]);
+  /** 格子的占用者（路面）在 d 这一侧手动封口，并且 c 就是它这一侧的边 */
+  const closedAt = (id: number, d: Dir, c: number) => {
+    const bx = L.boxes.find((x) => x.id === id);
+    if (!bx || !((bx.closed ?? 0) & (1 << d))) return false;
+    const f = sfp.get(id)!;
+    return Math.abs(c - [f.x1, f.y1, f.x0, f.y0][d]) < EPS;
+  };
   const isPiece = (id: number) => L.pieces.some((p) => p.id === id);
   const piece = (id: number) => L.pieces.find((p) => p.id === id)!;
   const box = (id: number) => L.boxes.find((b) => b.id === id);
@@ -499,6 +735,8 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
       const a = ax === 0 ? X[i] : Y[j], b = ax === 0 ? X[i + 1] : Y[j + 1];
       if (nb === o) continue;
       if (nb) {
+        // 手动封口：这一格的路面在这一侧封口（格子边正好落在它的这条边上），贴着别的路面也画边框
+        if (closedAt(o, d, c) || closedAt(nb, opp(d), c)) { units.push({ ax, c, a, b, n: d, owner: o, kind: 'exp', forced: true }); continue; }
         // 两格都被占：只有素材件和 box 之间、接法不匹配时才算外沿
         if (!isPiece(o) && !isPiece(nb)) continue;
         const pid = isPiece(o) ? o : nb;
@@ -508,9 +746,10 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
         continue;
       }
       const ni = i + DX[d], nj = j + DY[d];
-      if (ni >= 0 && nj >= 0 && ni < nx && nj < ny && virt[ni * ny + nj]) continue; // 叠着坡的那一块：照旧算作路面内部
+      const forced = closedAt(o, d, c);
+      if (!forced && ni >= 0 && nj >= 0 && ni < nx && nj < ny && virt[ni * ny + nj]) continue; // 叠着坡的那一块：照旧算作路面内部
       const m = (a + b) / 2;
-      if (L.folds.some((f) => f.n === d && Math.abs(f.line - c) < EPS_TOUCH && m > f.q0 && m < f.q1)) continue;
+      if (!forced && L.folds.some((f) => f.n === d && Math.abs(f.line - c) < EPS_TOUCH && m > f.q0 && m < f.q1)) continue;
       const bx = box(o);
       const openSide = !!bx && !!((bx.open ?? 0) & (1 << d)) && Math.abs(c - [sfp.get(o)!.x1, sfp.get(o)!.y1, sfp.get(o)!.x0, sfp.get(o)!.y0][d]) < EPS;
       units.push({ ax, c, a, b, n: d, owner: o, kind: openSide ? 'open' : 'exp' });
@@ -576,15 +815,16 @@ function buildSlopeCells(L: Layer) {
     const c = [X1, Y1, X0, Y0][d];
     const a = eax === 0 ? X0 : Y0, e = eax === 0 ? X1 : Y1;
     const kind = open & (1 << d) ? 'open' : 'exp';
-    if (d % 2 !== ax) { units.push({ ax: eax, c, a, b: e, n: d, owner: b.id, kind }); continue; }
-    // 端面：扣掉和别的层相接的区间
-    const cuts = L.folds.filter((f) => f.n === d).map((f) => [f.q0, f.q1] as [number, number]).sort((p, q) => p[0] - q[0]);
+    const forced = !!((b.closed ?? 0) & (1 << d));
+    if (d % 2 !== ax) { units.push({ ax: eax, c, a, b: e, n: d, owner: b.id, kind, forced }); continue; }
+    // 端面：扣掉和别的层相接的区间（手动封口的端面不扣）
+    const cuts = (b.closed ?? 0) & (1 << d) ? [] : L.folds.filter((f) => f.n === d).map((f) => [f.q0, f.q1] as [number, number]).sort((p, q) => p[0] - q[0]);
     let s = a;
     for (const [q0, q1] of cuts) {
       if (q0 > s + EPS) units.push({ ax: eax, c, a: s, b: q0, n: d, owner: b.id, kind });
       s = Math.max(s, q1);
     }
-    if (e > s + EPS) units.push({ ax: eax, c, a: s, b: e, n: d, owner: b.id, kind });
+    if (e > s + EPS) units.push({ ax: eax, c, a: s, b: e, n: d, owner: b.id, kind, forced });
   }
   L.edges = mergeEdges(units, true);
 }
@@ -671,7 +911,7 @@ function linkRuns(layers: Layer[], pieces: Piece[]) {
 /** 参与距离场的一条外沿：t 是从本层展开坐标换到这条边所在层的平移 */
 interface FSeg { r: Run; ax: 0 | 1; c: number; a: number; b: number; t: V2 }
 /** 线性函数 ka·X + kb·Y + kc；meta 说明 v 怎么算 */
-interface Lin { k: [number, number, number]; run: Run | null; vAx: 0 | 1; t: V2; clamp?: boolean }
+interface Lin { k: [number, number, number]; run: Run | null; vAx: 0 | 1; t: V2; clamp?: boolean; /** 直接给出 v·5 的线性函数（别的朝向的外沿） */ v?: Line }
 
 const linVal = (l: Lin, p: V2) => l.k[0] * p[0] + l.k[1] * p[1] + l.k[2];
 
@@ -743,16 +983,95 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
   const builders = new Map<number, MeshBuilder>();
   const mb = (id: number) => { let m = builders.get(id); if (!m) builders.set(id, (m = new MeshBuilder())); return m; };
   const tops = new Map<number, V3[]>(); // 每个 box 顶面网格的顶点（展开坐标 + 下沉量），画开口端面用
+  const pending = new Map<number, { poly: Poly; w: Lin }[]>();
   const isBox = (id: number) => L.boxes.some((b) => b.id === id);
   const vOf = (l: Lin, p: V2) => {
+    if (l.v) return linVal({ k: l.v } as Lin, p) / 5;
     const c = p[l.vAx] + l.t[l.vAx];
     return l.run ? (l.run.s * c + l.run.o) / 5 : c / 5;
+  };
+
+  // 不同朝向的路面接在一起的折角（本层的外沿和别的朝向的外沿在同一点断开）：像手工拼路那样，
+  // 两边都当作正常的直路一直延伸过去，在角平分线处割开——每一侧按自己那条边的垂直距离和花纹相位，两侧在平分线上正好相等。
+  // 这样的折角都是凹角（两块路面的外沿相交处），所以折角附近取两条边（带符号、朝里为正）距离里较大的那个。
+  // 很尖的折角（外角远小于 90°）：两侧花纹带的交叠会沿平分线拉出一条细长的尖，所以再加一个沿平分线离折角的距离 / √2 封顶
+  //（90° 的折角时它正好和切比雪夫距离的方块一样，不起作用；外角越尖越起作用）。
+  type Joint = { c: V2; own: Lin; g: Lin; bis: Line; cap: [number, number, number]; capV: Line; capLines: Line[] };
+  const joints: Joint[] = [];
+  const ownPerp = (e: FSeg): Lin => {
+    const ni: V2 = [-DX[e.r.n], -DY[e.r.n]];
+    const p: V2 = e.ax === 0 ? [e.a, e.c] : [e.c, e.a];
+    return { k: [ni[0], ni[1], -(ni[0] * p[0] + ni[1] * p[1])], run: e.r, vAx: e.ax, t: e.t };
+  };
+  const gPerp = (g: GSeg): Lin => ({ k: [g.nIn[0], g.nIn[1], -(g.nIn[0] * g.p0[0] + g.nIn[1] * g.p0[1])], run: null, vAx: 0, t: [0, 0], v: g.v });
+  const jointAt = (c: V2) => joints.find((j) => Math.abs(j.c[0] - c[0]) < 1e-5 && Math.abs(j.c[1] - c[1]) < 1e-5);
+  const pickJoint = (j: Joint, cen: V2): Lin => {
+    const side = linVal(j.own, cen) >= linVal(j.g, cen) ? j.own : j.g;
+    // 封顶那一块：等距线垂直于平分线，花纹相位沿等距线走（不然贴图会被斜着拉长）
+    return linVal({ k: j.cap } as Lin, cen) > linVal(side, cen) ? { k: j.cap, run: null, vAx: 0, t: [0, 0], v: j.capV } : side;
+  };
+  if (L.gsegs) for (const e of segs) {
+    if (e.t[0] || e.t[1] || e.r.layer !== L) continue;
+    for (const end of [e.a, e.b]) {
+      const c: V2 = e.ax === 0 ? [end, e.c] : [e.c, end];
+      for (const g of L.gsegs) {
+        const g1: V2 = [g.p0[0] + g.t[0] * g.len, g.p0[1] + g.t[1] * g.len];
+        if (![g.p0, g1].some((q) => Math.abs(q[0] - c[0]) < 1e-5 && Math.abs(q[1] - c[1]) < 1e-5)) continue;
+        const own = ownPerp(e), gl = gPerp(g);
+        // 平分线方向（朝路面里面）：垂直于 nE − nF，并且沿着它两边的距离都增大
+        let w: V2 = [-(own.k[1] - gl.k[1]), own.k[0] - gl.k[0]];
+        const wl = Math.hypot(...w) || 1;
+        w = [w[0] / wl, w[1] / wl];
+        if (w[0] * own.k[0] + w[1] * own.k[1] < 0) w = [-w[0], -w[1]];
+        const cap: [number, number, number] = [w[0] / Math.SQRT2, w[1] / Math.SQRT2, -(w[0] * c[0] + w[1] * c[1]) / Math.SQRT2];
+        const eq = (a: number[], b: number[]): Line => [a[0] - b[0], a[1] - b[1], b[2] - a[2]];
+        const capV: Line = [-w[1], w[0], w[1] * c[0] - w[0] * c[1]];
+        joints.push({ c, own, g: gl, bis: eq(own.k, gl.k), cap, capV, capLines: [eq(cap, own.k), eq(cap, gl.k)] });
+      }
+    }
+  }
+  /** 本层外沿在本块里的距离函数：越过的那一头是折角时按角平分线拼接 */
+  const ownLin = (e: FSeg, cen: V2): Lin => {
+    if (joints.length && !e.t[0] && !e.t[1]) {
+      const p = cen[e.ax];
+      const end = p < e.a - 1e-9 ? e.a : p > e.b + 1e-9 ? e.b : null;
+      const j = end === null ? null : jointAt(e.ax === 0 ? [end, e.c] : [e.c, end]);
+      if (j) return pickJoint(j, cen);
+    }
+    return segLin(e, cen);
+  };
+  const gLin = (g: GSeg, cen: V2): Lin => {
+    if (joints.length) {
+      const along = (cen[0] - g.p0[0]) * g.t[0] + (cen[1] - g.p0[1]) * g.t[1];
+      const end: V2 | null = along < -1e-9 ? g.p0 : along > g.len + 1e-9 ? [g.p0[0] + g.t[0] * g.len, g.p0[1] + g.t[1] * g.len] : null;
+      const j = end && jointAt(end);
+      if (j) return pickJoint(j, cen);
+    }
+    return gsegLin(g, cen);
   };
 
   for (const r of L.rects) {
     if (!isBox(r.owner)) continue;
     const near = segs.filter((e) => rectDist(r, e) <= BAND + 1e-9);
+    // 别的朝向的外沿：切比雪夫距离 ≥ 欧氏距离 / √2，欧氏距离在 BAND·√2 以内的才可能起作用
+    const gnear = (L.gsegs ?? []).filter((g) => gsegDist(r, g) < BAND * Math.SQRT2);
     let polys: Poly[] = [[[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]]];
+    // 别的朝向的成员压在这一块上：沿它的四条边切开，挖掉它赢的部分（素材件优先，路面按 id 小的优先）
+    for (const f of L.foreign ?? []) {
+      if (f.x1 <= r.x0 + EPS || f.x0 >= r.x1 - EPS || f.y1 <= r.y0 + EPS || f.y0 >= r.y1 - EPS) continue;
+      if (!f.piece && f.id > r.owner) continue;
+      const next: Poly[] = [];
+      for (const p of polys) {
+        let parts: Poly[] = [p];
+        for (let i = 0; i < 4; i++) {
+          const a = f.poly[i], b = f.poly[(i + 1) % 4];
+          const ln: Line = [b[1] - a[1], a[0] - b[0], (b[1] - a[1]) * a[0] + (a[0] - b[0]) * a[1]];
+          parts = parts.flatMap((q) => splitPoly(q, ln) ?? [q]);
+        }
+        next.push(...parts.filter((q) => !insidePoly(centroid(q), f.poly)));
+      }
+      polys = next;
+    }
     // 每条外沿的转折线只在它附近（BAND 以内）起作用：包围盒离得远的块不用切
     type BP = { p: Poly; x0: number; x1: number; y0: number; y1: number };
     const bp = (p: Poly): BP => {
@@ -761,6 +1080,23 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       return { p, x0, x1, y0, y1 };
     };
     let bps: BP[] = polys.map(bp);
+    // 折角的角平分线
+    for (const j of joints) {
+      if (j.c[0] < r.x0 - BAND * 2 || j.c[0] > r.x1 + BAND * 2 || j.c[1] < r.y0 - BAND * 2 || j.c[1] > r.y1 + BAND * 2) continue;
+      for (const ln of [j.bis, ...j.capLines]) bps = bps.flatMap((b) => { const s = splitPoly(b.p, ln); return s ? [bp(s[0]), bp(s[1])] : [b]; });
+    }
+    for (const g of gnear) {
+      const ex = [g.p0[0], g.p0[0] + g.t[0] * g.len], ey = [g.p0[1], g.p0[1] + g.t[1] * g.len];
+      const ix0 = Math.min(...ex) - BAND * 1.5, ix1 = Math.max(...ex) + BAND * 1.5, iy0 = Math.min(...ey) - BAND * 1.5, iy1 = Math.max(...ey) + BAND * 1.5;
+      for (const ln of gsegLines(g)) {
+        const next: BP[] = [];
+        for (const b of bps) {
+          const s = b.x1 > ix0 && b.x0 < ix1 && b.y1 > iy0 && b.y0 < iy1 ? splitPoly(b.p, ln) : null;
+          if (s) next.push(bp(s[0]), bp(s[1])); else next.push(b);
+        }
+        bps = next;
+      }
+    }
     for (const e of near) {
       const ix0 = (e.ax === 0 ? e.a : e.c) - BAND, ix1 = (e.ax === 0 ? e.b : e.c) + BAND;
       const iy0 = (e.ax === 0 ? e.c : e.a) - BAND, iy1 = (e.ax === 0 ? e.c : e.b) + BAND;
@@ -776,9 +1112,23 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
     polys = bps.map((b) => b.p);
     const boxes = new Map(bps.map((b) => [b.p, b]));
     const clampLin: Lin = { k: [0, 0, BAND], run: null, vAx: 0, t: [0, 0], clamp: true };
-    const m = mb(r.owner);
-    const tv = tops.get(r.owner) ?? (tops.set(r.owner, []), tops.get(r.owner)!);
-    const emit = (poly: Poly, w: Lin) => {
+    // 先攒起来，整块路面算完后把同一个函数的相邻小块合并再出网格
+    const list = pending.get(r.owner) ?? (pending.set(r.owner, []), pending.get(r.owner)!);
+    const emit = (poly: Poly, w: Lin) => { list.push({ poly, w }); };
+    for (const poly of polys) {
+      const cen = centroid(poly);
+      // 只有离这一块不超过 BAND 的外沿可能成为最近的
+      const b = boxes.get(poly)!;
+      // 只看离这一块严格小于 BAND 的外沿：刚好 BAND 远的整块都已经到了路面内部（花纹到头了），带进来反而可能用错端点那一侧的函数
+      const cands = near.filter((e) => rectDist(b, e) < BAND - 1e-9);
+      const gc = gnear.filter((g) => gsegDist(b, g) < BAND * Math.SQRT2);
+      resolve(poly, [clampLin, ...cands.map((e) => ownLin(e, cen)), ...gc.map((g) => gLin(g, cen))], emit, 0);
+    }
+  }
+  for (const [owner, list] of pending) {
+    const m = mb(owner);
+    const tv = tops.get(owner) ?? (tops.set(owner, []), tops.get(owner)!);
+    for (const { poly, w } of mergePieces(list)) {
       const pts: V3[] = [], uvs: V2[] = [];
       for (const p of poly) {
         const d = clamp(linVal(w, p), 0, BAND);
@@ -788,14 +1138,6 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
         uvs.push(w.clamp ? [p[0] / 5, p[1] / 5] : [(st.uScale * d) / BAND, vOf(w, p)]);
       }
       m.poly(w.clamp ? 'FloorTopBorderless' : st.band, pts, uvs, UP);
-    };
-    for (const poly of polys) {
-      const cen = centroid(poly);
-      // 只有离这一块不超过 BAND 的外沿可能成为最近的
-      const b = boxes.get(poly)!;
-      // 只看离这一块严格小于 BAND 的外沿：刚好 BAND 远的整块都已经到了路面内部（花纹到头了），带进来反而可能用错端点那一侧的函数
-      const cands = near.filter((e) => rectDist(b, e) < BAND - 1e-9);
-      resolve(poly, [clampLin, ...cands.map((e) => segLin(e, cen))], emit, 0);
     }
   }
 
@@ -819,7 +1161,15 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       const A = L.world(...P(t0), d0), B = L.world(...P(t1), d1);
       const A0 = L.world(...P(t0), 0), B0 = L.world(...P(t1), 0);
       const Ab: V3 = [A[0], A[1], A0[2] - b.depth], Bb: V3 = [B[0], B[1], B0[2] - b.depth];
-      mb(e.owner).poly('FloorSide', [A, B, Bb, Ab], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [b.depth / 5, v(t1)], [b.depth / 5, v(t0)]], out3);
+      if (b.depth <= 5 + 1e-9) {
+        mb(e.owner).poly('FloorSide', [A, B, Bb, Ab], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [b.depth / 5, v(t1)], [b.depth / 5, v(t0)]], out3);
+        continue;
+      }
+      // 厚度超过 5：和 BBP（raw_floor_side）一样，上面 5 用带边框的顶面贴图，再往下用无边框的顶面贴图
+      const Am: V3 = [A[0], A[1], A0[2] - 5], Bm: V3 = [B[0], B[1], B0[2] - 5];
+      const hb = (b.depth - 5) / 5;
+      mb(e.owner).poly('LightingFloorTopBorder', [A, B, Bm, Am], [[d0 / 5, v(t0)], [d1 / 5, v(t1)], [1, v(t1)], [1, v(t0)]], out3);
+      mb(e.owner).poly('LightingFloorTopBorderless', [Am, Bm, Bb, Ab], [[0, v(t0)], [0, v(t1)], [hb, v(t1)], [hb, v(t0)]], out3);
     }
   }
   for (const [id, m] of builders) {
@@ -830,6 +1180,45 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
       t.pos.push(...part.pos); t.uv.push(...part.uv);
     }
   }
+}
+
+/**
+ * 合并小块：切分时很多线（远处外沿的端点垂线、45° 线……）其实没改变这里用哪个函数，切出来的相邻小块用的是同一个线性函数。
+ * 同一个函数（距离、花纹都一样）的两块拼起来仍是凸多边形时合成一块（凸包面积 = 两块面积之和），顶点上的 UV、高度不变。
+ */
+function mergePieces(items: { poly: Poly; w: Lin }[]): { poly: Poly; w: Lin }[] {
+  if (!solveOpts.merge) return items;
+  const r9 = (v: number) => Math.round(v * 1e9);
+  const key = (l: Lin) => (l.clamp ? 'c' : [...l.k.map(r9), ...(l.v ? ['v', ...l.v.map(r9)] : ['r', l.run?.id ?? -1, l.vAx, r9(l.t[0]), r9(l.t[1])])].join(','));
+  type It = { poly: Poly; w: Lin; area: number; x0: number; y0: number; x1: number; y1: number };
+  const mk = (poly: Poly, w: Lin): It => ({ poly, w, area: area(poly), x0: Math.min(...poly.map((p) => p[0])), y0: Math.min(...poly.map((p) => p[1])), x1: Math.max(...poly.map((p) => p[0])), y1: Math.max(...poly.map((p) => p[1])) });
+  const groups = new Map<string, It[]>();
+  for (const it of items) { const k = key(it.w); let g = groups.get(k); if (!g) groups.set(k, (g = [])); g.push(mk(it.poly, it.w)); }
+  const out: { poly: Poly; w: Lin }[] = [];
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.length; i++) {
+      for (let j = i + 1; j < g.length; j++) {
+        const a = g[i], b = g[j];
+        if (a.x1 < b.x0 - 1e-7 || b.x1 < a.x0 - 1e-7 || a.y1 < b.y0 - 1e-7 || b.y1 < a.y0 - 1e-7) continue;
+        const h = convexHull([...a.poly, ...b.poly]);
+        if (Math.abs(area(h) - a.area - b.area) > 1e-7 * Math.max(1, a.area + b.area)) continue;
+        g[i] = mk(h, a.w);
+        g.splice(j, 1);
+        j = i; // 合并后重新和剩下的比
+      }
+    }
+    for (const it of g) out.push({ poly: it.poly, w: it.w });
+  }
+  return out;
+}
+/** 凸包（逆时针，去掉共线点） */
+function convexHull(ps: V2[]): Poly {
+  const pts = [...ps].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o: V2, a: V2, b: V2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo: V2[] = [], hi: V2[] = [];
+  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 1e-9) lo.pop(); lo.push(p); }
+  for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (hi.length >= 2 && cr(hi[hi.length - 2], hi[hi.length - 1], p) <= 1e-9) hi.pop(); hi.push(p); }
+  return [...lo.slice(0, -1), ...hi.slice(0, -1)];
 }
 
 /** 在凸多边形里找出处处最小的那个线性函数；没有就沿两个函数相等的线切开再找 */

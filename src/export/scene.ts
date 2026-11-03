@@ -16,8 +16,8 @@ import { Model } from '../model/types';
 export interface SceneMeshPart { mat: string; pos: number[]; uv?: number[] }
 export interface SceneMesh {
   name: string;
-  /** floor：Phys_Floors 等；rail：Phys_FloorRails 等 */
-  kind: 'floor' | 'rail' | 'stopper';
+  /** floor：Phys_Floors 等；rail：Phys_FloorRails 等；zone：死亡区（DepthTestCubes，隐藏） */
+  kind: 'floor' | 'rail' | 'stopper' | 'zone';
   parts: SceneMeshPart[];
   /** 平滑着色（钢轨） */
   smooth?: boolean;
@@ -28,6 +28,10 @@ export interface SceneAsset {
   pos: [number, number, number];
   rotZ: number;
   pitch?: number;
+  /** 完整的朝向（Blender 坐标，3×3 按行）；有它时忽略 rotZ / pitch */
+  rot3?: number[];
+  /** 拉伸过的木制件：本地 X、Y 的缩放（rot3 里已经带着），UV 要补偿成平铺重复 */
+  uvStretch?: [number, number];
 }
 export interface SceneElement {
   /** BBP 元素类型（P_Box、PC_TwoFlames…） */
@@ -36,6 +40,8 @@ export interface SceneElement {
   sector?: number;
   pos: [number, number, number];
   rotZ: number;
+  /** 完整的朝向（Blender 坐标，3×3 按行）；有它时忽略 rotZ */
+  rot3?: number[];
 }
 export interface SceneDesc {
   format: 'bvm-scene';
