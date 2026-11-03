@@ -312,11 +312,13 @@ export function localBounds(e: OrientedElem): { x0: number; y0: number; z0: numb
   if (e.kind === 'zone') return { ...f, z0: e.z - e.depth, z1: e.z };
   if (e.kind === 'piece') return { ...f, z0: e.z - 5, z1: e.z };
   if (e.kind === 'asset') return assetBounds(e);
+  const t = objType(e.type);
   const rs = anchorRects(e);
-  const top = rs.length ? Math.max(...rs.map((r) => r.top)) : e.z;
-  // 带厚度的对准方块（灯塔的塔底地板）按它的厚度；机关按一层薄片
-  const depth = rs.length && objType(e.type)?.anchor?.[5] !== undefined ? rs[0].depth : 0.5;
-  return { ...f, z0: top - depth, z1: top };
+  if (!rs.length) return { ...f, z0: e.z - 0.5, z1: e.z };
+  // 每个对准方块：写了厚度的（灯塔塔底、升降机的薄平台）按它的厚度，没写的按一层薄片；包围盒从最低的到最高的
+  const anchors = [t!.anchor!, ...(t!.more ?? [])];
+  const z0 = Math.min(...rs.map((r, i) => r.top - (anchors[i][5] !== undefined ? r.depth : 0.5)));
+  return { ...f, z0, z1: Math.max(...rs.map((r) => r.top)) };
 }
 
 /** 倾斜的转轴：路面、死亡区绕自己的中心，机关、特殊路面绕原点 */

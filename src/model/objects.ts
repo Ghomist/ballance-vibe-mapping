@@ -81,7 +81,8 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Ball_Wood', cat: 'module', label: '道具木球', anchor: [0, 0, -2], prop: true },
   { type: 'P_Dome', cat: 'module', label: '半球型钢罩', anchor: [0, 0, 0] },
   { type: 'P_Modul_01', cat: 'module', label: '活式木栅栏', anchor: [2.5, 0.65, 0] },
-  { type: 'P_Modul_03', cat: 'module', label: '升降机', anchor: [13.37, 0.04, -10.76] },
+  // 升降机：底下那一格路面；另一侧三块很薄的平台（厚 0.49）是三层出口，也能对齐
+  { type: 'P_Modul_03', cat: 'module', label: '升降机', anchor: [13.37, 0.04, -10.76], more: [[-13.444, 0.027, -2.916, 5, 5, 0.485], [-13.444, 0.027, 6.884, 5, 5, 0.485], [-13.444, 0.027, 10.313, 5, 5, 0.485]] },
   { type: 'P_Modul_08', cat: 'module', label: '秋千', anchor: [-10, 0, 1.5], more: [[10, 0, 1.5]], split: [[0, 1]] },
   { type: 'P_Modul_17', cat: 'module', label: '单摆（杠杆靶）', anchor: [0, 0, -5] },
   { type: 'P_Modul_18', cat: 'module', label: '风扇', anchor: [0, 0, 0.34] },
