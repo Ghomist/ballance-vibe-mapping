@@ -10,7 +10,8 @@
     "export": "tsx scripts/export.ts",
     "typecheck": "tsc",
     "nmo-lib": "tsx scripts/build-nmo-lib.ts",
-    "nmo-check": "tsx scripts/nmo-check.ts"
+    "nmo-check": "tsx scripts/nmo-check.ts",
+    "bench": "tsx tests/bench.ts"
   },
   "keywords": [],
   "author": "",
