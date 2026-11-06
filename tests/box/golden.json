@@ -1,0 +1,93 @@
+{
+  "默认场景": {
+    "meshes": 2,
+    "tris": 19,
+    "topArea": 150,
+    "loops": 3,
+    "assets": 6,
+    "mats": {
+      "FloorTopBorder": 9,
+      "FloorSide": 10
+    }
+  },
+  "完整小关卡": {
+    "meshes": 10,
+    "tris": 125,
+    "topArea": 890,
+    "loops": 9,
+    "assets": 8,
+    "mats": {
+      "FloorTopBorder": 41,
+      "FloorSide": 58,
+      "FloorTopBorderless": 12,
+      "FloorTopProfil": 8,
+      "FloorTopProfilFlat": 6
+    }
+  },
+  "路面拼接": {
+    "meshes": 20,
+    "tris": 452,
+    "topArea": 3183,
+    "loops": 23,
+    "assets": 0,
+    "mats": {
+      "FloorTopBorder": 194,
+      "FloorSide": 244,
+      "FloorTopBorderless": 6,
+      "FloorTopProfil": 8
+    }
+  },
+  "样式与转换": {
+    "meshes": 33,
+    "tris": 461,
+    "topArea": 3739,
+    "loops": 15,
+    "assets": 0,
+    "mats": {
+      "FloorTopBorder": 76,
+      "FloorSide": 224,
+      "FloorTopBorderless": 16,
+      "FloorTopProfil": 95,
+      "FloorTopFlat": 32,
+      "FloorTopProfilFlat": 18
+    }
+  },
+  "坡": {
+    "meshes": 27,
+    "tris": 370,
+    "topArea": 2405.5,
+    "loops": 12,
+    "assets": 0,
+    "mats": {
+      "FloorTopBorder": 111,
+      "FloorSide": 172,
+      "FloorTopBorderless": 18,
+      "FloorTopProfil": 60,
+      "FloorTopProfilFlat": 9
+    }
+  },
+  "机关与盘点": {
+    "meshes": 11,
+    "tris": 156,
+    "topArea": 1000,
+    "loops": 11,
+    "assets": 17,
+    "mats": {
+      "FloorTopBorder": 46,
+      "FloorSide": 84,
+      "FloorTopBorderless": 8,
+      "FloorTopProfil": 18
+    }
+  },
+  "钢轨": {
+    "meshes": 5,
+    "tris": 70,
+    "topArea": 325,
+    "loops": 5,
+    "assets": 0,
+    "mats": {
+      "FloorTopBorder": 30,
+      "FloorSide": 40
+    }
+  }
+}

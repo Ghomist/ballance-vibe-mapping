@@ -1,5 +1,7 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
 import { nmoScenarios } from './nmo';
+import { boxSolveScenarios } from './box-solve';
+import { boxGoldenScenarios } from './box-golden';
 import { railEditScenarios } from './rail';
 import { gapScenarios } from './gaps';
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
@@ -276,6 +278,8 @@ ribbonInsetScenarios(emptyModel, check, scenario);
 platformToRoadScenarios(emptyModel, check, scenario, validate);
 railEditScenarios(emptyModel, check, scenario);
 gapScenarios(emptyModel, check, scenario);
+boxSolveScenarios(check, scenario);
+boxGoldenScenarios(check, scenario);
 await nmoScenarios(check, scenario);
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
