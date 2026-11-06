@@ -2,6 +2,7 @@
 import { nmoScenarios } from './nmo';
 import { boxSolveScenarios } from './box-solve';
 import { boxGoldenScenarios } from './box-golden';
+import { boxOpsScenarios } from './box-ops';
 import { railEditScenarios } from './rail';
 import { gapScenarios } from './gaps';
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
@@ -279,6 +280,7 @@ platformToRoadScenarios(emptyModel, check, scenario, validate);
 railEditScenarios(emptyModel, check, scenario);
 gapScenarios(emptyModel, check, scenario);
 boxSolveScenarios(check, scenario);
+boxOpsScenarios(check, scenario);
 boxGoldenScenarios(check, scenario);
 await nmoScenarios(check, scenario);
 
