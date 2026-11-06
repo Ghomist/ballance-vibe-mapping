@@ -3,6 +3,8 @@ import { nmoScenarios } from './nmo';
 import { boxSolveScenarios } from './box-solve';
 import { boxGoldenScenarios } from './box-golden';
 import { boxOpsScenarios } from './box-ops';
+import { boxGeomScenarios } from './box-geom';
+import { boxExportScenarios } from './box-export';
 import { railEditScenarios } from './rail';
 import { gapScenarios } from './gaps';
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
@@ -80,9 +82,13 @@ function area(m: Model) {
   return a;
 }
 
-function scenario(name: string, fn: () => void) {
+// 异步的 scenario（导出 / 压缩这类）都记在这里，最后统一等待，免得失败没被统计到
+const pending: Promise<void>[] = [];
+
+function scenario(name: string, fn: () => void | Promise<void>) {
   console.log('• ' + name);
-  fn();
+  const r = fn();
+  if (r) pending.push(r);
 }
 
 scenario('1×1 拉长成直道', () => {
@@ -282,7 +288,10 @@ gapScenarios(emptyModel, check, scenario);
 boxSolveScenarios(check, scenario);
 boxOpsScenarios(check, scenario);
 boxGoldenScenarios(check, scenario);
+boxGeomScenarios(check, scenario);
+boxExportScenarios(check, scenario);
 await nmoScenarios(check, scenario);
+for (const p of pending) await p;
 
 if (failed) { console.error(`\n${failed} 项检查失败`); (globalThis as { process?: { exit(c: number): void } }).process?.exit(1); }
 console.log('\n全部通过');
