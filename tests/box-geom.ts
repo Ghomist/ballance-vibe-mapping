@@ -13,9 +13,12 @@ import { edgeAt, routeLen, shortPath } from '../src/box/guard';
 import type { Loop, P3 } from '../src/model/outline';
 import { Box, Obj, Piece, RailElem, boxTopAt, footprint, toWorld } from '../src/box/types';
 import { rotAxis, toQuat } from '../src/box/xform';
+import { ASSET_SNAP } from '../src/box/asset-snap';
 
 type Check = (cond: boolean, msg: string) => void;
 type Scenario = (name: string, fn: () => void) => void;
+
+const fs = (await import('node:fs' as string)) as { readFileSync(p: string, enc: string): string };
 
 const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 const D2R = Math.PI / 180;
@@ -263,6 +266,21 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     check(cc.verts.length === 4 && cc.mids.length === 3 && cc.edges.length === 0, '小节盘点两个路口：4 顶点 / 3 中点');
     check(cs.verts.every((v) => near(v[0], footprint(cp('start', 0)).x1)), '起点的吸附点在路口那条边上');
     check(feats(cp('start', 2)).verts.every((v) => near(v[0], footprint(cp('start', 2)).x0)), '转过去的起点路口在另一边');
+
+    // 旋转门路块：吸附点落在底下方块的顶点上，土堆顶上不能有悬空的点
+    const ts = feats({ id: 5, kind: 'asset', name: 'Turnstile', x: 0, y: 0, z: 0, rot: 0 });
+    check(ts.verts.length === 8 && ts.verts.every((v) => near(Math.abs(v[0]), 2.5) && near(Math.abs(v[1]), 2.5) && near(Math.abs(v[2]), 2.5)), '旋转门的吸附点是 5×5×5 方块的 8 个顶点');
+    check([...ts.verts, ...ts.mids].every((v) => v[2] <= 2.5 + 1e-6), '旋转门没有高过方块顶面的吸附点');
+
+    // 木板、木桥：预设点都是模型上真实的顶点，没有悬空的点；跟着拉伸和朝向走
+    for (const [name, snap] of Object.entries(ASSET_SNAP)) {
+      const parts = (JSON.parse(fs.readFileSync(`public/assets/${name}.json`, 'utf8')) as { parts: { pos: number[] }[] }).parts;
+      const real = (v: number[]) => parts.some((q) => { for (let i = 0; i < q.pos.length; i += 3) if (near(q.pos[i], v[0], 2e-3) && near(q.pos[i + 1], v[1], 2e-3) && near(q.pos[i + 2], v[2], 2e-3)) return true; return false; });
+      check(snap.verts.length >= 4 && snap.verts.every(real), `${name} 的吸附点都应是模型顶点`);
+    }
+    const wp = feats({ id: 6, kind: 'asset', name: 'WoodPlate', x: 10, y: 0, z: 1, rot: 1, scale: [2, 1] });
+    check(wp.edges.length === 0 && wp.verts.length === 8, '木板 8 个顶点，没有边');
+    check(wp.verts.some((v) => near(v[0], 10 - 4.752) && near(v[1], 4.755 * 2) && near(v[2], 1)), '拉伸后再按朝向转到世界坐标');
 
     // 机关：只有对准方块顶面的预设点
     const of = feats({ id: 4, kind: 'obj', type: 'P_Modul_01', x: 0, y: 0, z: 0, rot: 0 } as Obj);

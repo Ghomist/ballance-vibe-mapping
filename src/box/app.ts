@@ -19,6 +19,7 @@ import { stretchUV } from '../view/uvstretch';
 import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
 import { ASSET_INFO, assetInfo } from './asset-info';
+import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
@@ -143,7 +144,7 @@ function xfGroup(e: Elem): THREE.Group {
 }
 /** 死亡区是否显示（顶栏的开关；导出时总是隐藏） */
 let zonesOn = prefs.zonesShown; // 死亡区默认显示
-const ZONE_MAT = new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
+const ZONE_MAT = new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide });
 const ZONE_EDGE = new THREE.LineBasicMaterial({ color: 0xff6a6a, transparent: true, opacity: 0.85 });
 
 /** 灯塔 / 柱子的长柱子：只做视觉效果，选不到，F 聚焦、包围盒都不算它 */
@@ -556,16 +557,19 @@ zoneEye.addEventListener('click', () => {
   flash(zonesOn ? '显示死亡区' : '隐藏死亡区（导出时总是隐藏）');
   rebuild();
 });
-/** 机关上的小节编号（顶栏的眼睛打开时显示） */
+/** 机关上的小节编号（顶栏的「小节」打开时显示）：起点是 1，小节盘点是过了它进入的小节，终点气球显示「终点」 */
 const secLabels = new Map<number, HTMLDivElement>();
 function syncSectorLabels() {
   const live = new Set<number>();
   if (showSectors) for (const e of Object.values(doc.elems)) {
-    if (e.kind !== 'obj' || objType(e.type)?.cat !== 'module' || e.type === 'PE_Balloon') continue;
+    const text = isCheckpoint(e) ? String(e.kind === 'piece' && e.type === 'start' ? 1 : sectorOfCheck(e.id))
+      : e.kind !== 'obj' || objType(e.type)?.cat !== 'module' ? null
+        : e.type === 'PE_Balloon' ? '终点' : String(Math.min(e.sector ?? 1, sectorCount()));
+    if (text === null) continue;
     live.add(e.id);
     let l = secLabels.get(e.id);
     if (!l) { l = document.createElement('div'); l.className = 'sec-label fade'; document.body.appendChild(l); secLabels.set(e.id, l); requestAnimationFrame(() => l!.classList.add('shown')); }
-    l.textContent = String(Math.min(e.sector ?? 1, sectorCount()));
+    l.textContent = text;
   }
   for (const [id, l] of secLabels) if (!live.has(id)) { l.classList.remove('shown'); setTimeout(() => l.remove(), 160); secLabels.delete(id); }
 }
@@ -573,9 +577,9 @@ function placeSectorLabels() {
   const r = host.getBoundingClientRect();
   for (const [id, l] of secLabels) {
     const e = doc.elems[id];
-    if (e?.kind !== 'obj') continue;
-    const a = anchorRects(e)[0];
-    const p = new THREE.Vector3(...toWorld(e, [a ? (a.x0 + a.x1) / 2 : e.x, a ? (a.y0 + a.y1) / 2 : e.y, (a ? a.top : e.z) + 4]));
+    if (!e) continue;
+    const a = e.kind === 'obj' ? anchorRects(e)[0] : null;
+    const p = new THREE.Vector3(...toWorld(e as Obj, [a ? (a.x0 + a.x1) / 2 : (e as Obj).x, a ? (a.y0 + a.y1) / 2 : (e as Obj).y, (a ? a.top : (e as Obj).z) + 4]));
     const v = p.clone().project(viewCam());
     const sx = (v.x + 1) / 2 * r.width + r.left, sy = (1 - v.y) / 2 * r.height + r.top;
     l.classList.toggle('shown', !(v.z > 1 || sx < r.left || sx > r.right || sy < r.top || sy > r.bottom));
@@ -1040,15 +1044,16 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
   if (!alignOn) return d;
   const thr = worldPerPx(near) * ALIGN_PX;
   const out = [...d] as V3;
-  // 参与对齐的坐标：一般按包围盒（两边 + 中线、顶面 + 底面）；钢轨、机关只用预设的吸附点，不然太多
+  // 参与对齐的坐标：一般按包围盒（两边 + 中线、顶面 + 底面）；钢轨、机关和有预设吸附点的素材只用预设的吸附点
+  const presetOnly = (e: Elem) => e.kind === 'rail' || e.kind === 'obj' || (e.kind === 'asset' && (assetInfo(e.name)?.snapTop !== undefined || e.name in ASSET_SNAP));
   const vals = (e: Elem, a: 0 | 1 | 2): number[] => {
-    if (e.kind === 'rail' || e.kind === 'obj') { const f = feats(e); return [...new Set([...f.verts, ...f.mids].map((v) => +v[a].toFixed(4)))]; }
+    if (presetOnly(e)) { const f = feats(e); return [...new Set([...f.verts, ...f.mids].map((v) => +v[a].toFixed(4)))]; }
     const x = elemBounds(e);
     return a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0];
   };
   const others = Object.values(doc.elems).filter((e) => !sel.has(e.id));
   const selElems = [...sel].map((id) => doc.elems[id]).filter(Boolean);
-  const onlyPresets = selElems.length > 0 && selElems.every((e) => e.kind === 'rail' || e.kind === 'obj');
+  const onlyPresets = selElems.length > 0 && selElems.every(presetOnly);
   const hits: { a: 0 | 1 | 2; value: number; ob: Bounds }[] = [];
   for (const a of axes) {
     let best: { diff: number; value: number; ob: Bounds } | null = null;
@@ -2001,7 +2006,7 @@ function newElems(type: string): Elem[] {
 
 /** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
 function handleOf(e: Elem): P3 {
-  if (e.kind === 'asset') { const b = elemBounds(e); return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1]; }
+  if (e.kind === 'asset') { const b = elemBounds(e), st = assetInfo(e.name)?.snapTop; return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, st === undefined ? b.z1 : e.z + st]; }
   if (e.kind === 'rail') return [e.x, e.y, e.z];
   if (isCheckpoint(e)) return toWorld(e, [e.x, e.y, e.z]);
   if (e.kind === 'obj') {

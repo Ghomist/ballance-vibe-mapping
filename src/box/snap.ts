@@ -1,4 +1,6 @@
 // 吸附用的几何特征：顶点、边的中点、边
+import { assetInfo } from './asset-info';
+import { ASSET_SNAP } from './asset-snap';
 import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
 import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, sideLowerSpan } from '../model/rail';
 
@@ -60,7 +62,17 @@ function localFeats(e: Elem): Feats {
     }
     return out;
   }
-  if (e.kind === 'asset') { const b = assetBounds(e); return boxFeats(() => [b.z1, 0], b.x0, b.y0, b.x1, b.y1, b.z1 - b.z0); }
+  if (e.kind === 'asset') {
+    const preset = ASSET_SNAP[e.name];
+    if (preset) {
+      // 木板、木桥：模型上的预设点，跟着拉伸和朝向走
+      const [ks, kt] = e.scale ?? [1, 1], c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
+      const at = ([x, y, z]: P3): P3 => [e.x + x * ks * c - y * kt * s, e.y + x * ks * s + y * kt * c, e.z + z];
+      return { verts: preset.verts.map(at), mids: preset.mids.map(at), edges: [] };
+    }
+    const b = assetBounds(e), st = assetInfo(e.name)?.snapTop, top = st === undefined ? b.z1 : e.z + st;
+    return boxFeats(() => [top, 0], b.x0, b.y0, b.x1, b.y1, top - b.z0);
+  }
   if (e.kind === 'guard') return { verts: [e.pts[0], e.pts[e.pts.length - 1]], mids: [], edges: [] };
   if (e.kind === 'rail') {
     // 钢轨只有预设的吸附点：两头和（单段时）中间的 railPoints，没有边
