@@ -231,7 +231,13 @@ select.native { display: none; }
 
 /* 死亡区隐藏时拖出死亡区：顶栏的「死亡区」按钮闪几下提醒 */
 @keyframes attn-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 106, 106, 0); } 50% { box-shadow: 0 0 0 4px rgba(255, 106, 106, 0.55); border-color: #ff6a6a; color: #ffb0b0; } }
-#zone-eye.attn { animation: attn-pulse 0.6s ease-in-out 4; }
+.dropdown-menu.view-menu { min-width: 140px; }
+.view-menu button { flex-direction: row; align-items: center; gap: 8px; padding: 6px 10px; color: var(--text-2); border: none; }
+.view-menu button span { flex: 1; }
+.view-menu button.active, [data-theme='light'] .view-menu button.active { background: transparent; color: var(--text); border: none; }
+.view-menu button:hover, .view-menu button.active:hover { background: var(--hover); }
+.view-menu button.active::after { content: ''; width: 9px; height: 5px; margin: -3px 2px 0 0; border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); }
+#view-btn.attn { animation: attn-pulse 0.6s ease-in-out 4; }
 
 /* 状态栏里的警告（flash 的 warn）是 #status 里面的 span */
 #status .warn { color: #ffb35c; }

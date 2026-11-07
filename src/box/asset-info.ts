@@ -5,7 +5,9 @@ export interface AssetInfo {
   /** 能按住 Ctrl 拉伸（沿本地 X / Y 缩放）：木板类（木板、木制斜坡、凹凸木轨道）和波浪板（长 / 宽木桥） */
   stretch?: boolean;
   /** 素材库里放在哪个标签（默认「特殊路面」） */
-  tab?: 'road' | 'rail';
+  tab?: 'road' | 'rail' | 'deco';
+  /** 云层：顶栏可以整体显示 / 隐藏（只影响编辑器，导出时总是显示） */
+  sky?: boolean;
   /** 吸附、对齐用的顶面（本地 z）：包围盒顶上是空的时候用，比如旋转门路块顶面中间的土堆不算，只认底下的方块 */
   snapTop?: number;
 }
@@ -25,6 +27,8 @@ export const ASSET_INFO: AssetInfo[] = [
   { name: 'Modul_16', label: '特殊路块 16', group: 'special', min: [-6.7872, -0.0, -1.7378], max: [7.0609, 37.2046, 5.154], tab: 'road' },
   { name: 'Turnstile', label: '旋转门路块', group: 'special', min: [-2.5, -2.5, -2.5], max: [2.5, 2.5, 3.5316], tab: 'road', snapTop: 2.5 },
   { name: 'Turnstile_Big', label: '大旋转门路块', group: 'special', min: [-2.9368, -2.9368, -2.5], max: [2.9368, 2.9368, 3.5316], tab: 'road', snapTop: 2.5 },
+  { name: 'SkyLayer', label: '云层', group: 'special', min: [-946.55, -936.75, 0], max: [946.55, 936.75, 0], tab: 'deco', sky: true },
+  { name: 'SkyLayerVortex', label: '云层漩涡', group: 'special', min: [-1357.49, -1411.31, -388.77], max: [1357.49, 1411.31, -28.23], tab: 'deco', sky: true },
   { name: 'RailCrossing', label: '双轨交叉', group: 'special', min: [-2.5, -2.5, -0.35], max: [2.5, 2.5, 0.35], tab: 'rail' },
   { name: 'MonorailCrossing', label: '单轨交叉', group: 'special', min: [-2.5, -2.4999, -0.3234], max: [2.5, 2.5001, 0.3234], tab: 'rail' },
 ];

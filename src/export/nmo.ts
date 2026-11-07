@@ -47,7 +47,7 @@ const CKVERSION = 0x13022002, DEVBUILD = 0x02010001, DEVVERSION = 0;
 const CKFILE_WHOLECOMPRESSED = 8;
 const S = {
   GROUPALL: 0x000fffff,
-  ENTITY_MESHS: 0x00004000, ENTITY_DATA: 0x00100000,
+  OBJECT_HIDDEN: 0x00000004, ENTITY_MESHS: 0x00004000, ENTITY_DATA: 0x00100000,
   MESH_FLAGS: 0x00002000, MESH_MATERIALS: 0x00100000, MESH_FACES: 0x00010000, MESH_VERTICES: 0x00020000,
   MAT_DATA: 0x00001000,
   TEX_FILENAMES: 0x00010000, TEX_OLDTEXONLY: 0x002ff000, TEX_SAVEFORMAT: 0x00080000,
@@ -123,6 +123,8 @@ function saveGroup(c: Chunk, g: NmoDoc['groups'][number], objBase: number) {
 }
 
 function saveObject(c: Chunk, o: NmoDocObject, meshBase: number) {
+  // 隐藏要写两处，和原版关卡一样：这个标识符（读档时靠它决定显示与否）和下面的 Moveable 标记
+  if (o.visible === false) c.ident(S.OBJECT_HIDDEN);
   if (o.mesh !== null) {
     c.ident(S.ENTITY_MESHS);
     c.obj(meshBase + o.mesh);

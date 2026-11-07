@@ -7,6 +7,7 @@ export const ASSET_OBJECTS = [
   // 机关底座
   'TrafoBase_Paper', 'TrafoBase_Stone', 'TrafoBase_Wood', 'Slider',
   'Ventilator_1Edge', 'Ventilator_2Face_Adjacent', 'Ventilator_2Face_Opposite', 'Ventilator_3Edge', 'Ventilator_4Face', 'Ventilator_NoEdge_Border', 'Ventilator_NoEdge_Borderless',
+  'SkyLayer', 'SkyLayerVortex',
   'Latern', 'LaternColumn_Full', 'LaternColumn', 'BarrierRail_1Edge', 'BarrierRail_3Edge', 'BarrierRail_3Edge_N', 'BarrierRail_3Edge_S', 'RailTip', 'RailNail',
   // 特殊路面（box 版编辑器的素材库）：木制路面、特殊路块、钢轨交叉
   'WoodPlate', 'Modul_02', 'Modul_13', 'Modul_42', 'Modul_42_Wide', 'Modul_11', 'ConcaveWood', 'ConvexWood', 'Level9_WoodBarrier', 'WoodSlope',

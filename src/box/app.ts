@@ -91,9 +91,11 @@ interface Prefs {
   grid: boolean; align: boolean; sectors: boolean; sector: number; flySpeed: number; folded: boolean;
   /** 显示死亡区（换了键名：之前默认隐藏时存下的 zones 不再沿用，默认显示） */
   zonesShown: boolean;
+  skyShown: boolean;
+  gridShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, flySpeed: 80, folded: false };
+  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 const savePrefs = () => { try { localStorage.setItem('bvm.box.prefs', JSON.stringify(prefs)); } catch { /* 存不了就算了 */ } };
@@ -144,6 +146,10 @@ function xfGroup(e: Elem): THREE.Group {
 }
 /** 死亡区是否显示（顶栏的开关；导出时总是隐藏） */
 let zonesOn = prefs.zonesShown; // 死亡区默认显示
+let skyOn = prefs.skyShown; // 云层默认显示
+const isSky = (e: Elem) => e.kind === 'asset' && !!assetInfo(e.name)?.sky;
+/** 顶栏关掉显示的东西：不画、不能选、不参与吸附 */
+const hiddenElem = (e: Elem) => (e.kind === 'zone' && !zonesOn) || (!skyOn && isSky(e));
 const ZONE_MAT = new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide });
 const ZONE_EDGE = new THREE.LineBasicMaterial({ color: 0xff6a6a, transparent: true, opacity: 0.85 });
 
@@ -307,7 +313,7 @@ function rebuildInner() {
   }
   // 特殊路面（资产库模型）
   for (const e of Object.values(doc.elems)) {
-    if (e.kind !== 'asset') continue;
+    if (e.kind !== 'asset' || hiddenElem(e)) continue;
     const g = new THREE.Group(), xg = xfGroup(e);
     g.add(xg);
     const pieces = getAsset('asset', e.name) ?? [];
@@ -545,16 +551,43 @@ window.addEventListener('pointerdown', (e) => { if (!sectorMenu.contains(e.targe
 sectorEye.addEventListener('click', () => { showSectors = !showSectors; prefs.sectors = showSectors; savePrefs(); sectorEye.classList.toggle('active', showSectors); sectorEye.blur(); syncSectorLabels(); });
 sectorEye.classList.toggle('active', showSectors);
 // 死亡区：一键显示 / 隐藏（隐藏时也选不到它们）
+const viewBtn = document.getElementById('view-btn')!;
+/** 东西隐藏着还要放：让顶栏的「显示」闪几下 */
+function viewAttn() {
+  viewBtn.classList.remove('attn');
+  void viewBtn.offsetWidth; // 重新触发动画
+  viewBtn.classList.add('attn');
+}
+const gridEye = document.getElementById('grid-eye')!;
+gridGroup.visible = prefs.gridShown;
+gridEye.classList.toggle('active', prefs.gridShown);
+gridEye.addEventListener('click', () => {
+  prefs.gridShown = gridGroup.visible = !gridGroup.visible; savePrefs();
+  gridEye.classList.toggle('active', prefs.gridShown);
+  gridEye.blur();
+});
 const zoneEye = document.getElementById('zone-eye')!;
 zoneEye.classList.toggle('active', zonesOn);
 zoneEye.addEventListener('click', () => {
-  zoneEye.classList.remove('attn');
+  viewBtn.classList.remove('attn');
   zonesOn = !zonesOn;
   prefs.zonesShown = zonesOn; savePrefs();
   zoneEye.classList.toggle('active', zonesOn);
   zoneEye.blur();
   if (!zonesOn) for (const id of [...sel]) if (doc.elems[id]?.kind === 'zone') sel.delete(id);
   flash(zonesOn ? '显示死亡区' : '隐藏死亡区（导出时总是隐藏）');
+  rebuild();
+});
+const skyEye = document.getElementById('sky-eye')!;
+skyEye.classList.toggle('active', skyOn);
+skyEye.addEventListener('click', () => {
+  viewBtn.classList.remove('attn');
+  skyOn = !skyOn;
+  prefs.skyShown = skyOn; savePrefs();
+  skyEye.classList.toggle('active', skyOn);
+  skyEye.blur();
+  if (!skyOn) for (const id of [...sel]) if (isSky(doc.elems[id])) sel.delete(id);
+  flash(skyOn ? '显示云层' : '隐藏云层（导出时总是显示）');
   rebuild();
 });
 /** 机关上的小节编号（顶栏的「小节」打开时显示）：起点是 1，小节盘点是过了它进入的小节，终点气球显示「终点」 */
@@ -808,7 +841,7 @@ function drawOverlay() {
 function drawOverlayInner() {
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) put(overlay, `hover:${id}`, outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
-  const selElems = (anim?.preview ? anim.preview(anim.val) : [...sel].map((id) => doc.elems[id])).filter((e) => e && (zonesOn || e.kind !== 'zone'));
+  const selElems = (anim?.preview ? anim.preview(anim.val) : [...sel].map((id) => doc.elems[id])).filter((e) => e && !hiddenElem(e));
   for (const e of selElems) {
     if (!e) continue;
     const c = snapping && drag ? 0x4cff8a : 0x4c8dff;
@@ -1011,7 +1044,7 @@ function findTarget(x: number, y: number, exclude: Set<number>, px = 12): Target
   const r = canvasRect ?? renderer.domElement.getBoundingClientRect();
   const far = Math.max(r.width, r.height);
   for (const e of Object.values(doc.elems)) {
-    if (exclude.has(e.id)) continue;
+    if (exclude.has(e.id) || hiddenElem(e)) continue;
     // 包围盒中心在屏幕上离鼠标比包围盒本身大得多：不可能有点在鼠标附近，跳过
     const b = cached(e).b;
     const cs = toScreen([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2]);
@@ -2021,10 +2054,12 @@ function startPlace(type: string) {
   if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
   // 死亡区正隐藏着：放下去也看不到，提醒一下，顶栏的「死亡区」按钮闪几下
   if (type === 'zone' && !zonesOn) {
-    flash('死亡区当前是隐藏的，放下后看不到——点顶栏的「死亡区」打开查看', true);
-    zoneEye.classList.remove('attn');
-    void zoneEye.offsetWidth; // 重新触发动画
-    zoneEye.classList.add('attn');
+    flash('死亡区当前是隐藏的，放下后看不到——在顶栏的「显示」里打开', true);
+    viewAttn();
+  }
+  if (!skyOn && type.startsWith('asset:') && assetInfo(type.slice(6))?.sky) {
+    flash('云层当前是隐藏的，放下后看不到——在顶栏的「显示」里打开', true);
+    viewAttn();
   }
   drag = { t: 'place', ids: null, type, moved: false, rotOff: 0 };
   document.body.classList.add('placing');
@@ -2164,10 +2199,10 @@ const slab = (top: string, inner?: string) => svgThumb(`<path d="M8 30 L32 18 L5
 const PROP_TYPES = new Set(['P_Extra_Point', 'P_Extra_Life', 'P_Box', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood']);
 const ZONE_ICON = svgThumb('<path d="M32 10 L54 22 L54 44 L32 56 L10 44 L10 22 Z" fill="rgba(255,64,64,0.28)" stroke="#ff6a6a" stroke-width="2" stroke-linejoin="round"/><path d="M10 22 L32 34 L54 22 M32 34 V56" fill="none" stroke="#ff6a6a" stroke-width="1.6" opacity="0.8"/><path d="M26 39 l12 7 M38 39 l-12 7" stroke="#ff8a8a" stroke-width="2.4" stroke-linecap="round"/>');
 /** 资产库里的特殊路面：tab 指定了放在哪个标签（特殊路块、旋转门放路面，交叉轨放钢轨），其余（木制件）在「木制」 */
-function assetItems(tab?: 'road' | 'rail'): LibItem[] {
+function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
   return ASSET_INFO.filter((a) => a.tab === tab).map((a) => ({
     type: `asset:${a.name}`, label: a.label,
-    hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : '特殊路块'} · ${a.name}${a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
+    hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : tab === 'deco' ? '装饰' : '特殊路块'} · ${a.name}${a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
   }));
 }
 const LIB: { id: string; label: string; items: LibItem[] }[] = [
@@ -2202,7 +2237,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
     ],
   },
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
-  { id: 'deco', label: '装饰', items: OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })) },
+  { id: 'deco', label: '装饰', items: [...OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })), ...assetItems('deco')] },
 ];
 const palette = document.getElementById('palette')!;
 palette.innerHTML = `
@@ -2906,10 +2941,12 @@ fileInput.addEventListener('change', async () => {
 // 下拉菜单：文件、导出
 const fileMenu = document.getElementById('file-menu')!, exportMenu = document.getElementById('export-menu')!;
 const fileBtn = document.getElementById('file-btn')!, exportBtn = document.getElementById('export')!;
-function closeMenus() { fileMenu.classList.remove('open'); exportMenu.classList.remove('open'); }
-fileBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
-exportBtn.addEventListener('click', (e) => { e.stopPropagation(); fileMenu.classList.remove('open'); exportMenu.classList.toggle('open'); exportBtn.blur(); });
-window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !exportMenu.contains(t) && t !== fileBtn && t !== exportBtn) closeMenus(); });
+const viewMenu = document.getElementById('view-menu')!;
+function closeMenus() { fileMenu.classList.remove('open'); exportMenu.classList.remove('open'); viewMenu.classList.remove('open'); }
+viewBtn.addEventListener('click', (e) => { e.stopPropagation(); const open = viewMenu.classList.contains('open'); closeMenus(); viewMenu.classList.toggle('open', !open); viewBtn.blur(); });
+fileBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.remove('open'); viewMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
+exportBtn.addEventListener('click', (e) => { e.stopPropagation(); fileMenu.classList.remove('open'); viewMenu.classList.remove('open'); exportMenu.classList.toggle('open'); exportBtn.blur(); });
+window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !exportMenu.contains(t) && !viewMenu.contains(t) && !viewBtn.contains(t) && t !== fileBtn && t !== exportBtn) closeMenus(); });
 document.getElementById('scene-list')!.innerHTML = SCENES.map((sc, i) => `<button data-scene="${i}"><span>${sc.name}</span></button>`).join('');
 /** 确认框（和设置面板一个样，不用浏览器自带的 confirm）：Enter 确定、Esc 或点外面取消 */
 function askConfirm(text: string, ok = '确定'): Promise<boolean> {

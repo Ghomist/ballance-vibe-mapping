@@ -187,6 +187,32 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     check(rails.every((m) => names.includes(m.name)), '钢轨物体都写进了 NMO');
   });
 
+  scenario('NMO：死亡区隐藏、云层显示（和原版关卡的写法一样）', async () => {
+    const d = level();
+    d.elems[60] = { id: 60, kind: 'asset', name: 'SkyLayer', x: 0, y: 0, z: -80, rot: 0 };
+    d.elems[61] = { id: 61, kind: 'asset', name: 'SkyLayerVortex', x: 0, y: 0, z: -80, rot: 0 };
+    const r = await readNmo(await writeNmo(buildNmoDoc(exportBoxScene(d), lib())));
+    /** 物体的隐藏状态：[有 OBJECT_HIDDEN 标识符, Moveable 里有 VISIBLE] */
+    const state = (o: { dw: Uint32Array }): [boolean, boolean] => {
+      let hidden = false, moveable = 0, pos = 0;
+      for (let g = 0; g < 20 && pos + 1 < o.dw.length; g++) {
+        if (o.dw[pos] === 4) hidden = true;
+        if (o.dw[pos] === 0x100000) moveable = o.dw[pos + 3];
+        if (!o.dw[pos + 1]) break;
+        pos = o.dw[pos + 1];
+      }
+      return [hidden, (moveable & 2) !== 0];
+    };
+    const zones = r.objects.filter((o) => o.classId === 33 && o.name.startsWith('DepthTestCubes_'));
+    check(zones.length > 0 && zones.every((o) => state(o).join() === 'true,false'), '死亡区：标识符和 Moveable 都要标成隐藏');
+    for (const n of ['SkyLayer', 'SkyLayerVortex']) {
+      const o = r.objects.find((x) => x.classId === 33 && x.name === n);
+      check(!!o && state(o).join() === 'false,true', `${n} 导出后要显示，名字不加前缀`);
+    }
+    const floor = r.objects.find((o) => o.classId === 33 && o.name.startsWith('A_Floor_'));
+    check(!!floor && state(floor).join() === 'false,true', '普通物体不受影响');
+  });
+
   scenario('NMO：导出是确定的', async () => {
     const a = await writeNmo(buildNmoDoc(exportBoxScene(level()), lib()));
     const b = await writeNmo(buildNmoDoc(exportBoxScene(level()), lib()));

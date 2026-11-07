@@ -94,6 +94,9 @@ for (const name of names) {
     }
   }
   for (const p of EXTRA[name] ?? []) verts.set(key(p), p);
+  // 云层这种只有一张大面的，两头截面算不出来：取四个方向最远的顶点
+  if (!verts.size && new Set(vs.map(key)).size <= 8) for (const v of vs) verts.set(key(v), v.map(r3));
+  if (!verts.size) for (const [k, s] of [[0, 1], [0, -1], [1, 1], [1, -1]]) { const p = vs.reduce((a, b) => (b[k] * s > a[k] * s ? b : a)).map(r3); verts.set(key(p), p); }
   out[name] = { verts: [...verts.values()], mids: [...mids.values()] };
   console.log(name, 'verts', verts.size, 'mids', mids.size);
 }

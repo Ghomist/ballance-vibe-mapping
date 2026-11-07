@@ -33,8 +33,11 @@ export function setTextureLoadedCallback(cb: () => void) { texListeners.push(cb)
 const texDone = new Set<THREE.Texture>();
 /** 这些模型用到的贴图都加载完了 */
 export function texturesReady(pieces: AssetPiece[]) {
-  return pieces.every((p) => { const map = (p.material as THREE.MeshLambertMaterial).map; return !map || texDone.has(map); });
+  return pieces.every((p) => { const m = p.material as THREE.MeshLambertMaterial, map = m.map ?? m.alphaMap; return !map || texDone.has(map); });
 }
+
+/** 云层贴图：黑底白云的灰度图，黑色当透明通道（亮度就是不透明度），所以不做 sRGB 解码 */
+const LUMA_ALPHA = new Set(['SkyLayer.bmp', 'Sky_Vortex.bmp']);
 
 function texture(file: string) {
   let t = texCache.get(file);
@@ -44,7 +47,7 @@ function texture(file: string) {
     // TGALoader 解出来的行序与图片相反：翻过来才和 .bmp（以及 Blender 的 UV）一致
     t = /\.tga$/i.test(file) ? tgaLoader.load(url, (tex) => { tex.flipY = !tex.flipY; tex.needsUpdate = true; done(tex); }) : texLoader.load(url, done);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.colorSpace = THREE.SRGBColorSpace;
+    t.colorSpace = LUMA_ALPHA.has(file) ? THREE.NoColorSpace : THREE.SRGBColorSpace;
     t.anisotropy = 8;
     texCache.set(file, t);
   }
@@ -95,7 +98,7 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
     g.setAttribute('position', new THREE.Float32BufferAttribute(p.pos, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(p.uv, 2));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(p.nrm, 3));
-    const mat = new THREE.MeshLambertMaterial({
+    const mat = p.texture && LUMA_ALPHA.has(p.texture) ? new THREE.MeshBasicMaterial({ alphaMap: texture(p.texture), transparent: true, depthWrite: false, side: THREE.DoubleSide }) : new THREE.MeshLambertMaterial({
       color: p.texture ? (p.tint ? new THREE.Color(...(p.tint as [number, number, number])) : 0xffffff) : new THREE.Color(...((p.color ?? [0.8, 0.8, 0.8]) as [number, number, number])),
       map: p.texture ? texture(p.texture) : null,
       transparent: !!p.alphaBlend || p.blend === 'add', alphaTest: p.alphaTest ? 0.5 : 0, side: p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,

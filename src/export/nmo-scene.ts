@@ -264,7 +264,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const src = lib.assets[a.asset];
     if (!src) continue;
     const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
-    addObject({ name: unique(ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
+    addObject({ name: unique(a.asset.startsWith('SkyLayer') ? a.asset : ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {
