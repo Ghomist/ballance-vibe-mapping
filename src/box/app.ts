@@ -49,6 +49,19 @@ const marqueeEl = document.getElementById('marquee')!;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
+
+// 按需渲染：画面没变就不画。下面这些都会要一帧：相机或画布变了、拖动 / 缓动 / 淡入进行中、刚有输入、场景重建、贴图加载完
+let renderOnce = true, renderUntil = 0, renderCount = 0;
+/** 要重画：下一帧画一次；ms 是接下来这段时间内每帧都画 */
+function invalidate(ms = 0) {
+  renderOnce = true;
+  if (ms) renderUntil = Math.max(renderUntil, performance.now() + ms);
+}
+for (const t of ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'keydown', 'keyup']) window.addEventListener(t, () => invalidate(300), { capture: true, passive: true });
+for (const t of ['resize', 'focus']) window.addEventListener(t, () => invalidate(100));
+document.addEventListener('visibilitychange', () => invalidate(100));
+renderer.domElement.addEventListener('webglcontextrestored', () => invalidate(100));
+THREE.DefaultLoadingManager.onProgress = () => invalidate(100);
 host.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1d2330);
@@ -878,6 +891,7 @@ function showEl(el: HTMLElement, on: boolean) {
   }
 }
 function drawOverlay() {
+  invalidate();
   const prev = overlayKeys;
   const old: THREE.Object3D[] = [];
   for (const layer of [overlay, selLayer]) { old.push(...layer.children); layer.clear(); }
@@ -3389,9 +3403,24 @@ function placeViewCube() {
   else if (!props.hidden && props.classList.contains('shown')) right = props.offsetWidth + 20;
   if (right !== cubeRight) { cubeRight = right; cubeWrap.style.right = `${right}px`; }
 }
+/** 帧数：一秒里真正画了多少帧（画面没变不画，所以静止时是 0）。放在视图左上角，左边有面板时让开 */
+const fpsEl = document.createElement('div');
+fpsEl.id = 'fps';
+fpsEl.textContent = '0 FPS';
+host.appendChild(fpsEl);
+let fpsLeft = -1, fpsAt = performance.now(), fpsBase = 0;
+function tickFps(now: number) {
+  let left = 12;
+  if (prefs.side === 'left') left = palette.offsetWidth + 20;
+  else if (!props.hidden && props.classList.contains('shown')) left = props.offsetWidth + 20;
+  if (left !== fpsLeft) { fpsLeft = left; fpsEl.style.left = `${left}px`; }
+  if (now - fpsAt < 1000) return;
+  fpsEl.textContent = `${Math.round(((renderCount - fpsBase) * 1000) / (now - fpsAt))} FPS`;
+  fpsAt = now;
+  fpsBase = renderCount;
+}
 const tmpQ = new THREE.Quaternion();
 function renderViewCube() {
-  placeViewCube();
   tmpQ.copy(camera.quaternion);
   cubeCam.position.set(0, 0, 6).applyQuaternion(tmpQ);
   cubeCam.quaternion.copy(tmpQ);
@@ -3533,8 +3562,24 @@ Promise.race([floorTexturesReady(), new Promise((r) => setTimeout(r, 1500))]).th
   renderer.domElement.style.transition = 'opacity .15s';
   renderer.domElement.style.opacity = '1';
 });
+/** 上一次画的时候相机和画布的样子：比矩阵本身，阻尼、视图切换、窗口大小都不用单独记 */
+const viewSig = new Float64Array(34);
+function viewChanged(cam: THREE.Camera) {
+  const c = renderer.domElement, w = cam.matrixWorld.elements, q = cam.projectionMatrix.elements;
+  let changed = viewSig[32] !== c.width || viewSig[33] !== c.height;
+  viewSig[32] = c.width; viewSig[33] = c.height;
+  // OrbitControls 每帧重算相机位置，末位有浮点抖动，差得比这小的不算动（慢慢累积到这么大时还是会画）
+  for (let i = 0; i < 16; i++) {
+    if (Math.abs(viewSig[i] - w[i]) > 1e-6) { viewSig[i] = w[i]; changed = true; }
+    if (Math.abs(viewSig[16 + i] - q[i]) > 1e-6) { viewSig[16 + i] = q[i]; changed = true; }
+  }
+  return changed;
+}
+let groupsMoved = false;
 renderer.setAnimationLoop(() => {
   frameNo++;
+  // 这一帧开始时就在动的：最后一步在这一帧里结束，也要画出来
+  const busy = fading.length > 0 || !!fly || !!camAnim || zoomGoal !== null || !!drag || rebuildWanted;
   if (fading.length) tickFades(performance.now());
   if (fly) tickFly(Math.min(0.05, (performance.now() - lastFrame) / 1000));
   const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);
@@ -3564,12 +3609,16 @@ renderer.setAnimationLoop(() => {
   if (rebuildWanted) rebuild();
   // 画面上的缓动：平移类拖动把网格挪 (val - final)，选中框一起挪；改形状的拖动重画选中框
   const off = anim?.ids ? anim.val.map((v, i) => v - anim!.final[i]) : [0, 0, 0];
-  for (const [id, gs] of elemGroups) {
-    for (const g of gs) {
-      const own = g.userData.owners as Set<number> | undefined;
-      const m = !!anim?.ids && (own ? [...own].every((o) => anim!.ids!.has(o)) : anim.ids.has(id));
-      g.position.set(m ? off[0] : 0, m ? off[1] : 0, m ? off[2] : 0);
+  // 没有缓动时不用每帧走一遍所有元素，缓动刚结束时再走一次把网格放回原位
+  if (anim?.ids || groupsMoved) {
+    for (const [id, gs] of elemGroups) {
+      for (const g of gs) {
+        const own = g.userData.owners as Set<number> | undefined;
+        const m = !!anim?.ids && (own ? [...own].every((o) => anim!.ids!.has(o)) : anim.ids.has(id));
+        g.position.set(m ? off[0] : 0, m ? off[1] : 0, m ? off[2] : 0);
+      }
     }
+    groupsMoved = !!anim?.ids;
   }
   selLayer.position.set(off[0], off[1], off[2]);
   if (moving && anim?.preview) drawOverlay();
@@ -3577,7 +3626,16 @@ renderer.setAnimationLoop(() => {
   tickViewAnim(dt);
   if (!fly) controls.update(); // 漫游时视角由鼠标直接控制，OrbitControls 会把相机掰回去对着视图中心
   syncOrtho();
-  renderer.render(scene, viewCam());
+  // 面板淡入淡出不经过重画，立方体和帧数每帧都看一下要不要让开
+  placeViewCube();
+  tickFps(performance.now());
+  const cam = viewCam();
+  cam.updateMatrixWorld();
+  const camMoved = viewChanged(cam);
+  if (!busy && !moving && !camMoved && !renderOnce && performance.now() > renderUntil) return;
+  renderOnce = false;
+  renderCount++;
+  renderer.render(scene, cam);
   renderViewCube();
   if (secLabels.size) placeSectorLabels();
 });
@@ -3592,6 +3650,7 @@ renderer.setAnimationLoop(() => {
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },
   get rebuilds() { return rebuildCount; },
+  get renders() { return renderCount; },
   camDist: () => +camera.position.distanceTo(controls.target).toFixed(2),
   camState: () => ({ t: controls.target.toArray(), d: camera.position.distanceTo(controls.target) }),
   camPos: () => camera.position.toArray(),

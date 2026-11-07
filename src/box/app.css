@@ -243,6 +243,7 @@ select.native { display: none; }
 
 /* ---------------- 视图立方体（右上角） ---------------- */
 #viewcube { position: absolute; z-index: 4; top: 10px; right: 290px; width: 112px; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: right 0.18s ease; }
+#fps { position: absolute; z-index: 4; top: 10px; left: 12px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-3); opacity: 0.7; pointer-events: none; transition: left 0.15s; }
 #viewcube canvas { display: block; width: 112px; height: 112px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.35)); }
 #viewcube .vc-label {
   padding: 1px 9px; border-radius: 9px; font: 600 11px system-ui, "Microsoft YaHei", sans-serif; color: var(--text-2);
