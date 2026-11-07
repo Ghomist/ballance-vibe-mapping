@@ -6,9 +6,10 @@ import { loadNmoLib } from '../export/nmo-lib';
 import { objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { solve } from './solve';
-import { buildRail } from '../geom/rail';
+import { buildRail, mergeRails } from '../geom/rail';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
+import { assetInfo } from './asset-info';
 import { AssetElem, Doc, Obj, Piece, ZoneElem, toWorld, yawDeg } from './types';
 import { fromQuat, mul, rotZ } from './xform';
 
@@ -59,13 +60,12 @@ export function exportBoxScene(doc: Doc): SceneDesc {
     if (parts.length) meshes.push({ name: `A_Floor_BVM_${String(++fi).padStart(2, '0')}`, kind: 'floor', parts });
   }
 
-  // ---- 钢轨：一条一个物体 ----
-  let ri = 0;
-  for (const r of elems) {
-    if (r.kind !== 'rail') continue;
-    const rm = buildRail(r, { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) }.guardPostDepth);
-    if (rm.pos.length) meshes.push({ name: `A_Rail_BVM_${String(++ri).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: rm.pos.map(r5) }] });
-  }
+  // ---- 钢轨：头尾相接的合成一个物体，接头处法线和 UV 才连续 ----
+  const postDepth = { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) }.guardPostDepth;
+  const railMeshes = elems.flatMap((r) => (r.kind === 'rail' ? [buildRail(r, postDepth)] : [])).filter((m) => m.pos.length);
+  mergeRails(railMeshes).forEach((pos, i) => {
+    meshes.push({ name: `A_Rail_BVM_${String(i + 1).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: pos.map(r5) }] });
+  });
 
   // ---- 护栏：每段一个钢轨物体，铆钉是装饰 ----
   let gi = 0;
@@ -108,7 +108,10 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   }
 
   // ---- 特殊路面（资产库模型） ----
-  for (const e of elems) if (e.kind === 'asset') assets.push({ asset: e.name, kind: assetKind(e.name), ...placement(e) });
+  // 云层：游戏只处理叫 SkyLayer 的那一个物体，多出来的进了游戏是黑底，所以只导出第一个
+  const skies = elems.filter((e): e is AssetElem => e.kind === 'asset' && !!assetInfo(e.name)?.sky);
+  if (skies.length > 1) warnings.push(`一张图只能有一个云层，只导出第一个（${assetInfo(skies[0].name)!.label}），其余 ${skies.length - 1} 个不导出`);
+  for (const e of elems) if (e.kind === 'asset' && (e === skies[0] || !skies.includes(e))) assets.push({ asset: e.name, kind: assetKind(e.name), ...placement(e) });
 
   // ---- 机关与装饰：小节按机关自己记的（放的时候取顶栏选的小节，属性面板里可改），超出就算最后一个小节 ----
   const nearSector = (o: Obj) => Math.min(Math.max(1, o.sector ?? 1), sectors);

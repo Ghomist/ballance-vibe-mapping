@@ -105,7 +105,8 @@ const F = <T>(k: string, c: Codec<T>): [string, Codec<never>] => [k, c as unknow
 
 const slope = record([F('axis', uint), F('dz', num)]);
 const railPiece = record([F('kind', str), F('len', num), F('radius', num), F('angle', num), F('dz', num)]);
-const sideRail = record([F('dir', num), F('stone?', flag), F('ends?', list({ w: (o, v: boolean) => o.uint(v ? 1 : 0), r: (i) => i.uint() === 1 }))]);
+const bools = list<boolean>({ w: (o, v) => o.uint(v ? 1 : 0), r: (i) => i.uint() === 1 });
+const sideRail = record([F('dir', num), F('stone?', flag), F('ends?', bools)]);
 
 /** 字段：'名字'（必有）、'名字?'（可以没有）。x、y、z 单独按差值存，不写在这里 */
 const COMMON: [string, Codec<never>][] = [F('ang?', num), F('q?', tuple(num, 4)), F('group?', uint)];
@@ -119,30 +120,47 @@ const SPECS: Record<Elem['kind'], [string, Codec<never>][]> = {
   zone: [F('sx', num), F('sy', num), F('depth', num), ...COMMON],
 };
 const KINDS = Object.keys(SPECS) as Elem['kind'][];
+const F2 = <T>(kind: Elem['kind'], name: string, c: Codec<T>): [Elem['kind'], string, Codec<never>] => [kind, name, c as unknown as Codec<never>];
+/**
+ * 后来加的可选字段：SPECS 是按列存的，往里插一列旧地图码就全错位了，所以新字段一律排在所有元素后面，只能往这里追加。
+ * 旧地图码读到这里数据就结束了，这些字段就是没有。
+ */
+const EXTRAS: [Elem['kind'], string, Codec<never>][] = [F2('rail', 'tips', bools), F2('rail', 'q', tuple(num, 4))];
+
+/** 可选的一列：先写哪些元素有（大多数地图整列都没有，一个 0 就结束），再写它们的值 */
+function writeColumn(o: Writer, es: Record<string, never>[], name: string, c: Codec) {
+  const has = es.filter((e) => e[name] !== undefined);
+  o.uint(has.length);
+  let at = 0;
+  es.forEach((e, n) => { if (e[name] !== undefined) { o.uint(n - at); at = n; } });
+  for (const e of has) c.w(o, e[name]);
+}
+function readColumn(i: Reader, es: Record<string, unknown>[], name: string, c: Codec) {
+  const m = i.uint(), at: number[] = [];
+  let a = 0;
+  for (let k = 0; k < m; k++) { a += i.uint(); at.push(a); }
+  for (const idx of at) { if (!es[idx]) throw new Error('数据不完整'); es[idx][name] = c.r(i); }
+}
 
 function encodeBin(doc: Doc): Uint8Array {
   const o = new Writer();
   o.uint(doc.nextId);
   o.str(doc.settings ? JSON.stringify(doc.settings) : '');
   o.str(doc.name ?? '');
+  const ofKind = (kind: Elem['kind']) => (Object.values(doc.elems) as Elem[]).filter((e) => e.kind === kind).sort((a, b) => a.id - b.id) as unknown as Record<string, never>[];
   for (const kind of KINDS) {
-    const es = (Object.values(doc.elems) as Elem[]).filter((e) => e.kind === kind).sort((a, b) => a.id - b.id) as unknown as Record<string, never>[];
+    const es = ofKind(kind);
     o.uint(es.length);
     let id = 0;
     for (const e of es) { o.uint((e.id as number) - id); id = e.id; }
     for (const k of ['x', 'y', 'z']) { let p = 0; for (const e of es) p = o.num(e[k], p); }
     SPECS[kind].forEach(([key, c]) => {
       const name = key.replace('?', ''), opt = key.endsWith('?');
-      if (opt) {
-        // 这一列哪些元素有：大多数地图整列都没有，一个 0 就结束
-        const has = es.filter((e) => e[name] !== undefined);
-        o.uint(has.length);
-        let at = 0;
-        es.forEach((e, n) => { if (e[name] !== undefined) { o.uint(n - at); at = n; } });
-        for (const e of has) (c as Codec).w(o, e[name]);
-      } else for (const e of es) (c as Codec).w(o, e[name]);
+      if (opt) writeColumn(o, es, name, c as Codec);
+      else for (const e of es) (c as Codec).w(o, e[name]);
     });
   }
+  for (const [kind, name, c] of EXTRAS) writeColumn(o, ofKind(kind), name, c as Codec);
   // 字符串表放最前面
   const head = new Writer();
   head.uint(o.strings.length);
@@ -161,22 +179,24 @@ function decodeBin(bytes: Uint8Array): Doc {
   if (settings) doc.settings = JSON.parse(settings);
   const name = i.str();
   if (name) doc.name = name;
+  const byKind = new Map<Elem['kind'], Record<string, unknown>[]>();
   for (const kind of KINDS) {
     const count = i.uint();
     const es: Record<string, unknown>[] = [];
+    byKind.set(kind, es);
     let id = 0;
     for (let k = 0; k < count; k++) { id += i.uint(); es.push({ id, kind }); }
     for (const key of ['x', 'y', 'z']) { let p = 0; for (const e of es) { const [v, q] = i.num(p); e[key] = v; p = q; } }
     SPECS[kind].forEach(([key, c]) => {
       const name = key.replace('?', '');
-      if (key.endsWith('?')) {
-        const m = i.uint(), at: number[] = [];
-        let a = 0;
-        for (let k = 0; k < m; k++) { a += i.uint(); at.push(a); }
-        for (const idx of at) { if (!es[idx]) throw new Error('数据不完整'); es[idx][name] = (c as Codec).r(i); }
-      } else for (const e of es) e[name] = (c as Codec).r(i);
+      if (key.endsWith('?')) readColumn(i, es, name, c as Codec);
+      else for (const e of es) e[name] = (c as Codec).r(i);
     });
     for (const e of es) doc.elems[e.id as number] = e as unknown as Elem;
+  }
+  for (const [kind, name, c] of EXTRAS) {
+    if (i.pos >= bytes.length) break; // 旧地图码到这里就结束了
+    readColumn(i, byKind.get(kind)!, name, c as Codec);
   }
   return doc;
 }

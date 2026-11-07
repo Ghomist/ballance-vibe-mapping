@@ -208,10 +208,10 @@ export function solve(doc: Doc): Solved {
 function solveAll(doc: Doc): Solved {
   const out: Solved = { meshes: new Map(), assets: new Map(), owner: new Map(), loops: [] };
   const frames = new Map<number, Elem[]>();
-  const tilted: Box[] = [];
+  const tilted: (Box | Piece)[] = [];
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'box' && e.kind !== 'piece' && e.kind !== 'obj') continue;
-    if (e.q) { if (e.kind === 'box') tilted.push(e); continue; }
+    if (e.q) { if (e.kind !== 'obj') tilted.push(e); continue; }
     const k = e.ang ?? 0;
     let l = frames.get(k);
     if (!l) frames.set(k, (l = []));

@@ -3,27 +3,42 @@ import {
   DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, Rail, RailState,
   advance, kindSpans, railCenters, sampleRail, sideLowerSpan, stateAt,
 } from '../model/rail';
-import { fillet, sweepTube } from './railing';
+import { dome, fillet, sweepTube, type TubeCap } from './railing';
+import { apply, fromQuat, type V3 } from '../box/xform';
 
-export interface RailMesh { pos: number[]; nrm: number[] }
+export interface RailMesh { pos: number[]; nrm: number[]; caps: TubeCap[] }
 
 const rad = (d: number) => (d * Math.PI) / 180;
 
-/** postDepth：侧轨两头弯下去的上轨插到路面以下多深（和护栏立柱一样，默认 2） */
+/** postDepth：侧轨两头弯下去的上轨插到路面以下多深（和护栏立柱一样，默认 2）。结果是世界坐标，倾斜的钢轨绕起点转过去 */
 export function buildRail(r: Rail, postDepth = 2): RailMesh {
-  const out: RailMesh = { pos: [], nrm: [] };
+  const m = railLocal(r, postDepth);
+  if (!r.q) return m;
+  const Q = fromQuat(r.q), o: V3 = [r.x, r.y, r.z];
+  const pt = (p: number[]): V3 => { const v = apply(Q, [p[0] - o[0], p[1] - o[1], p[2] - o[2]]); return [v[0] + o[0], v[1] + o[1], v[2] + o[2]]; };
+  const each = (a: number[], f: (p: V3) => V3) => { const out: number[] = []; for (let i = 0; i < a.length; i += 3) out.push(...f([a[i], a[i + 1], a[i + 2]])); return out; };
+  return {
+    pos: each(m.pos, pt), nrm: each(m.nrm, (n) => apply(Q, n)),
+    caps: m.caps.map((c) => ({ ...c, ring: c.ring.map(pt), dir: apply(Q, c.dir as V3) })),
+  };
+}
+
+function railLocal(r: Rail, postDepth: number): RailMesh {
+  const out: RailMesh = { pos: [], nrm: [], caps: [] };
   if (!r.pieces.length) return out;
   if (r.side && r.pieces.length === 1 && r.pieces[0].angle === 0) return buildSideRail(r, postDepth);
   const samples = sampleRail(r);
-  for (const span of kindSpans(r)) {
+  const spans = kindSpans(r);
+  spans.forEach((span, si) => {
     // 取该区间内的采样点，并在区间两端补上精确的切点
     const pts: RailState[] = [stateAt(r, span.s0)];
     for (const sm of samples) if (sm.s > span.s0 + 1e-6 && sm.s < span.s1 - 1e-6) pts.push(sm);
     pts.push(stateAt(r, span.s1));
     // 坡度：用相邻点估计切线的竖直分量
     const offsets = span.kind === 'double' ? [-RAIL_SPAN / 2, RAIL_SPAN / 2] : [0];
-    for (const off of offsets) tube(out, pts, span.kind, off);
-  }
+    // 球形闭合只在整根钢轨的两头，单双转换的接口还是平的
+    for (const off of offsets) tube(out, pts, span.kind, off, [!!r.tips?.[0] && si === 0, !!r.tips?.[1] && si === spans.length - 1]);
+  });
   return out;
 }
 
@@ -39,16 +54,61 @@ function buildSideRail(r: Rail, postDepth: number): RailMesh {
   const h = rad(r.heading), L = [-Math.sin(h), Math.cos(h)];
   const P = (s: RailState, l: number, dz: number): [number, number, number] => [s.x + L[0] * l, s.y + L[1] * l, s.z + dz];
   const [ta, tb] = sideLowerSpan(r);
-  const lower = tb > ta ? sweepTube([P(advance(s0, pc, ta), 0, dzLo), P(advance(s0, pc, tb), 0, dzLo)], false, RAIL_RADIUS) : { pos: [], nrm: [] };
+  const tips = r.tips ?? [false, false];
+  const lower = tb > ta ? sweepTube([P(advance(s0, pc, ta), 0, dzLo), P(advance(s0, pc, tb), 0, dzLo)], false, RAIL_RADIUS, tips) : { pos: [], nrm: [], caps: [] };
   const up: [number, number, number][] = [P(s0, lat, dzUp), P(s1, lat, dzUp)];
   const [e0, e1] = r.side!.ends ?? [false, false];
   if (e0) up.unshift(P(s0, lat, RAIL_RADIUS - postDepth));
   if (e1) up.push(P(s1, lat, RAIL_RADIUS - postDepth));
-  const upper = sweepTube(e0 || e1 ? fillet(up, false) : up, false, RAIL_RADIUS);
-  return { pos: [...lower.pos, ...upper.pos], nrm: [...lower.nrm, ...upper.nrm] };
+  const upper = sweepTube(e0 || e1 ? fillet(up, false) : up, false, RAIL_RADIUS, tips);
+  return {
+    pos: [...lower.pos, ...upper.pos], nrm: [...lower.nrm, ...upper.nrm],
+    caps: [...lower.caps, ...upper.caps.map((c) => ({ ...c, at: c.at + lower.pos.length }))],
+  };
 }
 
-function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number) {
+/**
+ * 导出用：头尾相接的钢轨合成一个网格，接头里互相贴着的两个封盖去掉（一个物体里顶点才焊得上，法线和反射 UV 才连续）。
+ * 两个封盖截面完全重合、朝向相反才算相接；从同一点朝同一边岔开的钢轨不算，两头都留着封盖。返回每个合并后网格的三角形。
+ */
+export function mergeRails(rails: RailMesh[]): number[][] {
+  const TOL = 1e-3;
+  const near = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < TOL;
+  const caps = rails.flatMap((m, mesh) => m.caps.map((c) => ({ ...c, mesh, hidden: false })));
+  // 接头两边的顶点可能差一点点：后一根的这一圈挪到前一根的位置上，导出时才焊得上
+  const moved = rails.map(() => new Map<string, number[]>());
+  const vkey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+  const root = rails.map((_, i) => i);
+  const find = (i: number) => { while (root[i] !== i) i = root[i] = root[root[i]]; return i; };
+  caps.forEach((a, i) => {
+    if (a.hidden) return;
+    for (const b of caps.slice(i + 1)) {
+      if (b.hidden || a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2] >= 0) continue;
+      if (!a.ring.every((p) => b.ring.some((q) => near(p, q)))) continue;
+      a.hidden = b.hidden = true;
+      root[find(a.mesh)] = find(b.mesh);
+      for (const q of b.ring) moved[b.mesh].set(vkey(q[0], q[1], q[2]), a.ring.find((p) => near(p, q))!);
+      return;
+    }
+  });
+  const out = new Map<number, number[]>();
+  rails.forEach((m, i) => {
+    const dst = out.get(find(i)) ?? [];
+    out.set(find(i), dst);
+    const copy = (a: number, b: number) => {
+      for (let k = a; k < b; k += 3) {
+        const to = moved[i].get(vkey(m.pos[k], m.pos[k + 1], m.pos[k + 2]));
+        if (to) dst.push(to[0], to[1], to[2]); else dst.push(m.pos[k], m.pos[k + 1], m.pos[k + 2]);
+      }
+    };
+    let at = 0;
+    for (const c of caps.filter((x) => x.mesh === i && x.hidden).sort((x, y) => x.at - y.at)) { copy(at, c.at); at = c.at + c.len; }
+    copy(at, m.pos.length);
+  });
+  return [...out.values()];
+}
+
+function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number, round: [boolean, boolean]) {
   const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
   const phase = kind === 'mono' ? 22.5 : 0;
   const rings: { c: number[]; v: number[][]; n: number[][] }[] = [];
@@ -85,19 +145,27 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     }
   }
   // 两端封盖
-  const cap = (R: { c: number[]; v: number[][] }, dir: number[], flip: boolean) => {
+  const cap = (R: { c: number[]; v: number[][] }, dir: number[], flip: boolean, ball: boolean, inner: { c: number[] }) => {
+    if (ball) {
+      // 截面是竖直的，半球和管子一样按坡度错切：顶点沿水平方向走出去，同时升高坡度那么多
+      const d = sub(R.c, inner.c), l = Math.hypot(d[0], d[1]) || 1;
+      dome(R.v, R.c, [dir[0], dir[1], d[2] / l], RAIL_RADIUS, out);
+      return;
+    }
+    const at = out.pos.length;
     for (let k = 1; k < 7; k++) {
       const p = flip ? [R.v[0], R.v[k + 1], R.v[k]] : [R.v[0], R.v[k], R.v[k + 1]];
       tri(p, [dir, dir, dir]);
     }
+    out.caps.push({ at, len: out.pos.length - at, ring: R.v, dir });
   };
   const first = rings[0], last = rings[rings.length - 1];
   // 端面是竖直的：封盖朝水平方向
   const flat = (a: number[]) => normalize([a[0], a[1], 0]);
   const t0 = flat(sub(rings[Math.min(1, rings.length - 1)].c, first.c));
   const t1 = flat(sub(last.c, rings[Math.max(rings.length - 2, 0)].c));
-  cap(first, t0.map((x) => -x), true);
-  cap(last, t1, false);
+  cap(first, t0.map((x) => -x), true, round[0], rings[Math.min(1, rings.length - 1)]);
+  cap(last, t1, false, round[1], rings[Math.max(rings.length - 2, 0)]);
 }
 
 const sub = (a: number[], b: number[]) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

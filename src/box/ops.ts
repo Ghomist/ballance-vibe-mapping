@@ -1,6 +1,5 @@
 // 文档上的编辑操作：旋转、合并、切分、复制、绑定、包围盒
-import { Box, Dir, Doc, Elem, OrientedElem, canTilt, dirToLocal, footprint, isOriented, localBounds, pivotOf, toWorld } from './types';
-import { sampleRail } from '../model/rail';
+import { Box, Dir, Doc, Elem, OrientedElem, canTilt, dirToLocal, footprint, isOriented, localBounds, pivotOf, railPath, toWorld } from './types';
 import { type M3, I3, apply, fromQuat, isUpright, mul, rotZ, splitYaw, toQuat, yawOf } from './xform';
 
 export type V3 = [number, number, number];
@@ -8,7 +7,7 @@ export interface Bounds { x0: number; y0: number; z0: number; x1: number; y1: nu
 
 /** 元素的包围盒（世界坐标；机关按对准方块；转过的元素取 8 个角转过去之后的包围盒） */
 export function elemBounds(e: Elem): Bounds {
-  if (e.kind === 'rail') { const f = footprint(e); const zs = sampleRail(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - 1.2, z1: Math.max(...zs) }; }
+  if (e.kind === 'rail') { const f = footprint(e); const zs = railPath(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - 1.2, z1: Math.max(...zs) }; }
   if (e.kind === 'guard') { const f = footprint(e); return { ...f, z0: Math.min(...e.pts.map((p) => p[2])) - 2, z1: Math.max(...e.pts.map((p) => p[2])) + 2.6 }; }
   const b = localBounds(e);
   if (!e.ang && !e.q) return b;
@@ -164,7 +163,7 @@ export function ungroupElems(doc: Doc, ids: Iterable<number>) {
 const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
 
 /**
- * 把元素绕世界里的点 P 转 R（旋转矩阵）。钢轨、护栏、素材件只能绕 Z 转。
+ * 把元素绕世界里的点 P 转 R（旋转矩阵）。护栏、盘点只能绕 Z 转。
  * 转完以后仍然朝上的：只记绕 Z 的角度（拆成 [0, 90) 的朝向坐标系 + 90° 的整数倍），照样参与路面求解；
  * 倾斜了的：记成四元数，绕中心 / 原点转。
  */
@@ -172,9 +171,11 @@ export function rotateWorld(e: Elem, R: M3, P: V3) {
   const rot = (p: V3): V3 => { const v = apply(R, [p[0] - P[0], p[1] - P[1], p[2] - P[2]]); return [v[0] + P[0], v[1] + P[1], v[2] + P[2]]; };
   const yaw = yawOf(R);
   if (e.kind === 'rail') {
-    const p = rot([e.x, e.y, e.z]);
-    [e.x, e.y, e.z] = p.map(r6) as V3;
-    e.heading = r6(((e.heading + yaw) % 360 + 360) % 360);
+    [e.x, e.y, e.z] = rot([e.x, e.y, e.z]).map(r6) as V3;
+    // 钢轨自己的轴：Q·Rz(heading)，转完还朝上就只记朝向，倾斜了就全记进四元数
+    const O2 = mul(R, mul(e.q ? fromQuat(e.q) : I3, rotZ(e.heading)));
+    if (isUpright(O2)) { delete e.q; e.heading = r6(((yawOf(O2) % 360) + 360) % 360); }
+    else { e.q = toQuat(O2); e.heading = 0; }
     return;
   }
   if (e.kind === 'guard') {
@@ -216,6 +217,12 @@ export function rotateWorld(e: Elem, R: M3, P: V3) {
 
 /** 摆正：去掉倾斜，只保留绕 Z 的朝向（中心不动） */
 export function uprightElem(e: Elem) {
+  if (e.kind === 'rail' && e.q) {
+    const m = fromQuat(e.q);
+    e.heading = r6(((Math.atan2(m[3], m[0]) * 180 / Math.PI) % 360 + 360) % 360);
+    delete e.q;
+    return;
+  }
   if (!isOriented(e) || !e.q) return;
   const m = fromQuat(e.q);
   // 局部 X 轴投到水平面上的方向当作朝向

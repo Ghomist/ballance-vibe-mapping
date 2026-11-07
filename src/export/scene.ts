@@ -75,7 +75,7 @@ const ASSET_KIND: Record<string, SceneAsset['kind']> = {
   RailCrossing: 'rail', MonorailCrossing: 'rail',
 };
 export const assetKind = (name: string): SceneAsset['kind'] =>
-  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider|Wood|Modul_|ConcaveWood|ConvexWood|Level9_WoodBarrier|Turnstile)/.test(name) ? 'floor' : 'deco');
+  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider|Wood|Modul_|ConcaveWood|ConvexWood|Level9_WoodBarrier|Level13_UWoodPath|Turnstile)/.test(name) ? 'floor' : 'deco');
 
 export function exportScene(m: Model): SceneDesc {
   const warnings: string[] = [];

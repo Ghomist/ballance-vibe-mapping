@@ -19,6 +19,13 @@ const EXTRA = {
   Modul_15: [[0, 0, 0], [0, 5, 0], [0, 5, -0.833], [0, 5, -2.022], [0, 29.982, 0], [0, 29.981, -0.832], [0, 29.981, -2.021], [0, 34.983, 0]],
 };
 
+/** 弧形的 U 型木板：上端朝上、下端斜着，两头截面按 Y 方向算不准，直接给端面的两条棱（[y, z]，左右各一个角、中间一个中点） */
+const U_END = [[0, 0], [0.496, 0.065]];
+const END_EDGES = {
+  Level13_UWoodPath: [...U_END, [317.631, -67.422], [318.127, -67.357]],
+  Level13_UWoodPath_Single: [...U_END, [63.526, -13.484], [64.022, -13.419]],
+};
+
 const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
 function hull(ps) {
   const s = [...ps].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -97,7 +104,9 @@ for (const name of names) {
   // 云层这种只有一张大面的，两头截面算不出来：取四个方向最远的顶点
   if (!verts.size && new Set(vs.map(key)).size <= 8) for (const v of vs) verts.set(key(v), v.map(r3));
   if (!verts.size) for (const [k, s] of [[0, 1], [0, -1], [1, 1], [1, -1]]) { const p = vs.reduce((a, b) => (b[k] * s > a[k] * s ? b : a)).map(r3); verts.set(key(p), p); }
-  out[name] = { verts: [...verts.values()], mids: [...mids.values()] };
+  out[name] = END_EDGES[name]
+    ? { verts: END_EDGES[name].flatMap(([y, z]) => [[lo[0], y, z], [hi[0], y, z]]), mids: END_EDGES[name].map(([y, z]) => [0, y, z]) }
+    : { verts: [...verts.values()], mids: [...mids.values()] };
   console.log(name, 'verts', verts.size, 'mids', mids.size);
 }
 const body = Object.entries(out).map(([k, v]) => `  ${k}: { verts: ${JSON.stringify(v.verts)}, mids: ${JSON.stringify(v.mids)} },`).join('\n');

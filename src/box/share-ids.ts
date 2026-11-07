@@ -8,5 +8,5 @@ export const SHARE_IDS: readonly string[] = [
   'P_Modul_37', 'P_Modul_41', 'PE_Balloon', 'Latern', 'LaternColumn_Full', 'LaternColumn', 'WoodPlate', 'Modul_02',
   'Modul_13', 'Modul_42', 'Modul_42_Wide', 'Modul_11', 'ConcaveWood', 'ConvexWood', 'Level9_WoodBarrier', 'WoodSlope',
   'Modul_15', 'Modul_16', 'Turnstile', 'Turnstile_Big', 'SkyLayer', 'SkyLayerVortex', 'RailCrossing',
-  'MonorailCrossing',
+  'MonorailCrossing', 'Level13_UWoodPath', 'Level13_UWoodPath_Single',
 ];

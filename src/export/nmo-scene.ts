@@ -47,6 +47,8 @@ export function vxMatrix(pos: [number, number, number], rotZ: number, pitch = 0,
 }
 
 /** 路面 / 钢轨 / 挡块网格：Blender 坐标的三角形 → Virtools 网格（材质槽为编辑器材质名） */
+const SMOOTH_COS = Math.cos(Math.PI / 3);
+
 export function bakeMesh(m: SceneMesh): Omit<NmoDocMesh, 'mtls' | 'name' | 'litMode'> & { mtls: string[] } {
   const F = Math.fround;
   // 1. 顶点（合并 0.0001 内的重合顶点）
@@ -87,9 +89,10 @@ export function bakeMesh(m: SceneMesh): Omit<NmoDocMesh, 'mtls' | 'name' | 'litM
     const l = Math.hypot(n[0], n[1], n[2]) || 1;
     return [n[0] / l, n[1] / l, n[2] / l];
   });
-  let vn: number[] | null = null;
+  // 平滑网格：自动平滑 60°，每个面的角只平均和它夹角不超过 60° 的面（圆管两侧连续，端面的封盖不把法线带偏）
+  let around: [number, number][][] | null = null;
   if (m.smooth) {
-    vn = new Array(vx.length).fill(0);
+    around = Array.from({ length: vx.length / 3 }, () => []);
     faces.forEach(({ v }, f) => {
       for (let k = 0; k < 3; k++) {
         const p = v[k], q = v[(k + 1) % 3], r = v[(k + 2) % 3];
@@ -97,17 +100,20 @@ export function bakeMesh(m: SceneMesh): Omit<NmoDocMesh, 'mtls' | 'name' | 'litM
         const e2 = [vx[r * 3] - vx[p * 3], vx[r * 3 + 1] - vx[p * 3 + 1], vx[r * 3 + 2] - vx[p * 3 + 2]];
         const l1 = Math.hypot(e1[0], e1[1], e1[2]), l2 = Math.hypot(e2[0], e2[1], e2[2]);
         const ang = l1 && l2 ? Math.acos(Math.max(-1, Math.min(1, (e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2]) / (l1 * l2)))) : 0;
-        for (let d = 0; d < 3; d++) vn![p * 3 + d] += fn[f][d] * ang;
+        around![p].push([f, ang]);
       }
     });
-    for (let i = 0; i < vn.length; i += 3) {
-      const l = Math.hypot(vn[i], vn[i + 1], vn[i + 2]) || 1;
-      vn[i] /= l; vn[i + 1] /= l; vn[i + 2] /= l;
-    }
   }
   const loopNormal = (f: number, k: number) => {
-    const n = vn ? [vn[faces[f].v[k] * 3], vn[faces[f].v[k] * 3 + 1], vn[faces[f].v[k] * 3 + 2]] : fn[f];
-    return n.map(F);
+    if (!around) return fn[f].map(F);
+    const n = [0, 0, 0], a = fn[f];
+    for (const [g, w] of around[faces[f].v[k]]) {
+      const b = fn[g];
+      if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < SMOOTH_COS) continue;
+      for (let d = 0; d < 3; d++) n[d] += b[d] * w;
+    }
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    return n.map((c) => F(c / l));
   };
   // 4. 钢轨：BBP 的反射贴图 UV（照搬它的逐分量乘法）
   if (m.kind === 'rail') {
@@ -175,7 +181,8 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
       const t = lib.textures[name];
       if (!t?.file) return null;
       i = doc.textures.length;
-      doc.textures.push({ name, file: t.file, size: t.size, saveOptions: t.saveOptions, videoFormat: t.videoFormat });
+      // 贴图一律外部引用（CKTEXTURE_EXTERNAL）：素材库里有的是跟随全局设置，NMO 里只存文件名，由游戏的贴图目录提供
+      doc.textures.push({ name, file: t.file, size: t.size, saveOptions: 1, videoFormat: t.videoFormat });
       texIdx.set(name, i);
     }
     return i;
@@ -264,7 +271,10 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const src = lib.assets[a.asset];
     if (!src) continue;
     const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
-    addObject({ name: unique(a.asset.startsWith('SkyLayer') ? a.asset : ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
+    // 云层和漩涡在原版里都叫 SkyLayer / SkyLayer_Mesh：材质本身不透明，游戏脚本按这个名字找到物体才加上混合，名字不对就是黑底
+    const sky = a.asset.startsWith('SkyLayer');
+    if (sky) doc.meshes[mesh].name = unique('SkyLayer_Mesh');
+    addObject({ name: unique(sky ? 'SkyLayer' : ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {

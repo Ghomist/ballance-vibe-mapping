@@ -31,7 +31,7 @@ const boxFeats = (corners: (x: number, y: number) => [number, number], x0: numbe
 /** 吸附点（世界坐标）：在元素自己的坐标里算，再转到世界 */
 export function feats(e: Elem): Feats {
   const f = localFeats(e);
-  if ((e.kind === 'rail' || e.kind === 'guard') || (!e.ang && !e.q)) return f;
+  if (e.kind === 'guard' || (e.kind === 'rail' ? !e.q : !e.ang && !e.q)) return f;
   const w = (p: P3) => toWorld(e, p);
   return { verts: f.verts.map(w), mids: f.mids.map(w), edges: f.edges.map(([a, b]) => [w(a), w(b)]) };
 }

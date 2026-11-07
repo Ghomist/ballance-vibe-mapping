@@ -42,6 +42,10 @@ export interface Rail {
   side?: SideRail;
   /** 螺旋侧轨：单轨螺旋，每圈升高固定 SIDE_SPIRAL_SCREW */
   sideSpiral?: boolean;
+  /** 两头是球形闭合（[起点, 终点]，和原版 RailTip 的头一样），没有就是平直闭合 */
+  tips?: [boolean, boolean];
+  /** 倾斜（绕 X / Y 转过）：四元数，绕起点转 */
+  q?: [number, number, number, number];
 }
 
 export const SIDE_RAIL_ANGLE = 79.563;

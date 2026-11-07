@@ -23,6 +23,8 @@ export const ASSET_INFO: AssetInfo[] = [
   { name: 'ConvexWood', label: '凸木轨道', group: 'wood', min: [0.0, -8.422, -4.53], max: [150.0, 8.423, 0.0], stretch: true },
   { name: 'Level9_WoodBarrier', label: '木围栏路面', group: 'wood', min: [-25.0, 0.0, -0.0], max: [0.0, 25.0, 3.3651] },
   { name: 'WoodSlope', label: '木制斜坡', group: 'wood', min: [-5.0001, -0.0, -0.7825], max: [5.0005, 46.6938, 24.5868], stretch: true },
+  { name: 'Level13_UWoodPath', label: 'U 型木板（长）', group: 'wood', min: [-2.5, 0.0, -84.1302], max: [2.5, 318.1266, 0.0653] },
+  { name: 'Level13_UWoodPath_Single', label: 'U 型木板', group: 'wood', min: [-2.5, 0.0, -30.1922], max: [2.5, 64.0218, 0.0653] },
   { name: 'Modul_15', label: '特殊路块 15', group: 'special', min: [-0.0, -2.0427, -2.0215], max: [4.5131, 36.9773, 7.576], tab: 'road' },
   { name: 'Modul_16', label: '特殊路块 16', group: 'special', min: [-6.7872, -0.0, -1.7378], max: [7.0609, 37.2046, 5.154], tab: 'road' },
   { name: 'Turnstile', label: '旋转门路块', group: 'special', min: [-2.5, -2.5, -2.5], max: [2.5, 2.5, 3.5316], tab: 'road', snapTop: 2.5 },

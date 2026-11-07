@@ -10,9 +10,9 @@ import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
-import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, railCenters, type RailState, sampleRail, sideLowerSpan } from '../model/rail';
+import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
-import { type M3, rotAxis, rotZ } from './xform';
+import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
 import { stretchUV } from '../view/uvstretch';
@@ -728,7 +728,37 @@ function marks(ps: P3[], shape: keyof typeof TEX, color: number, size: number, o
 const ALIGN_PX = 5;
 
 /** 元素外形的 8 个角：顶面 4 个（x0y0、x1y0、x1y1、x0y1），再是底面 4 个；机关按模型的包围盒 */
+/**
+ * 钢轨的包围盒：按钢轨自己的朝向（倾斜的跟着转）把网格框起来，直轨就是贴着轨的长方体。
+ * 拉坡的钢轨和拉坡的路面一样，方块跟着坡度错切：用网格拟合一个斜面 z = a·x + b·y，整圈以上的螺旋没有整体坡度，不错切
+ */
+function railCorners(e: RailElem): P3[] {
+  const { pos } = buildRail(e, mapSettings().guardPostDepth);
+  if (!pos.length) return [];
+  const M = mul(e.q ? fromQuat(e.q) : I3, rotZ(e.heading));
+  const ps: P3[] = [];
+  // 转置就是逆旋转：钢轨自己坐标里的点
+  for (let i = 0; i < pos.length; i += 3) ps.push([0, 1, 2].map((k) => M[k] * pos[i] + M[3 + k] * pos[i + 1] + M[6 + k] * pos[i + 2]) as P3);
+  let a = 0, b = 0;
+  if (e.pieces.every((p) => Math.abs(p.angle) < 360) && e.pieces.some((p) => p.dz)) {
+    const c = [0, 1, 2].map((k) => ps.reduce((s, p) => s + p[k], 0) / ps.length);
+    let xx = 0, yy = 0, xy = 0, xz = 0, yz = 0;
+    for (const p of ps) { const x = p[0] - c[0], y = p[1] - c[1], z = p[2] - c[2]; xx += x * x; yy += y * y; xy += x * y; xz += x * z; yz += y * z; }
+    const det = xx * yy - xy * xy;
+    if (det > 1e-9) { a = (xz * yy - yz * xy) / det; b = (yz * xx - xz * xy) / det; }
+  }
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of ps) {
+    const q = [p[0], p[1], p[2] - a * p[0] - b * p[1]];
+    for (let k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+  }
+  const at = (x: number, y: number, z: number) => apply(M, [x, y, z + a * x + b * y]) as P3;
+  const ring = (z: number) => [at(lo[0], lo[1], z), at(hi[0], lo[1], z), at(hi[0], hi[1], z), at(lo[0], hi[1], z)];
+  return [...ring(hi[2]), ...ring(lo[2])];
+}
+
 function cornersOf(e: Elem): P3[] {
+  if (e.kind === 'rail') return railCorners(e);
   const ob = e.kind === 'obj' || e.kind === 'guard' || e.kind === 'asset' || isCheckpoint(e) ? objBoxes.get(e.id) : null;
   if (ob) {
     const a = ob.min, b = ob.max;
@@ -739,27 +769,8 @@ function cornersOf(e: Elem): P3[] {
 }
 
 function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
-  const c = e.kind === 'rail' ? [] : cornersOf(e);
+  const c = cornersOf(e);
   const segs: P3[] = [];
-  if (e.kind === 'rail') {
-    // 钢轨：沿两根轨（双轨最顶端的高度）画线，两头画横杠
-    const ps = sampleRail(e);
-    const cs = e.side ? railCenters(e, 'double') : null;
-    const side = (s: RailState, k: number): P3 => {
-      const h = (s.heading * Math.PI) / 180;
-      const [l, dz] = cs ? cs[k > 0 ? 1 : 0] : [1.875 * k, 0];
-      return [s.x - Math.sin(h) * l, s.y + Math.cos(h) * l, s.z + dz + 0.05];
-    };
-    if (e.side) {
-      // 侧轨：下轨弯下去的那头是缩短的
-      const [ta, tb] = sideLowerSpan(e);
-      const at = (t: number) => advance(ps[0], e.pieces[0], t);
-      segs.push(side(at(ta), -1), side(at(tb), -1), side(at(0), 1), side(at(1), 1), side(at(ta), -1), side(at(ta), 1), side(at(tb), -1), side(at(tb), 1));
-    } else {
-      for (let i = 0; i + 1 < ps.length; i++) for (const k of [1, -1]) segs.push(side(ps[i], k), side(ps[i + 1], k));
-      for (const s of [ps[0], ps[ps.length - 1]]) segs.push(side(s, 1), side(s, -1));
-    }
-  }
   if (c.length === 8) for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
   const geo = new THREE.BufferGeometry().setFromPoints(segs.map((p) => new THREE.Vector3(...p)));
   const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
@@ -769,7 +780,6 @@ function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
 
 /** 选中物体的半透明包裹面 */
 function hullOf(e: Elem, color: number, opacity: number): THREE.Object3D | null {
-  if (e.kind === 'rail') return null; // 钢轨只沿两根轨画选中线，不画方块
   const c = cornersOf(e);
   if (c.length !== 8) return null;
   const quads = [[0, 1, 2, 3], [4, 7, 6, 5], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]];
@@ -1397,6 +1407,7 @@ el.addEventListener('pointerdown', (e) => {
   const group = expandGroups(doc, [h.id]);
   const hb = doc.elems[h.id];
   const camN = () => camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
+  if ((e.altKey || e.ctrlKey) && hb.kind === 'rail' && hb.q) { flash('倾斜的钢轨请在属性面板里改长度和高差', true); return; }
   if (e.altKey && !e.ctrlKey && hb.kind === 'rail' && hb.pieces.length === 1 && hb.pieces[0].angle === 0) {
     snapshot();
     sel = new Set([h.id]);
@@ -1634,7 +1645,7 @@ function transformKey(e: KeyboardEvent): boolean {
       else { d.axis = d.axis === a ? null : a; d.excl = null; }
       grabMove(lastMouse);
     } else {
-      if (a !== 2 && [...d.orig.keys()].some((id) => !canTilt(doc.elems[id]))) { flash('钢轨、护栏、盘点、转换件只能绕 Z 转', true); return true; }
+      if (a !== 2 && [...d.orig.keys()].some((id) => !canTilt(doc.elems[id]))) { flash('护栏、盘点只能绕 Z 转', true); return true; }
       d.axis = a; d.acc = 0; d.prev = screenAngle(d.pivot, lastMouse);
       rotateMove(lastMouse);
     }
@@ -1914,7 +1925,7 @@ function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
   for (const x of Object.values(doc.elems)) {
     if (x.id === o.id) continue;
     if (x.kind === 'box' && !x.q) { const f = footprint(x); const [ex, ey] = toLocal(x, [end.x, end.y, 0]); if (ex > f.x0 - 0.5 && ex < f.x1 + 0.5 && ey > f.y0 - 0.5 && ey < f.y1 + 0.5) cands.push(boxTopAt(x, Math.min(Math.max(ex, f.x0), f.x1), Math.min(Math.max(ey, f.y0), f.y1)) - top); }
-    if (x.kind === 'rail') {
+    if (x.kind === 'rail' && !x.q) {
       // 别的钢轨在这一头的高度：两根轨的截面中心对齐（侧轨的路径就是截面中心，普通钢轨的路径是轨顶）
       let s: RailState = { x: x.x, y: x.y, z: x.z, heading: x.heading };
       const ends = [s];
@@ -2089,8 +2100,7 @@ function newElems(type: string): Elem[] {
   if (type === 'zone') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 10, sy: 10, depth: 5 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
   if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
-  if (type === 'side-rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [true, true] } }];
-  if (type === 'side-rail-open') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [false, false] } }];
+  if (type === 'side-rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [false, false] } }];
   if (type === 'side-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'mono', len: 0, radius: SPIRAL_RADIUS, angle: 720, dz: 2 * SIDE_SPIRAL_SCREW }], sideSpiral: true }];
   if (type === 'rail-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: SPIRAL_RADIUS, angle: 360, dz: SPIRAL_SCREW }] }];
   return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
@@ -2280,8 +2290,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
       { type: 'rail', label: '直轨', hint: 'Ctrl 拖改长度，Alt 拖做坡', icon: svgThumb(`<path d="M8 40 L48 20 M16 44 L56 24" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
       { type: 'rail-curve', label: '弯轨', hint: '属性里调半径、角度', icon: svgThumb(`<path d="M10 46 Q10 18 40 14 M18 50 Q18 26 46 22" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       { type: 'rail-spiral', label: '螺旋', hint: '属性里调圈数、半径', icon: svgThumb(`<path d="M32 52 C10 50 10 36 32 36 C54 36 54 22 32 22 C14 22 14 12 32 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
-      { type: 'side-rail', label: '侧轨', hint: '斜过来的双轨，下轨卡在路的棱角上，上轨两头像护栏一样固定在路边；拖到路面上会贴住最近的路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 46 L14 30 Q14 24 20 22 L52 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
-      { type: 'side-rail-open', label: '开放侧轨', hint: '两根成角度的钢轨，两头不弯；拖到路面上会贴住最近的路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 30 L54 10" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
+      { type: 'side-rail', label: '侧轨', hint: '两根成角度的钢轨，拖到路面上会贴住最近的路边；属性里可以让上轨两头弯下去固定在路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 30 L54 10" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
       { type: 'side-spiral', label: '螺旋侧轨', hint: '单轨螺旋，层间距固定 3.6', icon: svgThumb(`<path d="M32 50 C12 48 12 38 32 38 C52 38 52 28 32 28 C14 28 14 18 32 16" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       ...assetItems('rail'),
     ],
@@ -2688,7 +2697,7 @@ function syncProps() {
   const pos = (zLabel: string) => num('x', 'x', px) + num('y', 'y', py) + num('z', zLabel, pz);
   // 朝向：只绕 Z 转过的填角度（R 键可以自由旋转）；倾斜的显示「摆正」按钮
   const yaw = yawOfElem(one);
-  const orient = () => (isOriented(one) && one.q
+  const orient = () => ((isOriented(one) || one.kind === 'rail') && one.q
     ? '<label>朝向</label><div class="inline"><span class="muted">已倾斜</span><button data-act="upright" title="去掉绕 X / Y 的旋转，只保留绕 Z 的朝向（中心不动）">摆正</button></div>'
     : yaw !== null ? num('yaw', '朝向 °', yaw, 15) : '');
   let h = '';
@@ -2708,12 +2717,15 @@ function syncProps() {
     const shape = one.side ? '侧轨' : one.sideSpiral ? '螺旋侧轨' : pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
     h += `<div class="title">${shape}</div>`;
     h += num('x', '起点 x', one.x) + num('y', '起点 y', one.y) + num('z', '起点高', one.z);
-    h += num('heading', '朝向 °', one.heading, 15);
+    h += one.q ? orient() : num('heading', '朝向 °', one.heading, 15);
     if (one.side) {
       h += `<label>类型</label>${seg('side-type', [['normal', '普通'], ['stone', '石球']], one.side.stone ? 'stone' : 'normal')}`;
       h += `<label>上轨</label>${seg('side-dir', [['1', '偏左'], ['-1', '偏右']], String(one.side.dir))}`;
-      h += `<label>两头</label><div class="chips">${chip('end0', '起点弯下', !!one.side.ends?.[0])}${chip('end1', '终点弯下', !!one.side.ends?.[1])}</div>`;
+      const bend = [['flat', '平直'], ['bend', '弯下']] as [string, string][];
+      h += `<label>起点上轨</label>${seg('end-0', bend, one.side.ends?.[0] ? 'bend' : 'flat')}<label>终点上轨</label>${seg('end-1', bend, one.side.ends?.[1] ? 'bend' : 'flat')}`;
     } else if (!one.sideSpiral) h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    const closure = [['flat', '平直'], ['round', '球形']] as [string, string][];
+    h += `<label>起点闭合</label>${seg('tip-0', closure, one.tips?.[0] ? 'round' : 'flat')}<label>终点闭合</label>${seg('tip-1', closure, one.tips?.[1] ? 'round' : 'flat')}`;
     const rnum = (f: string, label: string, v: number, step = 0.5) => `<label>${label}</label><input data-rf="${f}" type="number" step="${step}" value="${+v.toFixed(3)}">`;
     if (pc.angle === 0) h += rnum('len', '长度', pc.len) + rnum('dz', '高差', pc.dz);
     else {
@@ -2920,12 +2932,29 @@ props.addEventListener('click', (ev) => {
   if (!e) return;
   const segBtn = t.closest<HTMLButtonElement>('.seg-toggle button');
   const chipBtn = t.closest<HTMLButtonElement>('button.chip');
-  if (e.kind === 'rail' && e.side && (segBtn || chipBtn)) {
+  const tip = /^tip-(\d)$/.exec(segBtn?.parentElement!.dataset.seg ?? '');
+  if (e.kind === 'rail' && tip) {
+    const k = +tip[1], round = segBtn!.dataset.v === 'round';
+    if (!!e.tips?.[k] === round) return;
+    snapshot();
+    const tips: [boolean, boolean] = [...(e.tips ?? [false, false])] as [boolean, boolean];
+    tips[k] = round;
+    e.tips = tips[0] || tips[1] ? tips : undefined;
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
+  if (e.kind === 'rail' && e.side && segBtn) {
     snapshot();
     const s = e.side;
-    if (segBtn?.parentElement!.dataset.seg === 'side-type') s.stone = segBtn.dataset.v === 'stone' || undefined;
-    else if (segBtn?.parentElement!.dataset.seg === 'side-dir') s.dir = segBtn.dataset.v === '1' ? 1 : -1;
-    else if (chipBtn) { const k = chipBtn.dataset.flag === 'end0' ? 0 : 1; const ends: [boolean, boolean] = [...(s.ends ?? [false, false])] as [boolean, boolean]; ends[k] = !ends[k]; s.ends = ends; }
+    const key = segBtn.parentElement!.dataset.seg, v = segBtn.dataset.v;
+    if (key === 'side-type') s.stone = v === 'stone' || undefined;
+    else if (key === 'side-dir') s.dir = v === '1' ? 1 : -1;
+    else if (key === 'end-0' || key === 'end-1') {
+      const ends: [boolean, boolean] = [...(s.ends ?? [false, false])] as [boolean, boolean];
+      ends[key === 'end-0' ? 0 : 1] = v === 'bend';
+      s.ends = ends[0] || ends[1] ? ends : undefined;
+    }
     props.dataset.id = '';
     rebuild();
     return;

@@ -114,6 +114,10 @@ export interface RailElem extends ElemBase {
   side?: SideRail;
   /** 螺旋侧轨：单轨螺旋，层间距固定 3.6 */
   sideSpiral?: boolean;
+  /** 两头是球形闭合（[起点, 终点]），没有就是平直闭合 */
+  tips?: [boolean, boolean];
+  /** 倾斜（绕 X / Y 转过）：四元数，绕起点转；这时 heading 是 0，朝向都在 q 里 */
+  q?: [number, number, number, number];
 }
 
 /**
@@ -161,7 +165,7 @@ export const isOriented = (e: Elem): e is OrientedElem => e.kind === 'box' || e.
 /** 绕 X / Y 转过（倾斜）的元素：不参与路面求解 */
 export const isTilted = (e: Elem) => isOriented(e) && !!e.q;
 /** 能绕 X / Y 转的元素 */
-export const canTilt = (e: Elem) => e.kind === 'box' || e.kind === 'obj' || e.kind === 'asset' || e.kind === 'zone';
+export const canTilt = (e: Elem) => e.kind === 'box' || e.kind === 'obj' || e.kind === 'asset' || e.kind === 'zone' || e.kind === 'rail' || (e.kind === 'piece' && !isCheckpoint(e));
 
 /** 特殊路面的包围盒（世界坐标）：本地包围盒按朝向转过去 */
 export function assetBounds(e: AssetElem): Rect & { z0: number; z1: number } {
@@ -207,11 +211,16 @@ export function anchorRects(o: Obj): (Rect & { top: number; depth: number })[] {
 }
 
 /** 元素在平面上的范围（朝向坐标系里；钢轨、护栏是世界坐标） */
+/** 钢轨路径上的采样点（世界坐标） */
+export function railPath(e: RailElem): { x: number; y: number; z: number }[] {
+  return sampleRail(e).map((p) => { const [x, y, z] = toWorld(e, [p.x, p.y, p.z]); return { x, y, z }; });
+}
+
 export function footprint(e: Elem): Rect {
   if (e.kind === 'asset') { const b = assetBounds(e); return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; }
   if (e.kind === 'guard') return { x0: Math.min(...e.pts.map((p) => p[0])) - 0.5, y0: Math.min(...e.pts.map((p) => p[1])) - 0.5, x1: Math.max(...e.pts.map((p) => p[0])) + 0.5, y1: Math.max(...e.pts.map((p) => p[1])) + 0.5 };
   if (e.kind === 'rail') {
-    const ps = sampleRail(e);
+    const ps = railPath(e);
     const pad = 2.25; // 双轨半宽 + 轨道半径
     return { x0: Math.min(...ps.map((p) => p.x)) - pad, y0: Math.min(...ps.map((p) => p.y)) - pad, x1: Math.max(...ps.map((p) => p.x)) + pad, y1: Math.max(...ps.map((p) => p.y)) + pad };
   }
@@ -328,29 +337,37 @@ export function pivotOf(e: OrientedElem): V3 {
   return [e.x, e.y, e.z];
 }
 
+/** 元素坐标和世界坐标不一样：转过的元素，或者倾斜的钢轨 */
+const moved = (e: Elem) => (e.kind === 'rail' ? !!e.q : isOriented(e) && (!!e.ang || !!e.q));
+
 /** 元素坐标 → 世界坐标的变换：world = m·p + t */
 export function elemXf(e: Elem): { m: M3; t: V3 } {
-  if (!isOriented(e) || (!e.ang && !e.q)) return { m: I3, t: [0, 0, 0] };
+  if (!moved(e)) return { m: I3, t: [0, 0, 0] };
+  if (e.kind === 'rail') {
+    const Q = fromQuat(e.q!), q0 = apply(Q, [e.x, e.y, e.z]);
+    return { m: Q, t: [e.x - q0[0], e.y - q0[1], e.z - q0[2]] };
+  }
+  if (!isOriented(e)) return { m: I3, t: [0, 0, 0] };
   const R = e.ang ? rotZ(e.ang) : I3;
   if (!e.q) return { m: R, t: [0, 0, 0] };
   const Q = fromQuat(e.q), c = pivotOf(e), qc = apply(Q, c);
   return { m: mul(R, Q), t: apply(R, [c[0] - qc[0], c[1] - qc[1], c[2] - qc[2]]) };
 }
 export function toWorld(e: Elem, p: V3): V3 {
-  if (!isOriented(e) || (!e.ang && !e.q)) return p;
+  if (!moved(e)) return p;
   const { m, t } = elemXf(e), w = apply(m, p);
   return [w[0] + t[0], w[1] + t[1], w[2] + t[2]];
 }
 /** 世界坐标 → 元素坐标 */
 export function toLocal(e: Elem, p: V3): V3 {
-  if (!isOriented(e) || (!e.ang && !e.q)) return p;
+  if (!moved(e)) return p;
   const { m, t } = elemXf(e);
   const v: V3 = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
   return [m[0] * v[0] + m[3] * v[1] + m[6] * v[2], m[1] * v[0] + m[4] * v[1] + m[7] * v[2], m[2] * v[0] + m[5] * v[1] + m[8] * v[2]];
 }
 /** 世界里的方向 → 元素坐标里的方向 */
 export function dirToLocal(e: Elem, d: V3): V3 {
-  if (!isOriented(e) || (!e.ang && !e.q)) return d;
+  if (!moved(e)) return d;
   const { m } = elemXf(e);
   return [m[0] * d[0] + m[3] * d[1] + m[6] * d[2], m[1] * d[0] + m[4] * d[1] + m[7] * d[2], m[2] * d[0] + m[5] * d[1] + m[8] * d[2]];
 }

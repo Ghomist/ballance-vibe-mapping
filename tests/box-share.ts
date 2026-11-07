@@ -26,7 +26,7 @@ function everything(): Doc {
     { id: 4, kind: 'piece', type: 'check', x: 3, y: 4, z: 5, rot: 2, sector: 3, spawn: 45, ang: 15, group: 3 },
     { id: 5, kind: 'piece', type: 'ramp', x: 3, y: 4, z: 5, rot: 1, inner: 'sink' },
     { id: 7, kind: 'obj', type: 'P_Modul_17', x: -1, y: 2, z: 3, rot: 3, noStopper: true, noBase: true, sector: 2, q },
-    { id: 8, kind: 'rail', x: 1, y: 2, z: 3, heading: 90, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 1.5 }], side: { dir: -1, stone: true, ends: [true, false] }, group: 9 },
+    { id: 8, kind: 'rail', x: 1, y: 2, z: 3, heading: 90, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 1.5 }], side: { dir: -1, stone: true, ends: [true, false] }, tips: [true, false], q, group: 9 },
     { id: 9, kind: 'rail', x: 1, y: 2, z: 3, heading: 0, pieces: [{ kind: 'mono', len: 0, radius: 5, angle: 720, dz: 7.2 }, { kind: 'transition', len: 3, radius: 0, angle: 0, dz: 0 }], sideSpiral: true },
     { id: 11, kind: 'guard', x: 0, y: 0, z: 0, pts: [[0, 0, 0], [5, 0, 0.5], [5, 5, 1]], outs: [[0, -1], [1, 0]], group: 2 },
     { id: 12, kind: 'asset', name: 'WoodPlate', x: 1, y: 1, z: 1, rot: 1, scale: [2, 1.5], ang: 45 },

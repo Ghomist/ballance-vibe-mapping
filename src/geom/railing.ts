@@ -52,11 +52,37 @@ export function fillet(poly: P3[], closed: boolean): P3[] {
   return out;
 }
 
-/** 沿中心线扫出八边形截面的圆管（平滑法线），两头封口 */
-export function sweepTube(path: P3[], closed: boolean, radius: number): { pos: number[]; nrm: number[] } {
-  const pos: number[] = [], nrm: number[] = [];
+/** 圆管一头的封盖：在 pos 里的区间（at 起 len 个数）、截面的一圈顶点、朝外的方向。导出时两根管子对接就把封盖去掉 */
+export interface TubeCap { at: number; len: number; ring: number[][]; dir: number[] }
+
+/**
+ * 球形闭合：把一圈截面收成半球，和原版 RailTip 的头一样三层（截面、45°、顶点）。
+ * axis 是半球顶点的方向：圆管用单位切线；竖直截面的钢轨用「水平走 1 升多少」，半球跟着管子按坡度错切
+ */
+export function dome(ring: number[][], c: number[], axis: number[], radius: number, out: { pos: number[]; nrm: number[] }) {
+  const ctr = c as P3, up = axis as P3, q = Math.SQRT1_2, n = ring.length;
+  const pts: P3[] = [...(ring as P3[]), ...(ring as P3[]).map((p) => add(add(ctr, mul(sub(p, ctr), q)), mul(up, radius * q))), add(ctr, mul(up, radius))];
+  const tris: [number, number, number][] = [];
+  for (let k = 0; k < n; k++) {
+    const k1 = (k + 1) % n;
+    tris.push([k, k1, n + k1], [k, n + k1, n + k], [n + k, n + k1, 2 * n]);
+  }
+  const nrm = pts.map((): P3 => [0, 0, 0]);
+  for (const t of tris) {
+    const [a, b, d] = t.map((i) => pts[i]);
+    const f = cross(sub(b, a), sub(d, a)), mid = sub(mul(add(add(a, b), d), 1 / 3), ctr);
+    if (dot(f, mid) < 0) { const x = t[1]; t[1] = t[2]; t[2] = x; }
+    const g = norm(dot(f, mid) < 0 ? mul(f, -1) : f);
+    for (const i of t) nrm[i] = add(nrm[i], g);
+  }
+  for (const t of tris) for (const i of t) { out.pos.push(...pts[i]); out.nrm.push(...norm(nrm[i])); }
+}
+
+/** 沿中心线扫出八边形截面的圆管（平滑法线），两头封口；round 是两头改成球形闭合 */
+export function sweepTube(path: P3[], closed: boolean, radius: number, round: readonly boolean[] = [false, false]): { pos: number[]; nrm: number[]; caps: TubeCap[] } {
+  const pos: number[] = [], nrm: number[] = [], caps: TubeCap[] = [];
   const n = path.length;
-  if (n < 2) return { pos, nrm };
+  if (n < 2) return { pos, nrm, caps };
   const tan = path.map((_, i) => {
     const a = path[closed ? (i - 1 + n) % n : Math.max(i - 1, 0)], b = path[closed ? (i + 1) % n : Math.min(i + 1, n - 1)];
     return norm(sub(b, a));
@@ -90,14 +116,16 @@ export function sweepTube(path: P3[], closed: boolean, radius: number): { pos: n
   if (!closed) {
     for (const [i, sg] of [[0, -1], [n - 1, 1]] as const) {
       const c = { p: path[i], n: mul(tan[i], sg) };
-      const r = rings[i];
+      const r = rings[i], at = pos.length;
+      if (round[sg < 0 ? 0 : 1]) { dome(r.map((v) => v.p), path[i], c.n, radius, { pos, nrm }); continue; }
       for (let k = 0; k < SIDES; k++) {
         const a = { p: r[k].p, n: c.n }, b = { p: r[(k + 1) % SIDES].p, n: c.n };
         if (sg < 0) tri(c, b, a); else tri(c, a, b);
       }
+      caps.push({ at, len: pos.length - at, ring: r.map((v) => v.p), dir: c.n });
     }
   }
-  return { pos, nrm };
+  return { pos, nrm, caps };
 }
 
 /** 护栏走过的外沿路径（起止点投影到同一个外沿环上）；放不下时返回 null */
