@@ -4,6 +4,7 @@
 //   模式 1：紧凑二进制。元素按种类分开、按列存（同一个字段连着放），坐标转成千分之一的整数、相邻元素只存差值。
 //   模式 2：JSON。编码完会解码核对，有二进制表示不了的字段（比如新加了字段忘了写进 SPECS）时自动退到这里。
 // 改了 SPECS 的字段顺序或含义要换一个新的模式号，并保留旧的解码，不然旧的地图码打不开。
+// 新的可选字段不进 SPECS，追加到 EXTRAS 末尾（见 EXTRAS 的注释），这样不用换模式号。
 // tests/box/share-codes.json 留着各个版本的地图码，测试保证它们一直能解开。
 import { SHARE_IDS } from './share-ids';
 import type { Doc, Elem } from './types';
