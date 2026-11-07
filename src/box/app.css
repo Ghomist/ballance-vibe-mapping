@@ -107,7 +107,7 @@ body.placing, body.placing * { cursor: grabbing !important; }
 #tooltip.shown { opacity: 1; transform: none; }
 #tooltip.measuring { transition: none; visibility: hidden; }
 #tooltip .tip-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-#tooltip .tip-head b { font-weight: 600; white-space: nowrap; }
+#tooltip .tip-head b { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 #tooltip .tip-desc { color: var(--text-2); margin-top: 3px; }
 #tooltip .tip-keys { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
 #tooltip .tip-keys i { font-style: normal; color: var(--text-3); font-size: 10px; padding: 0 1px; }
