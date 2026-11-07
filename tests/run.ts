@@ -5,6 +5,7 @@ import { boxGoldenScenarios } from './box-golden';
 import { boxOpsScenarios } from './box-ops';
 import { boxGeomScenarios } from './box-geom';
 import { boxExportScenarios } from './box-export';
+import { boxShareScenarios } from './box-share';
 import { railEditScenarios } from './rail';
 import { gapScenarios } from './gaps';
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
@@ -290,6 +291,7 @@ boxOpsScenarios(check, scenario);
 boxGoldenScenarios(check, scenario);
 boxGeomScenarios(check, scenario);
 boxExportScenarios(check, scenario);
+boxShareScenarios(check, scenario);
 await nmoScenarios(check, scenario);
 for (const p of pending) await p;
 

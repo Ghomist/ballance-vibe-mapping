@@ -336,6 +336,23 @@ export function boxSolveScenarios(check: Check, scenario: Scenario) {
     check(Math.abs(area - 60) < 1e-6, `倾斜 30° 的 10×6 路面顶面积 ${area} ≠ 60`);
   });
 
+  scenario('box 求解：凹路接平路、边齐平时转换件这一段的侧面不能缺', () => {
+    const doc = emptyDoc();
+    doc.elems[1] = { id: 1, kind: 'box', x: 0, y: 0, z: 0, sx: 5, sy: 15, depth: 3, style: 'normal' };
+    doc.elems[2] = { id: 2, kind: 'box', x: 5, y: 0, z: 0, sx: 20, sy: 5, depth: 3, style: 'sink' };
+    doc.nextId = 3;
+    // y = 0 这一面从 x = 0 到 25 是连续的墙：面积 25 × 厚度 3
+    let area = 0;
+    for (const m of solve(doc).meshes.values()) {
+      const p = m.parts.FloorSide?.pos ?? [];
+      for (let i = 0; i < p.length; i += 9) {
+        if (Math.abs(p[i + 1]) > 1e-6 || Math.abs(p[i + 4]) > 1e-6 || Math.abs(p[i + 7]) > 1e-6) continue;
+        area += Math.abs((p[i + 3] - p[i]) * (p[i + 8] - p[i + 2]) - (p[i + 5] - p[i + 2]) * (p[i + 6] - p[i])) / 2;
+      }
+    }
+    check(Math.abs(area - 75) < 1e-6, `齐平那一面的面积应为 75，实际 ${area}`);
+  });
+
   scenario('box 求解：花纹 v 沿直边每 5 个单位一个单位', () => {
     for (const [w, h] of [[10, 5], [10, 12], [20, 5]] as const) {
       const doc = emptyDoc();

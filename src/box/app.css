@@ -158,6 +158,49 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .num-field:focus-within button { opacity: 0; pointer-events: none; }
 .settings-panel .num-field { flex: none; width: 88px; }
 
+/* 关于 */
+.about-panel { width: 380px; max-height: calc(100% - 16px); box-sizing: border-box; overflow-y: auto; font-size: 12px; line-height: 1.6; color: var(--text-hint); }
+.about-panel p { margin: 0 0 10px; }
+.about-panel .about-sign { text-align: right; color: var(--text-3); }
+.about-panel a { color: var(--accent); text-decoration: none; }
+.about-panel a:hover { text-decoration: underline; }
+.about-aims { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.about-aims li { flex: 1; padding: 6px 0; text-align: center; color: var(--text); font-weight: 600; background: var(--field); border: 1px solid var(--line); border-radius: 6px; }
+.about-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.about-row svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.about-row svg.gh { fill: currentColor; stroke: none; }
+
+/* 地图名字 */
+#map-name {
+  width: 130px; height: 28px; box-sizing: border-box; padding: 0 8px; background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--text); font: inherit; text-overflow: ellipsis; transition: background 0.12s, border-color 0.12s;
+}
+#map-name::placeholder { color: var(--text-3); }
+#map-name:hover { border-color: var(--line); }
+#map-name:focus { outline: none; background: var(--field); border-color: var(--accent); }
+
+/* 历史地图、导入 */
+.confirm-box h3 { margin: 0 0 10px; font-size: 13px; color: var(--text); }
+.confirm-box.hist-box { width: 460px; }
+.confirm-box .hist-warn { margin: 0 0 10px; color: #ffb35c; font-size: 12px; font-weight: 700; white-space: normal; }
+[data-theme='light'] .confirm-box .hist-warn { color: #b25a10; }
+.hist-list { display: flex; flex-direction: column; gap: 4px; max-height: min(60vh, 460px); margin-bottom: 12px; overflow-y: auto; }
+.hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; transition: background 0.12s; }
+.hist-row:hover { background: var(--hover); }
+.hist-row.on { border-color: var(--line-2); }
+.hist-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.hist-main b { overflow: hidden; color: var(--text); font-weight: 600; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.hist-main small { color: var(--text-3); font-size: 11px; }
+.hist-main input { height: 26px; box-sizing: border-box; padding: 0 6px; background: var(--field); border: 1px solid var(--accent); border-radius: 5px; color: var(--text); font: inherit; font-size: 12px; outline: none; }
+.hist-row button { flex: none; height: 24px; padding: 0 8px; font-size: 11px; opacity: 0; }
+.hist-row:hover button, .hist-row:focus-within button { opacity: 1; }
+.hist-empty { padding: 20px 0; color: var(--text-3); font-size: 12px; text-align: center; }
+.import-box textarea {
+  width: 100%; box-sizing: border-box; margin-bottom: 12px; padding: 6px 8px; background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); font: 11px/1.4 ui-monospace, Consolas, monospace; resize: vertical; word-break: break-all;
+}
+.import-box textarea:focus { outline: none; border-color: var(--accent); }
+
 /* 确认框 */
 .confirm-mask { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.3); }
 .confirm-box {
@@ -240,4 +283,3 @@ select.native { display: none; }
 #view-btn.attn { animation: attn-pulse 0.6s ease-in-out 4; }
 
 /* 状态栏里的警告（flash 的 warn）是 #status 里面的 span */
-#status .warn { color: #ffb35c; }

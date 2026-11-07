@@ -15,21 +15,18 @@
       <span class="dropdown">
         <button id="file-btn" class="ghost">文件<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
         <div class="dropdown-menu left" id="file-menu">
-          <button data-act="new"><span>新建</span><small>清空当前地图</small></button>
-          <button data-act="open"><span>打开…</span><small>.bvmbox 工程</small></button>
-          <button data-act="save"><span>保存</span><small>下载 .bvmbox 工程（Ctrl+S）</small></button>
+          <button data-act="new"><span>新建</span><small>当前地图留在历史里</small></button>
+          <button data-act="history"><span>历史地图…</span><small>打开、重命名以前的地图（Ctrl+O）</small></button>
+          <div class="menu-sep"></div>
+          <button data-act="import"><span>导入地图码…</span><small>粘贴别人分享的地图码</small></button>
+          <button data-act="copy"><span>复制地图码</span><small>一串文字，发给别人就能打开</small></button>
+          <button data-act="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
           <div class="menu-sep"></div>
           <div class="menu-title">测试场景</div>
           <div id="scene-list"></div>
         </div>
       </span>
-      <span class="dropdown">
-        <button id="export" class="ghost">导出<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
-        <div class="dropdown-menu left" id="export-menu">
-          <button data-format="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
-          <button data-format="json"><span>导出场景描述</span><small>JSON，配合 scripts/blender/build_scene.py</small></button>
-        </div>
-      </span>
+      <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是导出 NMO 的文件名" />
       <div class="sep"></div>
       <div class="group">
         <button id="undo" class="icon" title="撤销（Ctrl+Z）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
@@ -96,7 +93,9 @@
       <button id="settings" class="ghost" title="设置">
         <svg viewBox="0 0 16 16"><path d="M2.5 4h4M9.5 4h4M2.5 8h7M12.5 8h1M2.5 12h2M7.5 12h6" /><circle cx="8" cy="4" r="1.5" /><circle cx="11" cy="8" r="1.5" /><circle cx="6" cy="12" r="1.5" /></svg>设置
       </button>
-      <input type="file" id="file" accept=".bvmbox,.json" hidden />
+      <button id="about" class="ghost" title="关于">
+        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 7.2v3.6M8 5v.4" /></svg>关于
+      </button>
     </div>
   </header>
   <main id="viewport">
@@ -104,18 +103,28 @@
     <div id="props" hidden></div>
     <div id="marquee" class="marquee"></div>
     <div id="settings-panel" class="settings-panel" hidden></div>
+    <div id="about-panel" class="settings-panel about-panel" hidden>
+      <h3>关于 BVM</h3>
+      <p class="about-lead">Ballance 制图器，三大主旨：</p>
+      <ul class="about-aims">
+        <li>降低门槛</li>
+        <li>提升手感</li>
+        <li>专注创意</li>
+      </ul>
+      <h3 class="sub">闲言碎语</h3>
+      <p>Ballance 社区发展这么久，制图技术迭代了一轮又一轮。从最开始用 Virtools 3.5 改原版图，到使用 3DS Max 制作自定义模型，贴图 UV、影子坐标、曲线放样、梨栠的 Max 制图模板、顶点吸附的发现……每一次技术迭代都见证着 Ballance 社区顽强的生命力。大家无非都是青涩而年轻的普通人，却靠着热爱一步步走到了这里，这又何尝不是一种感动呢~</p>
+      <p>最后特别感谢 <a href="https://github.com/yyc12345" target="_blank" rel="noopener">yyc12345</a> 对制图发展的巨大贡献，没有他的 <a href="https://github.com/yyc12345/libcmo21" target="_blank" rel="noopener">libcmo21</a> 以及 <a href="https://github.com/yyc12345/BallanceBlenderHelper" target="_blank" rel="noopener">bbp_ng</a> 这样好用的制图工具，本项目也不会在我心中生根发芽。如今借助 AI 的强大力量永远圆上了儿时的梦，能非常轻松地自由创作出一张 Ballance 自制地图，我想这样的自由或许能唤醒我们热爱这个游戏时最珍贵的记忆吧——</p>
+      <p>至此，尽情享受全新制图器吧~</p>
+      <p class="about-sign">designed by <a href="https://github.com/ghomist" target="_blank" rel="noopener">Ghomist</a></p>
+      <h3 class="sub">意见与反馈</h3>
+      <a class="about-row qq" data-qq="702613602" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=702613602&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 702613602"><svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>平衡球社区交流群 702613602</a>
+      <a class="about-row qq" data-qq="1005399899" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=1005399899&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 1005399899 反馈意见"><svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>平衡球制图交流群 1005399899</a>
+      <a class="about-row" href="https://github.com/ghomist/ballance-vibe-mapping" target="_blank" rel="noopener" title="GitHub 仓库"><svg viewBox="0 0 16 16" class="gh"><path d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.15.46-.33v-1.2c-1.9.41-2.3-.8-2.3-.8-.31-.79-.76-1-.76-1-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.61 1.04 1.6.74 1.99.57.06-.44.24-.74.43-.91-1.51-.17-3.1-.76-3.1-3.37 0-.75.27-1.36.7-1.83-.07-.17-.3-.86.07-1.8 0 0 .57-.18 1.87.7a6.5 6.5 0 0 1 3.4 0c1.3-.88 1.87-.7 1.87-.7.37.94.14 1.63.07 1.8.44.47.7 1.08.7 1.83 0 2.62-1.6 3.2-3.11 3.37.24.21.46.62.46 1.25v1.85c0 .18.12.4.47.33A6.8 6.8 0 0 0 8 1.2z" /></svg>GitHub 仓库</a>
+    </div>
   </main>
   <footer id="statusbar">
     <div id="hints"></div>
     <div id="status"></div>
-    <div class="links">
-      <a id="feedback" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=1005399899&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 1005399899 反馈意见">
-        <svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>意见与反馈
-      </a>
-      <a href="https://github.com/ghomist/ballance-vibe-mapping" target="_blank" rel="noopener" title="GitHub 仓库">
-        <svg viewBox="0 0 16 16" class="gh"><path d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.15.46-.33v-1.2c-1.9.41-2.3-.8-2.3-.8-.31-.79-.76-1-.76-1-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.61 1.04 1.6.74 1.99.57.06-.44.24-.74.43-.91-1.51-.17-3.1-.76-3.1-3.37 0-.75.27-1.36.7-1.83-.07-.17-.3-.86.07-1.8 0 0 .57-.18 1.87.7a6.5 6.5 0 0 1 3.4 0c1.3-.88 1.87-.7 1.87-.7.37.94.14 1.63.07 1.8.44.47.7 1.08.7 1.83 0 2.62-1.6 3.2-3.11 3.37.24.21.46.62.46 1.25v1.85c0 .18.12.4.47.33A6.8 6.8 0 0 0 8 1.2z" /></svg>GitHub
-      </a>
-    </div>
   </footer>
   <script type="module" src="/src/box/app.ts"></script>
 </body>

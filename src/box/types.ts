@@ -178,6 +178,8 @@ export function assetBounds(e: AssetElem): Rect & { z0: number; z1: number } {
 export interface Doc {
   elems: Record<number, Elem>;
   nextId: number;
+  /** 地图名字：显示在历史里，也是导出 NMO 的文件名 */
+  name?: string;
   /** 全图设置（护栏尺寸等）：只存改过的项，其余用默认值 */
   settings?: Partial<import('../model/types').MapSettings>;
 }

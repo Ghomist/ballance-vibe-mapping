@@ -1594,13 +1594,21 @@ function meshPiece(p: Piece, layers: Layer[], out: Map<number, ElemMeshOut>) {
     mb.tri('FloorTopProfilFlat', [v3, v2, v1], [[1, 0], [0.5, 1], [0, 0]], UP);
     mb.tri('FloorTopProfilFlat', [v2, v3, v4], [[0.5, 1], [1, 0], [1, 1]], UP);
   }
-  // 平台里自动嵌的转换件（负数 id）只要顶面：侧面、端面都贴着平台或路，看不见
-  if (p.id < 0) { out.set(p.id, { id: p.id, parts: mb.parts }); return; }
+  // 平台里自动嵌的转换件（负数 id）：侧面一般贴着平台内部看不见，只有路和平台的边齐平时那一侧露在外面，
+  // 而平台在这一段的侧面被转换件盖掉了，要由转换件补上（高度跟平台走）；端面都贴着平台或路
+  const auto = p.id < 0;
+  const fp0 = footprint(p);
+  const boxes = layers.flatMap((Ly) => Ly.boxes);
+  const depth = auto ? boxes.find((b) => { const f = footprint(b); return p.x > f.x0 && p.x < f.x1 && p.y > f.y0 && p.y < f.y1; })?.depth ?? 5 : 5;
+  const covered = (x: number, y: number) => boxes.some((b) => { const f = footprint(b); return x > f.x0 && x < f.x1 && y > f.y0 && y < f.y1 && Math.abs(boxTopAt(b, x, y) - p.z) < EPS_TOUCH; });
   for (const [ly, sg] of [[0, -1], [5, 1]] as const) {
     const A = L(0, ly, cz), B = L(5, ly, fz);
-    const Ab: V3 = [A[0], A[1], A[2] - 5], Bb: V3 = [B[0], B[1], B[2] - 5];
-    mb.poly('FloorSide', [A, B, Bb, Ab], [[0, 1], [0, 1 - sx], [1, 1 - sx], [1, 1]], [q[0] * sg, q[1] * sg, 0]);
+    if (auto && covered((A[0] + B[0]) / 2 + q[0] * sg * 0.01, (A[1] + B[1]) / 2 + q[1] * sg * 0.01)) continue;
+    const Ab: V3 = [A[0], A[1], A[2] - depth], Bb: V3 = [B[0], B[1], B[2] - depth];
+    const u = depth / 5;
+    mb.poly('FloorSide', [A, B, Bb, Ab], [[0, 1], [0, 1 - sx], [u, 1 - sx], [u, 1]], [q[0] * sg, q[1] * sg, 0]);
   }
+  if (auto) { out.set(p.id, { id: p.id, parts: mb.parts }); return; }
   // 接口没接上（没有同样式的路贴着或压着）时补端面
   const fp = footprint(p);
   for (const [d, lx] of [[sd, 0], [opp(sd), 5]] as const) {

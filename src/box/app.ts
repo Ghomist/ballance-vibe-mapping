@@ -18,6 +18,8 @@ import { initTooltips } from '../view/tooltip';
 import { stretchUV } from '../view/uvstretch';
 import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
+import { decodeShare, encodeShare } from './share';
+import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
 import { ASSET_INFO, assetInfo } from './asset-info';
 import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
@@ -121,12 +123,71 @@ let guardPreview: Route | null = null;
 let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean } | null = null;
 let splitAxis: 0 | 1 | null = null; // null：按路面较长的方向自动选
 const undo: string[] = [];
+// 当前地图在历史里的记录：编辑后过一会儿自动存（第一次打开、没动过的图不存）
+const UNNAMED = '未命名地图';
+const MAP_ID = 'bvm.box.mapId';
+let mapId = (() => { try { return localStorage.getItem(MAP_ID); } catch { return null; } })() ?? newMapId();
+try { localStorage.setItem(MAP_ID, mapId); } catch { /* 存不了就算了 */ }
+/** 这张图换进来时的内容；没改过就不进历史。null：不管改没改都存 */
+let cleanDoc: string | null = JSON.stringify(SCENES[0].build());
+let mapTimer = 0;
+async function flushMap() {
+  clearTimeout(mapTimer);
+  const id = mapId, json = JSON.stringify(doc), name = doc.name ?? '', count = Object.keys(doc.elems).length;
+  if (!count || json === cleanDoc) return;
+  const code = await encodeShare(doc);
+  if (!putMap(localStorage, { id, name, code, count, updated: Date.now() })) flash('浏览器存储满了，历史地图没存上，删掉几张吧', true);
+}
+const scheduleMap = () => { clearTimeout(mapTimer); mapTimer = window.setTimeout(() => void flushMap(), 800); };
+const mapNameEl = document.getElementById('map-name') as HTMLInputElement;
+const syncMapName = () => { mapNameEl.value = doc.name ?? ''; };
+function setMapName(name: string) {
+  if (name) doc.name = name; else delete doc.name;
+  syncMapName();
+  cleanDoc = null;
+  save();
+}
+mapNameEl.addEventListener('change', () => { setMapName(mapNameEl.value.trim()); renameMap(localStorage, mapId, doc.name ?? ''); });
+mapNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === 'Escape') mapNameEl.blur(); });
+syncMapName();
 const redo: string[] = [];
 const snapshot = () => { undo.push(JSON.stringify(doc)); redo.length = 0; if (undo.length > 200) undo.shift(); };
-const save = () => { try { localStorage.setItem(STORE, JSON.stringify(doc)); } catch { /* 存不了就算了 */ } };
+const save = () => { try { localStorage.setItem(STORE, JSON.stringify(doc)); } catch { /* 存不了就算了 */ } scheduleMap(); };
 
-let flashMsg: { text: string; until: number; warn?: boolean } | null = null;
-const flash = (text: string, warn = false) => { flashMsg = { text, until: performance.now() + 3000, warn }; updateStatus(); };
+/** 提示消息：顶栏下方居中，新的排在下面，最多同时三条；同样的话连着说只把时间续上，轻轻跳一下 */
+const toastHost = document.createElement('div');
+toastHost.id = 'toasts';
+document.getElementById('viewport')!.appendChild(toastHost);
+const toasts: { el: HTMLDivElement; text: string; timer: number }[] = [];
+function dropToast(t: (typeof toasts)[number]) {
+  toasts.splice(toasts.indexOf(t), 1);
+  clearTimeout(t.timer);
+  // 先把高度定住再收起来，下面的消息跟着平滑上移
+  t.el.style.height = `${t.el.offsetHeight}px`;
+  void t.el.offsetHeight;
+  t.el.classList.add('leave');
+  setTimeout(() => t.el.remove(), 220);
+}
+function flash(text: string, warn = false) {
+  const ms = warn ? 4000 : 2600;
+  const same = toasts.find((t) => t.text === text);
+  if (same) {
+    clearTimeout(same.timer);
+    same.timer = window.setTimeout(() => dropToast(same), ms);
+    same.el.classList.remove('bump');
+    void same.el.offsetWidth; // 重新触发动画
+    same.el.classList.add('bump');
+    return;
+  }
+  const el = document.createElement('div');
+  el.className = `toast${warn ? ' warn' : ''}`;
+  el.textContent = text;
+  toastHost.appendChild(el);
+  const t = { el, text, timer: 0 };
+  t.timer = window.setTimeout(() => dropToast(t), ms);
+  toasts.push(t);
+  if (toasts.length > 3) dropToast(toasts[0]);
+}
 
 // ---------------- 渲染 ----------------
 
@@ -624,7 +685,6 @@ function updateStatus() {
   syncMod();
   syncSector();
   const parts: string[] = [];
-  if (flashMsg && performance.now() < flashMsg.until) parts.push(flashMsg.warn ? `<span class="warn">${flashMsg.text}</span>` : `<b>${flashMsg.text}</b>`);
   if (dragInfo) parts.push(`<b>${dragInfo}</b>`);
   if (sel.size) {
     const b = boundsOf(doc, sel);
@@ -637,7 +697,6 @@ function updateStatus() {
 }
 const fmt = (v: number) => String(+v.toFixed(3));
 initTooltips();
-setInterval(() => { if (flashMsg && performance.now() > flashMsg.until) { flashMsg = null; updateStatus(); } }, 500);
 
 // ---------------- 叠加层：选中框、吸附点、辅助面 ----------------
 
@@ -2538,8 +2597,10 @@ function nudge(d: V3) {
   rebuild();
 }
 const keepSel = () => { sel = new Set([...sel].filter((id) => doc.elems[id])); };
-function undoOnce() { if (undo.length) { redo.push(JSON.stringify(doc)); doc = JSON.parse(undo.pop()!); keepSel(); rebuild(); } }
-function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); doc = JSON.parse(redo.pop()!); keepSel(); rebuild(); } }
+/** 撤销、重做不动地图名字（改名不算一步编辑） */
+const restoreDoc = (s: string) => { const name = doc.name; doc = JSON.parse(s); if (name) doc.name = name; else delete doc.name; };
+function undoOnce() { if (undo.length) { redo.push(JSON.stringify(doc)); restoreDoc(undo.pop()!); keepSel(); rebuild(); } }
+function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); restoreDoc(redo.pop()!); keepSel(); rebuild(); } }
 
 const lastMouse = { clientX: 0, clientY: 0 };
 window.addEventListener('pointermove', (e) => { lastMouse.clientX = e.clientX; lastMouse.clientY = e.clientY; }, true);
@@ -2563,7 +2624,7 @@ document.getElementById('redo')!.addEventListener('click', () => redoOnce());
 
 window.addEventListener('keydown', (e) => {
   const tag = (e.target as HTMLElement).tagName;
-  if (tag === 'INPUT' || tag === 'SELECT') return;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('.confirm-mask')) return;
   const k = e.key.toLowerCase();
   if (k === 'v' && !vHeld) { vHeld = true; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); }
   // 移动 / 旋转模式里：轴向、打字输入、确定、取消
@@ -2577,8 +2638,8 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'j') { e.preventDefault(); doMerge(); }
     else if (k === 'g') { e.preventDefault(); if (e.shiftKey) doUngroup(); else doGroup(); }
     else if (k === 'd') { e.preventDefault(); doDuplicate(lastMouse); }
-    else if (k === 's') { e.preventDefault(); saveFile(); }
-    else if (k === 'o') { e.preventDefault(); fileInput.click(); }
+    else if (k === 's') { e.preventDefault(); void flushMap(); flash('地图会自动存到历史里'); }
+    else if (k === 'o') { e.preventDefault(); void openHistory(); }
     else if (k === 'a') { e.preventDefault(); sel = new Set(Object.keys(doc.elems).map(Number)); drawOverlay(); syncProps(); updateStatus(); }
     return;
   }
@@ -2921,32 +2982,14 @@ function download(name: string, data: BlobPart, type: string) {
   a.href = url; a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-function saveFile() { download('map.bvmbox', JSON.stringify({ format: 'bvm-box', version: 1, doc }), 'application/json'); flash('已保存 map.bvmbox'); }
-const fileInput = document.getElementById('file') as HTMLInputElement;
-fileInput.addEventListener('change', async () => {
-  const f = fileInput.files?.[0];
-  fileInput.value = '';
-  if (!f) return;
-  try {
-    const data = JSON.parse(await f.text());
-    if (data.format !== 'bvm-box') throw new Error('不是 box 版工程文件');
-    snapshot();
-    doc = data.doc;
-    sel.clear();
-    frameAll();
-    rebuild();
-    flash(`已打开 ${f.name}`);
-  } catch (e) { flash(`打开失败：${(e as Error).message}`, true); }
-});
 // 下拉菜单：文件、导出
-const fileMenu = document.getElementById('file-menu')!, exportMenu = document.getElementById('export-menu')!;
-const fileBtn = document.getElementById('file-btn')!, exportBtn = document.getElementById('export')!;
+const fileMenu = document.getElementById('file-menu')!;
+const fileBtn = document.getElementById('file-btn')!;
 const viewMenu = document.getElementById('view-menu')!;
-function closeMenus() { fileMenu.classList.remove('open'); exportMenu.classList.remove('open'); viewMenu.classList.remove('open'); }
+function closeMenus() { fileMenu.classList.remove('open'); viewMenu.classList.remove('open'); }
 viewBtn.addEventListener('click', (e) => { e.stopPropagation(); const open = viewMenu.classList.contains('open'); closeMenus(); viewMenu.classList.toggle('open', !open); viewBtn.blur(); });
-fileBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.remove('open'); viewMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
-exportBtn.addEventListener('click', (e) => { e.stopPropagation(); fileMenu.classList.remove('open'); viewMenu.classList.remove('open'); exportMenu.classList.toggle('open'); exportBtn.blur(); });
-window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !exportMenu.contains(t) && !viewMenu.contains(t) && !viewBtn.contains(t) && t !== fileBtn && t !== exportBtn) closeMenus(); });
+fileBtn.addEventListener('click', (e) => { e.stopPropagation(); viewMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
+window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !viewMenu.contains(t) && !viewBtn.contains(t) && t !== fileBtn) closeMenus(); });
 document.getElementById('scene-list')!.innerHTML = SCENES.map((sc, i) => `<button data-scene="${i}"><span>${sc.name}</span></button>`).join('');
 /** 确认框（和设置面板一个样，不用浏览器自带的 confirm）：Enter 确定、Esc 或点外面取消 */
 function askConfirm(text: string, ok = '确定'): Promise<boolean> {
@@ -2977,26 +3020,124 @@ fileMenu.addEventListener('click', async (e) => {
   closeMenus();
   if (b.dataset.scene !== undefined) { setScene(+b.dataset.scene); return; }
   const act = b.dataset.act;
-  if (act === 'new') { if (Object.keys(doc.elems).length && !await askConfirm('清空当前地图？（可以撤销）', '清空')) return; setScene(-1); }
-  else if (act === 'open') fileInput.click();
-  else if (act === 'save') saveFile();
+  if (act === 'new') setScene(-1);
+  else if (act === 'history') void openHistory();
+  else if (act === 'import') openImport();
+  else if (act === 'copy') void copyMapCode();
+  else if (act === 'nmo') void exportNmo();
 });
-exportMenu.addEventListener('click', async (e) => {
-  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-format]');
-  if (!b) return;
-  closeMenus();
+/** 把当前地图的地图码放进剪贴板 */
+async function copyMapCode() {
+  if (!Object.keys(doc.elems).length) { flash('地图是空的', true); return; }
+  try {
+    const code = await encodeShare(doc);
+    await navigator.clipboard.writeText(code);
+    flash(`已复制地图码（${code.length} 个字符）`);
+  } catch (e) { flash(`复制失败：${(e as Error).message}`, true); }
+}
+
+/** 弹一个对话框（和确认框一个样）：点外面、按 Esc 关闭 */
+function openModal(html: string, cls: string): { box: HTMLElement; close: () => void } {
+  const mask = document.createElement('div');
+  mask.className = 'confirm-mask';
+  mask.innerHTML = `<div class="confirm-box ${cls}">${html}</div>`;
+  const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && document.querySelectorAll('.confirm-mask').length === 1) { e.stopPropagation(); close(); } };
+  const close = () => { window.removeEventListener('keydown', key, true); mask.remove(); };
+  mask.addEventListener('pointerdown', (e) => { if (e.target === mask) close(); });
+  window.addEventListener('keydown', key, true);
+  document.body.appendChild(mask);
+  return { box: mask.firstElementChild as HTMLElement, close };
+}
+
+function openImport() {
+  const { box, close } = openModal('<h3>导入地图码</h3><textarea rows="6" placeholder="把地图码粘贴到这里" spellcheck="false"></textarea><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary">导入</button></div>', 'import-box');
+  const text = box.querySelector('textarea')!;
+  text.focus();
+  box.addEventListener('click', async (e) => {
+    const b = (e.target as Element).closest<HTMLButtonElement>('button');
+    if (!b) return;
+    if (b.dataset.r === '0') { close(); return; }
+    try {
+      const d = await decodeShare(text.value.replace(/\s+/g, ''));
+      close();
+      await switchMap(d);
+      cleanDoc = null; // 导入的图直接进历史
+      save();
+      flash(`已导入${d.name ? `「${d.name}」` : '地图'}`);
+    } catch { flash('这段地图码打不开，可能复制得不完整', true); }
+  });
+}
+
+const escHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+const mapTime = (t: number) => new Date(t).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+async function openHistory() {
+  await flushMap();
+  const { box, close } = openModal('<h3>历史地图</h3><p class="hist-warn">清除本地网站数据或者更换设备会丢失记录，建议保存地图码！</p><div class="hist-list"></div><div class="row"><button data-close>关闭</button></div>', 'hist-box');
+  const list = box.querySelector<HTMLElement>('.hist-list')!;
+  const render = () => {
+    const maps = listMaps(localStorage);
+    list.innerHTML = maps.length ? maps.map((m) => `<div class="hist-row${m.id === mapId ? ' on' : ''}" data-id="${m.id}">
+      <div class="hist-main"><b>${escHtml(m.name || UNNAMED)}</b><small>${m.count} 个元素 · ${mapTime(m.updated)}${m.id === mapId ? ' · 正在编辑' : ''}</small></div>
+      <button data-a="rename">重命名</button>${m.id === mapId ? '' : '<button data-a="del">删除</button>'}
+    </div>`).join('') : '<div class="hist-empty">还没有历史地图，编辑后会自动存在这里</div>';
+  };
+  render();
+  const rename = (m: MapEntry, row: HTMLElement) => {
+    const main = row.querySelector<HTMLElement>('.hist-main')!;
+    main.innerHTML = `<input type="text" maxlength="40" value="${escHtml(m.name)}" placeholder="${UNNAMED}" spellcheck="false" />`;
+    const inp = main.querySelector('input')!;
+    inp.focus(); inp.select();
+    let done = false;
+    const commit = () => {
+      if (done) return;
+      done = true;
+      const name = inp.value.trim();
+      renameMap(localStorage, m.id, name);
+      if (m.id === mapId) setMapName(name);
+      render();
+    };
+    inp.addEventListener('blur', commit);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); e.stopPropagation(); });
+  };
+  box.addEventListener('click', async (e) => {
+    const t = e.target as Element;
+    if (t.closest('[data-close]')) { close(); return; }
+    const row = t.closest<HTMLElement>('.hist-row');
+    if (!row || t.closest('input')) return;
+    const m = listMaps(localStorage).find((x) => x.id === row.dataset.id);
+    if (!m) return;
+    const a = t.closest<HTMLElement>('button')?.dataset.a;
+    if (a === 'rename') { rename(m, row); return; }
+    if (a === 'del') {
+      if (await askConfirm(`删除「${m.name || UNNAMED}」？删除后找不回来`, '删除')) { removeMap(localStorage, m.id); render(); }
+      return;
+    }
+    if (m.id === mapId) { close(); return; }
+    try {
+      const d = await decodeShare(m.code);
+      close();
+      await switchMap(d, m.id);
+      flash(`已打开「${m.name || UNNAMED}」`);
+    } catch { flash('这张地图打不开了', true); }
+  });
+}
+
+let exporting = false;
+async function exportNmo() {
+  if (exporting) return;
   const desc = exportBoxScene(doc);
   if (desc.warnings.length && !await askConfirm(`${desc.warnings.join('\n')}\n\n仍然导出？`, '仍然导出')) return;
-  if (b.dataset.format === 'json') { download('map.scene.json', JSON.stringify(desc), 'application/json'); flash('已导出 map.scene.json'); return; }
+  const file = `${(doc.name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'map'}.nmo`;
   try {
+    exporting = true;
     flash('正在生成 .nmo…');
-    exportBtn.setAttribute('disabled', '');
     const { data } = await exportBoxNmo(doc);
-    download('map.nmo', data as BlobPart, 'application/octet-stream');
-    flash('已导出 map.nmo');
+    download(file, data as BlobPart, 'application/octet-stream');
+    flash(`已导出 ${file}`);
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
-  finally { exportBtn.removeAttribute('disabled'); }
-});
+  finally { exporting = false; }
+}
 
 // ---------------- 主题、设置 ----------------
 
@@ -3054,6 +3195,7 @@ function renderSettings() {
 window.addEventListener('pointerdown', (e) => {
   const t = e.target as Element;
   if (settingsPanel.classList.contains('shown') && !settingsPanel.contains(t) && !t.closest?.('#settings')) showEl(settingsPanel, false);
+  if (aboutPanel.classList.contains('shown') && !aboutPanel.contains(t) && !t.closest?.('#about')) showEl(aboutPanel, false);
 });
 document.getElementById('settings')!.addEventListener('click', (e) => {
   const open = !settingsPanel.classList.contains('shown');
@@ -3062,11 +3204,18 @@ document.getElementById('settings')!.addEventListener('click', (e) => {
   (e.currentTarget as HTMLButtonElement).blur();
 });
 
-// 意见与反馈：点击时顺便复制群号
-document.getElementById('feedback')!.addEventListener('click', async () => {
-  const id = '1005399899';
-  try { await navigator.clipboard.writeText(id); flash(`已复制群号 ${id}`); } catch { flash(`QQ 群号：${id}`); }
+const aboutPanel = document.getElementById('about-panel')!;
+aboutPanel.classList.add('fade');
+document.getElementById('about')!.addEventListener('click', (e) => {
+  showEl(aboutPanel, !aboutPanel.classList.contains('shown'));
+  (e.currentTarget as HTMLButtonElement).blur();
 });
+
+// 意见与反馈：点击时顺便复制群号
+aboutPanel.querySelectorAll<HTMLElement>('a.qq').forEach((a) => a.addEventListener('click', async () => {
+  const id = a.dataset.qq!;
+  try { await navigator.clipboard.writeText(id); flash(`已复制群号 ${id}`); } catch { flash(`QQ 群号：${id}`); }
+}));
 
 
 // ---------------- 视图立方体（右上角）：显示 XYZ 朝向，点一个面切到这个方向的正交视图，转视角时自动回到透视 ----------------
@@ -3277,12 +3426,24 @@ window.addEventListener('blur', () => { modKeys.ctrl = modKeys.alt = false; sync
 
 // ---------------- 场景与视图 ----------------
 
-function setScene(i: number) {
-  snapshot();
-  doc = i < 0 ? { elems: {}, nextId: 1 } : SCENES[i].build();
+/** 换一张地图：当前的先存进历史，撤销记录清掉（不能撤销到别的地图上） */
+async function switchMap(d: Doc, id = newMapId()) {
+  await flushMap();
+  doc = d;
+  mapId = id;
+  try { localStorage.setItem(MAP_ID, id); } catch { /* 存不了就算了 */ }
+  cleanDoc = JSON.stringify(d);
+  undo.length = 0;
+  redo.length = 0;
   sel.clear();
+  syncMapName();
   frameAll();
   rebuild();
+}
+function setScene(i: number) {
+  const d: Doc = i < 0 ? { elems: {}, nextId: 1 } : SCENES[i].build();
+  if (i >= 0) d.name = SCENES[i].name;
+  void switchMap(d);
 }
 
 /** 平滑移动视图：视图中心移到 center，观察距离改成 dist（视线方向不变） */

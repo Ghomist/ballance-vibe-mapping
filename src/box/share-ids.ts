@@ -1,0 +1,12 @@
+// 地图码里的编号表：样式、类型、素材名这些文字换成它在这张表里的位置（一张平表，编号不带分类）。
+// 只能往后加，不能删、不能改顺序，不然旧的地图码就解错了——tests/box/share-ids.json 冻结着已经用过的编号，由测试把关。
+export const SHARE_IDS: readonly string[] = [
+  '', 'normal', 'sink', 'ribbon', 'double', 'mono', 'transition', 'transition-narrow', 'transition-half', 'ramp',
+  'base', 'start', 'check', 'P_Extra_Point', 'P_Extra_Life', 'P_Box', 'P_Trafo_Paper', 'P_Trafo_Stone',
+  'P_Trafo_Wood', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood', 'P_Dome', 'P_Modul_01', 'P_Modul_03', 'P_Modul_08',
+  'P_Modul_17', 'P_Modul_18', 'P_Modul_19', 'P_Modul_25', 'P_Modul_26', 'P_Modul_29', 'P_Modul_30', 'P_Modul_34',
+  'P_Modul_37', 'P_Modul_41', 'PE_Balloon', 'Latern', 'LaternColumn_Full', 'LaternColumn', 'WoodPlate', 'Modul_02',
+  'Modul_13', 'Modul_42', 'Modul_42_Wide', 'Modul_11', 'ConcaveWood', 'ConvexWood', 'Level9_WoodBarrier', 'WoodSlope',
+  'Modul_15', 'Modul_16', 'Turnstile', 'Turnstile_Big', 'SkyLayer', 'SkyLayerVortex', 'RailCrossing',
+  'MonorailCrossing',
+];

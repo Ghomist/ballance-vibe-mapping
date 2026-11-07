@@ -92,7 +92,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .tb-left, .tb-right { flex: 1 0 auto; }
 @media (max-width: 1680px) {
   /* 放不下全部文字：合并、绑定这些操作和暗色、设置只留图标 */
-  #toolbar .op, #theme, #settings { font-size: 0; gap: 0; padding: 0 8px; }
+  #toolbar .op, #theme, #settings, #about { font-size: 0; gap: 0; padding: 0 8px; }
 }
 @media (max-width: 1280px) {
   /* 窄窗口：格栅 / 自动对齐也只留图标，工具按钮去掉快捷键 */
@@ -263,24 +263,27 @@ button.toggle.active { color: #cfe0ff; background: rgba(91, 141, 239, 0.18); bor
 #palette.folded .fold { transform: rotate(180deg); }
 body.placing, body.placing * { cursor: grabbing !important; }
 
-/* 状态栏右下角：意见反馈、GitHub */
-#statusbar .links { display: flex; align-items: center; gap: 4px; flex: none; padding-left: 10px; border-left: 1px solid var(--line); }
-#statusbar .links a {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 4px;
-  color: var(--text-2); text-decoration: none; transition: background 0.12s, color 0.12s;
-}
-#statusbar .links a:hover { background: var(--hover); color: var(--text); }
-#statusbar .links svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
-#statusbar .links svg.gh { fill: currentColor; stroke: none; }
 
 /* 轻提示 */
-.toast {
-  position: fixed; z-index: 50; left: 50%; bottom: 46px; transform: translate(-50%, 8px); opacity: 0;
-  padding: 7px 14px; border-radius: 8px; background: var(--menu); border: 1px solid var(--line-2);
-  color: var(--text); font-size: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.18s ease;
+#toasts {
+  position: absolute; z-index: 30; top: 10px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center;
+  max-width: min(560px, calc(100% - 32px)); pointer-events: none;
 }
-.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast {
+  box-sizing: border-box; flex: none; margin-bottom: 6px; padding: 7px 14px; border-radius: 8px; background: var(--menu); border: 1px solid var(--line-2);
+  color: var(--text); font-size: 12px; line-height: 1.45; text-align: center; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  animation: toast-in 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.toast.warn { color: #ffb35c; border-color: rgba(255, 179, 92, 0.55); }
+[data-theme='light'] .toast.warn { color: #b25a10; border-color: rgba(178, 90, 16, 0.45); }
+.toast.bump { animation: toast-bump 0.24s ease; }
+.toast.leave {
+  overflow: hidden; height: 0 !important; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border-width: 0; opacity: 0; transform: translateY(-6px) scale(0.97);
+  transition: height 0.2s ease, margin 0.2s ease, padding 0.2s ease, opacity 0.16s ease, transform 0.2s ease;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(-10px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes toast-bump { 40% { transform: scale(1.04); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation-duration: 0.01s; } .toast.leave { transition-duration: 0.01s; } }
 
 /* 打开时等路面贴图加载好再显示视图 */
 #viewport canvas { transition: opacity 0.25s ease; }
