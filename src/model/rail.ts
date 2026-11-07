@@ -16,6 +16,20 @@ export interface RailPiece {
   dz: number;
 }
 
+/**
+ * 侧轨：一段直的双轨绕自身的轴转过一个角度（下轨嵌在路的棱角里：截面外接正方形靠上轨的顶点正好在棱角上，上轨斜着在上面），球靠着两根轨在路边外侧滚。
+ * 标准侧轨的上轨两头像护栏一样弯下去固定在路边，弯下去的那头下轨缩短 SIDE_BEND_TRIM；开放侧轨两头不弯，就是两根成角度的钢轨。
+ * 参数来自 BBP / BallanceBug：普通侧轨 79.563°，石球也能过的 57°，两轨间距和普通双轨一样。
+ */
+export interface SideRail {
+  /** 上轨偏向路径的左侧（1）还是右侧（-1） */
+  dir: 1 | -1;
+  /** 石球也能过的侧轨（57°） */
+  stone?: boolean;
+  /** 两头的上轨是否像护栏立柱一样弯下去插进路面：[起点, 终点] */
+  ends?: [boolean, boolean];
+}
+
 export interface Rail {
   id: number;
   x: number;
@@ -24,6 +38,37 @@ export interface Rail {
   /** 起点朝向（度，0 = +X，逆时针） */
   heading: number;
   pieces: RailPiece[];
+  /** 侧轨（只用于一段直的双轨） */
+  side?: SideRail;
+  /** 螺旋侧轨：单轨螺旋，每圈升高固定 SIDE_SPIRAL_SCREW */
+  sideSpiral?: boolean;
+}
+
+export const SIDE_RAIL_ANGLE = 79.563;
+export const SIDE_RAIL_STONE_ANGLE = 57;
+/** 上轨弯下去的那一头，下轨缩短多少 */
+export const SIDE_BEND_TRIM = 5;
+/** 侧边螺旋轨的层间距（第九关开头、第十三关结尾测量） */
+export const SIDE_SPIRAL_SCREW = 3.6;
+
+/** 侧轨下轨的起止位置（占路径长度的比例）：弯下去的那头缩短；太短时缩成中间一点 */
+export function sideLowerSpan(r: Pick<Rail, 'side' | 'pieces'>): [number, number] {
+  const len = r.pieces[0].len;
+  const [e0, e1] = r.side?.ends ?? [false, false];
+  const a = e0 ? SIDE_BEND_TRIM : 0, b = len - (e1 ? SIDE_BEND_TRIM : 0);
+  if (a >= b) return [0.5, 0.5];
+  return [a / len, b / len];
+}
+
+/**
+ * 每根轨的截面中心相对路径点的位置：[向左的水平偏移, 竖直偏移]。
+ * 普通双轨是左右各半个间距；侧轨是下轨的轴线就在路径上，上轨按倾斜角斜上去。
+ */
+export function railCenters(r: Pick<Rail, 'side'>, kind: 'double' | 'mono'): [number, number][] {
+  if (kind === 'mono') return [[0, MONO_OFFSET]];
+  if (!r.side) return [[-RAIL_SPAN / 2, DOUBLE_OFFSET], [RAIL_SPAN / 2, DOUBLE_OFFSET]];
+  const a = ((r.side.stone ? SIDE_RAIL_STONE_ANGLE : SIDE_RAIL_ANGLE) * Math.PI) / 180;
+  return [[0, 0], [r.side.dir * RAIL_SPAN * Math.cos(a), RAIL_SPAN * Math.sin(a)]];
 }
 
 export const RAIL_RADIUS = 0.35;

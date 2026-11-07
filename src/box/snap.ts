@@ -1,9 +1,18 @@
 // 吸附用的几何特征：顶点、边的中点、边
-import { Elem, anchorRects, assetBounds, boxTopAt, footprint, toWorld, virtualCells } from './types';
-import { advance, type RailState } from '../model/rail';
+import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
+import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, sideLowerSpan } from '../model/rail';
 
 export type P3 = [number, number, number];
 export interface Feats { verts: P3[]; mids: P3[]; edges: [P3, P3][] }
+
+/** 钢轨某个位置的预设吸附点：每根轨的截面中心（对齐别的钢轨）；双轨再加路径点（两轨中间、轨顶高度，对齐路面） */
+function railPoints(s: RailState, kind: RailKind): P3[] {
+  const h = (s.heading * Math.PI) / 180, lx = -Math.sin(h) * (RAIL_SPAN / 2), ly = Math.cos(h) * (RAIL_SPAN / 2);
+  const out: P3[] = [];
+  if (kind !== 'mono') out.push([s.x, s.y, s.z], [s.x + lx, s.y + ly, s.z + DOUBLE_OFFSET], [s.x - lx, s.y - ly, s.z + DOUBLE_OFFSET]);
+  if (kind !== 'double') out.push([s.x, s.y, s.z + MONO_OFFSET]);
+  return out;
+}
 
 const boxFeats = (corners: (x: number, y: number) => [number, number], x0: number, y0: number, x1: number, y1: number, depth: number): Feats => {
   const xy = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] as const;
@@ -33,6 +42,16 @@ function localFeats(e: Elem): Feats {
   }
   if (e.kind === 'piece') {
     const f = footprint(e);
+    if (isCheckpoint(e)) {
+      // 盘点只有预设的吸附点：路口那条边的两角和中点（起点一个路口，小节盘点两个），再加圆盘中心
+      const out: Feats = { verts: [], mids: [[e.x, e.y, e.z]], edges: [] };
+      const alongX = e.rot % 2 === 0, lo = alongX ? f.x0 : f.y0, hi = alongX ? f.x1 : f.y1;
+      for (const t of e.type === 'check' ? [lo, hi] : [e.rot < 2 ? hi : lo]) {
+        if (alongX) { out.verts.push([t, f.y0, e.z], [t, f.y1, e.z]); out.mids.push([t, e.y, e.z]); }
+        else { out.verts.push([f.x0, t, e.z], [f.x1, t, e.z]); out.mids.push([e.x, t, e.z]); }
+      }
+      return out;
+    }
     const out = boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
     // 盘点：路口那一格的虚拟路面
     for (const r of virtualCells(e)) {
@@ -44,30 +63,31 @@ function localFeats(e: Elem): Feats {
   if (e.kind === 'asset') { const b = assetBounds(e); return boxFeats(() => [b.z1, 0], b.x0, b.y0, b.x1, b.y1, b.z1 - b.z0); }
   if (e.kind === 'guard') return { verts: [e.pts[0], e.pts[e.pts.length - 1]], mids: [], edges: [] };
   if (e.kind === 'rail') {
-    // 钢轨（一段）：两头的中心点、两头左右两根轨的顶端；中间点；直轨的中线
+    // 钢轨只有预设的吸附点：两头和（单段时）中间的 railPoints，没有边
     const out: Feats = { verts: [], mids: [], edges: [] };
     const s0: RailState = { x: e.x, y: e.y, z: e.z, heading: e.heading };
+    if (e.side && e.pieces.length === 1) {
+      // 侧轨只对下轨：截面中心（对齐别的钢轨）和外接正方形靠上轨的顶点（对齐路面的棱角）
+      const pc = e.pieces[0], [ta, tb] = sideLowerSpan(e);
+      const h = (e.heading * Math.PI) / 180, k = e.side.dir * RAIL_RADIUS;
+      const both = (t: number): [P3, P3] => { const s = advance(s0, pc, t); return [[s.x, s.y, s.z], [s.x - Math.sin(h) * k, s.y + Math.cos(h) * k, s.z + RAIL_RADIUS]]; };
+      const a = both(ta), b = both(tb);
+      out.verts.push(...a, ...b);
+      out.mids.push(...both((ta + tb) / 2));
+      return out;
+    }
     let s1 = s0;
     for (const p of e.pieces) s1 = advance(s1, p);
-    for (const s of [s0, s1]) {
-      out.verts.push([s.x, s.y, s.z]);
-      const h = (s.heading * Math.PI) / 180, lx = -Math.sin(h) * 1.875, ly = Math.cos(h) * 1.875;
-      out.verts.push([s.x + lx, s.y + ly, s.z], [s.x - lx, s.y - ly, s.z]);
-    }
-    if (e.pieces.length === 1) {
-      const m = advance(s0, e.pieces[0], 0.5);
-      out.mids.push([m.x, m.y, m.z]);
-      if (e.pieces[0].angle === 0) out.edges.push([[s0.x, s0.y, s0.z], [s1.x, s1.y, s1.z]]);
-    }
+    out.verts.push(...railPoints(s0, e.pieces[0]?.kind ?? 'double'), ...railPoints(s1, e.pieces[e.pieces.length - 1]?.kind ?? 'double'));
+    if (e.pieces.length === 1) out.mids.push(...railPoints(advance(s0, e.pieces[0], 0.5), e.pieces[0].kind));
     return out;
   }
-  // 机关：对准方块（代表它所在的那一格路面，5×5×5，顶面就是路面）的顶点、边中点、边，再加顶面中心
+  // 机关只有预设的吸附点：每个对准方块（代表它所在的那一格路面，顶面就是路面）顶面的四角、四边中点和中心，没有边
   const out: Feats = { verts: [], mids: [], edges: [] };
   for (const r of anchorRects(e)) {
-    const f = boxFeats(() => [r.top, 0], r.x0, r.y0, r.x1, r.y1, r.depth);
-    out.verts.push(...f.verts);
-    out.mids.push(...f.mids, [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.top]);
-    out.edges.push(...f.edges);
+    const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+    out.verts.push([r.x0, r.y0, r.top], [r.x1, r.y0, r.top], [r.x1, r.y1, r.top], [r.x0, r.y1, r.top]);
+    out.mids.push([cx, r.y0, r.top], [r.x1, cy, r.top], [cx, r.y1, r.top], [r.x0, cy, r.top], [cx, cy, r.top]);
   }
   if (!out.verts.length) out.verts.push([e.x, e.y, e.z]);
   return out;

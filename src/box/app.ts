@@ -10,7 +10,7 @@ import { stopperMesh } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
-import { type RailPiece, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState, sampleRail } from '../model/rail';
+import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, railCenters, type RailState, sampleRail, sideLowerSpan } from '../model/rail';
 import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
@@ -33,7 +33,7 @@ import { type Loop, pathAlong, project, projectNear } from '../model/outline';
 import { exportBoxNmo, exportBoxScene } from './export';
 import type { MapSettings } from '../model/types';
 import {
-  AssetElem, Box, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, ZoneElem, anchorRects, baseSpec, boxTopAt, canTilt, dirToLocal, elemXf,
+  AssetElem, Box, DX, DY, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, ZoneElem, anchorRects, baseSpec, boxTopAt, canTilt, dirToLocal, elemXf,
   footprint, isCheckpoint, isOriented, pieceLen, pivotOf, toLocal, toWorld, virtualCells, yawDeg,
 } from './types';
 
@@ -403,7 +403,7 @@ function rebuildInner() {
   // 钢轨
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'rail') continue;
-    const rm = buildRail(e);
+    const rm = buildRail(e, mapSettings().guardPostDepth);
     if (!rm.pos.length) continue;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(rm.pos, 3));
@@ -648,9 +648,21 @@ function outlineOf(e: Elem, color: number, opacity = 1): THREE.Object3D {
   if (e.kind === 'rail') {
     // 钢轨：沿两根轨（双轨最顶端的高度）画线，两头画横杠
     const ps = sampleRail(e);
-    const side = (s: RailState, k: number): P3 => { const h = (s.heading * Math.PI) / 180; return [s.x - Math.sin(h) * 1.875 * k, s.y + Math.cos(h) * 1.875 * k, s.z + 0.05]; };
-    for (let i = 0; i + 1 < ps.length; i++) for (const k of [1, -1]) segs.push(side(ps[i], k), side(ps[i + 1], k));
-    for (const s of [ps[0], ps[ps.length - 1]]) segs.push(side(s, 1), side(s, -1));
+    const cs = e.side ? railCenters(e, 'double') : null;
+    const side = (s: RailState, k: number): P3 => {
+      const h = (s.heading * Math.PI) / 180;
+      const [l, dz] = cs ? cs[k > 0 ? 1 : 0] : [1.875 * k, 0];
+      return [s.x - Math.sin(h) * l, s.y + Math.cos(h) * l, s.z + dz + 0.05];
+    };
+    if (e.side) {
+      // 侧轨：下轨弯下去的那头是缩短的
+      const [ta, tb] = sideLowerSpan(e);
+      const at = (t: number) => advance(ps[0], e.pieces[0], t);
+      segs.push(side(at(ta), -1), side(at(tb), -1), side(at(0), 1), side(at(1), 1), side(at(ta), -1), side(at(ta), 1), side(at(tb), -1), side(at(tb), 1));
+    } else {
+      for (let i = 0; i + 1 < ps.length; i++) for (const k of [1, -1]) segs.push(side(ps[i], k), side(ps[i + 1], k));
+      for (const s of [ps[0], ps[ps.length - 1]]) segs.push(side(s, 1), side(s, -1));
+    }
   }
   if (c.length === 8) for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) segs.push(c[i], c[j]);
   const geo = new THREE.BufferGeometry().setFromPoints(segs.map((p) => new THREE.Vector3(...p)));
@@ -1028,19 +1040,19 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
   if (!alignOn) return d;
   const thr = worldPerPx(near) * ALIGN_PX;
   const out = [...d] as V3;
-  // 参与对齐的坐标：一般按包围盒（两边 + 中线、顶面 + 底面）；钢轨只用它的吸附点（两头中心、两根轨的顶端），不然太多
+  // 参与对齐的坐标：一般按包围盒（两边 + 中线、顶面 + 底面）；钢轨、机关只用预设的吸附点，不然太多
   const vals = (e: Elem, a: 0 | 1 | 2): number[] => {
-    if (e.kind === 'rail') return [...new Set(feats(e).verts.map((v) => +v[a].toFixed(4)))];
+    if (e.kind === 'rail' || e.kind === 'obj') { const f = feats(e); return [...new Set([...f.verts, ...f.mids].map((v) => +v[a].toFixed(4)))]; }
     const x = elemBounds(e);
     return a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0];
   };
   const others = Object.values(doc.elems).filter((e) => !sel.has(e.id));
   const selElems = [...sel].map((id) => doc.elems[id]).filter(Boolean);
-  const onlyRails = selElems.length > 0 && selElems.every((e) => e.kind === 'rail');
+  const onlyPresets = selElems.length > 0 && selElems.every((e) => e.kind === 'rail' || e.kind === 'obj');
   const hits: { a: 0 | 1 | 2; value: number; ob: Bounds }[] = [];
   for (const a of axes) {
     let best: { diff: number; value: number; ob: Bounds } | null = null;
-    const base = onlyRails ? [...new Set(selElems.flatMap((e) => vals(e, a)))] : (a === 0 ? [b.x0, b.x1, (b.x0 + b.x1) / 2] : a === 1 ? [b.y0, b.y1, (b.y0 + b.y1) / 2] : [b.z1, b.z0]);
+    const base = onlyPresets ? [...new Set(selElems.flatMap((e) => vals(e, a)))] : (a === 0 ? [b.x0, b.x1, (b.x0 + b.x1) / 2] : a === 1 ? [b.y0, b.y1, (b.y0 + b.y1) / 2] : [b.z1, b.z0]);
     const mine = base.map((v) => v + d[a]);
     for (const oe of others) for (const v of vals(oe, a)) for (const m of mine) {
       const ob = elemBounds(oe);
@@ -1085,8 +1097,8 @@ type Drag =
   | { t: 'thick'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
   /** Ctrl 拉伸木制件：沿模型本地 axis 轴，拖的是正方向（pos）还是负方向那一头 */
   | { t: 'stretch'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; pos: boolean }
-  | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
-  | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3 }
+  | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
+  | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
   | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; loop: number; sFixed: number; sNear: number; moveB: boolean }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
@@ -1291,7 +1303,7 @@ el.addEventListener('pointerdown', (e) => {
   if (e.altKey && !e.ctrlKey && hb.kind === 'rail' && hb.pieces.length === 1 && hb.pieces[0].angle === 0) {
     snapshot();
     sel = new Set([h.id]);
-    drag = { t: 'railTilt', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(camN(), h.p), start: h.p };
+    drag = { t: 'railTilt', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(camN(), h.p), start: h.p, end: railEndAt(hb, h.p) };
     drawOverlay(); syncProps(); updateStatus();
     return;
   }
@@ -1341,7 +1353,7 @@ el.addEventListener('pointerdown', (e) => {
   } else if (e.ctrlKey && !e.altKey && elem.kind === 'rail' && elem.pieces.length === 1 && elem.pieces[0].angle === 0) {
     snapshot();
     sel = new Set([h.id]);
-    drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p };
+    drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p, end: railEndAt(elem, h.p) };
   } else if (e.ctrlKey && !e.altKey && elem.kind === 'asset' && assetInfo(elem.name)?.stretch) {
     // Ctrl：拉伸木制件（木板、木制斜坡、凹凸木轨道、长 / 宽木桥），拖的是离鼠标最近的那一头
     if (elem.q) { flash('倾斜的东西不能拉伸', true); return; }
@@ -1781,23 +1793,38 @@ function tiltTo(d: Extract<Drag, { t: 'tilt' }>, p: THREE.Vector3) {
   dragInfo = `坡：长 ${fmt(len)} · 高差 ${fmt(Math.abs(final - other))}`;
 }
 
-/** Shift+Alt 拖直轨：抬高 / 压低终点那一头。吸附：高差为 5 的倍数、放平、别的路面 / 钢轨在这一头的高度 */
+/** 鼠标在直轨的哪一头：Ctrl / Alt 拖动时改靠近鼠标的那头 */
+function railEndAt(r: RailElem, p: THREE.Vector3): 0 | 1 {
+  const h = (r.heading * Math.PI) / 180;
+  return (p.x - r.x) * Math.cos(h) + (p.y - r.y) * Math.sin(h) < r.pieces[0].len / 2 ? 0 : 1;
+}
+
+/** Alt 拖直轨：抬高 / 压低靠近鼠标的那一头，另一头不动。吸附：高差为 5 的倍数、放平、别的路面 / 钢轨在这一头的高度 */
 function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
   const o = JSON.parse(d.orig.get(d.id)!) as RailElem;
   const pc = o.pieces[0];
-  const end = advance({ x: o.x, y: o.y, z: o.z, heading: o.heading }, pc);
-  const start = o.z + pc.dz;
+  const s1 = advance({ x: o.x, y: o.y, z: o.z, heading: o.heading }, pc);
+  const end = d.end ? s1 : { x: o.x, y: o.y };
+  const start = d.end ? s1.z : o.z, other = d.end ? o.z : s1.z;
   let raw = start + (p.z - d.start.z);
   if (gridOn) raw = snapG(raw);
   raw = Math.round(raw * 1000) / 1000;
   const thr = worldPerPx(p) * SIZE5_PX;
-  const cands: number[] = [o.z];
-  const k5 = Math.round((raw - o.z) / 5);
-  if (k5 !== 0) cands.push(o.z + k5 * 5);
+  const cands: number[] = [other];
+  const k5 = Math.round((raw - other) / 5);
+  if (k5 !== 0) cands.push(other + k5 * 5);
+  const top = o.side ? RAIL_RADIUS : 0; // 侧轨的路径比路面低一个钢轨半径
   for (const x of Object.values(doc.elems)) {
     if (x.id === o.id) continue;
-    if (x.kind === 'box' && !x.q) { const f = footprint(x); const [ex, ey] = toLocal(x, [end.x, end.y, 0]); if (ex > f.x0 - 0.5 && ex < f.x1 + 0.5 && ey > f.y0 - 0.5 && ey < f.y1 + 0.5) cands.push(boxTopAt(x, Math.min(Math.max(ex, f.x0), f.x1), Math.min(Math.max(ey, f.y0), f.y1))); }
-    if (x.kind === 'rail') for (const v of feats(x).verts) if (Math.hypot(v[0] - end.x, v[1] - end.y) < 0.5) cands.push(v[2]);
+    if (x.kind === 'box' && !x.q) { const f = footprint(x); const [ex, ey] = toLocal(x, [end.x, end.y, 0]); if (ex > f.x0 - 0.5 && ex < f.x1 + 0.5 && ey > f.y0 - 0.5 && ey < f.y1 + 0.5) cands.push(boxTopAt(x, Math.min(Math.max(ex, f.x0), f.x1), Math.min(Math.max(ey, f.y0), f.y1)) - top); }
+    if (x.kind === 'rail') {
+      // 别的钢轨在这一头的高度：两根轨的截面中心对齐（侧轨的路径就是截面中心，普通钢轨的路径是轨顶）
+      let s: RailState = { x: x.x, y: x.y, z: x.z, heading: x.heading };
+      const ends = [s];
+      for (const pc2 of x.pieces) s = advance(s, pc2);
+      ends.push(s);
+      for (const q of ends) if (Math.hypot(q.x - end.x, q.y - end.y) < 0.5) cands.push(q.z + (x.side ? 0 : -RAIL_RADIUS) + (o.side ? 0 : RAIL_RADIUS));
+    }
   }
   const best = cands.filter((v) => Math.abs(v - raw) < thr).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw))[0];
   const snap = best ?? null;
@@ -1805,10 +1832,12 @@ function railTiltTo(d: Extract<Drag, { t: 'railTilt' }>, p: THREE.Vector3) {
   drive([raw], snap === null ? null : [snap], (v) => {
     restore(d.orig);
     const r = doc.elems[d.id] as RailElem;
-    r.pieces[0].dz = Math.round((v[0] - r.z) * 1000) / 1000;
-    measure = { a: [end.x, end.y, o.z], b: [end.x, end.y, v[0]], tick: [0.6, 0.6, 0], text: `高差 ${fmt(final - o.z)}`, on5: snap !== null };
+    const cur = Math.round(v[0] * 1000) / 1000;
+    if (d.end) r.pieces[0].dz = Math.round((cur - r.z) * 1000) / 1000;
+    else { r.z = cur; r.pieces[0].dz = Math.round((other - cur) * 1000) / 1000; }
+    measure = { a: [end.x, end.y, other], b: [end.x, end.y, v[0]], tick: [0.6, 0.6, 0], text: `高差 ${fmt(final - other)}`, on5: snap !== null };
   }, [start]);
-  dragInfo = `直轨：长 ${fmt(pc.len)} · 高差 ${fmt(final - o.z)}`;
+  dragInfo = `直轨：长 ${fmt(pc.len)} · 高差 ${fmt(final - other)}`;
 }
 
 /** 开始拖护栏的一头（end：0 起点 / 1 终点）：另一头固定，沿外沿改长度 */
@@ -1865,24 +1894,26 @@ function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
 /** Ctrl 拖钢轨：沿钢轨末端方向拉长 / 缩短最后一段直线（最后一段是弯道时接一段新的直线）；长度靠近 5 的倍数时磁吸 */
 function railLenTo(d: Extract<Drag, { t: 'railLen' }>, p: THREE.Vector3) {
   const o = JSON.parse(d.orig.get(d.id)!) as RailElem;
-  let st: RailState = { x: o.x, y: o.y, z: o.z, heading: o.heading };
-  for (const pc of o.pieces) st = advance(st, pc);
-  const h = (st.heading * Math.PI) / 180;
-  const along = (p.x - d.start.x) * Math.cos(h) + (p.y - d.start.y) * Math.sin(h);
-  const last = o.pieces[o.pieces.length - 1];
-  const straight = !!last && last.angle === 0;
-  const base = straight ? last.len : 0;
-  let raw = Math.max(0.5, base + along);
+  const h = (o.heading * Math.PI) / 180, cx = Math.cos(h), cy = Math.sin(h);
+  const along = (p.x - d.start.x) * cx + (p.y - d.start.y) * cy;
+  const base = o.pieces[0].len;
+  let raw = Math.max(0.5, base + (d.end ? along : -along));
   if (gridOn) raw = Math.max(prefs.gridStep, snapG(raw));
   raw = Math.round(raw * 1000) / 1000;
   const L5 = Math.round(raw / 5) * 5;
   const snap = L5 > 0 && Math.abs(raw - L5) < worldPerPx(p) * SIZE5_PX ? L5 : null;
-  const setLen = (r: RailElem, v: number) => {
-    if (straight) r.pieces[r.pieces.length - 1].len = v;
-    else r.pieces.push({ kind: last?.kind === 'mono' ? 'mono' : 'double', len: v, radius: 0, angle: 0, dz: 0 });
-  };
-  drive([raw], snap === null ? null : [snap], (v) => { restore(d.orig); setLen(doc.elems[d.id] as RailElem, Math.round(v[0] * 1000) / 1000); }, [base]);
-  dragInfo = `钢轨末段长 ${fmt(snap ?? raw)}`;
+  drive([raw], snap === null ? null : [snap], (v) => {
+    restore(d.orig);
+    const r = doc.elems[d.id] as RailElem;
+    const len = Math.round(v[0] * 1000) / 1000;
+    // 拖起点那头：终点不动，起点沿轨道挪
+    if (!d.end) { r.x = o.x + cx * (base - len); r.y = o.y + cy * (base - len); }
+    r.pieces[0].len = len;
+    // 测量线：沿轨道，数字是松手后的长度
+    const s0 = { x: r.x, y: r.y, z: r.z, heading: r.heading }, s1 = advance(s0, r.pieces[0]);
+    measure = { a: [s0.x, s0.y, s0.z + 0.05], b: [s1.x, s1.y, s1.z + 0.05], tick: [-cy * 0.6, cx * 0.6, 0], text: fmt(snap ?? raw), on5: snap !== null };
+  }, [base]);
+  dragInfo = `钢轨长 ${fmt(snap ?? raw)}`;
 }
 
 window.addEventListener('pointerup', (e) => {
@@ -1961,6 +1992,9 @@ function newElems(type: string): Elem[] {
   if (type === 'zone') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 10, sy: 10, depth: 5 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
   if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
+  if (type === 'side-rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [true, true] } }];
+  if (type === 'side-rail-open') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [false, false] } }];
+  if (type === 'side-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'mono', len: 0, radius: SPIRAL_RADIUS, angle: 720, dz: 2 * SIDE_SPIRAL_SCREW }], sideSpiral: true }];
   if (type === 'rail-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: SPIRAL_RADIUS, angle: 360, dz: SPIRAL_SCREW }] }];
   return [{ id, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 5, style: type as Style }];
 }
@@ -2033,6 +2067,39 @@ function placeMove(e: PointerEvent) {
     orig.set(id, JSON.stringify(o));
   }
   restore(orig);
+  const sr = doc.elems[drag.ids[0]];
+  if (sr.kind === 'rail' && sr.side && under?.kind === 'box' && !under.q && !under.slope) {
+    // 侧轨：贴住鼠标下那块路面离鼠标最近的那条边——下轨嵌在棱角里（外接正方形靠上轨的顶点在棱角上），顺着这条边，上轨偏向路外
+    const f = footprint(under);
+    const lp = toLocal(under, [p.x, p.y, p.z]);
+    const ds = [f.x1 - lp[0], f.y1 - lp[1], lp[0] - f.x0, lp[1] - f.y0];
+    const d = ds.indexOf(Math.min(...ds)) as Dir;
+    const n = [DX[d], DY[d]], tdir = [-n[1], n[0]];
+    const len = sr.pieces[0].len;
+    const along = d % 2 === 0 ? lp[1] : lp[0];
+    const lo = d % 2 === 0 ? f.y0 : f.x0, hi = d % 2 === 0 ? f.y1 : f.x1;
+    // 起点：鼠标所在位置往回半段，夹在这条边的范围里（边比侧轨短时从边的一头开始）
+    let t0 = along - (tdir[d % 2 === 0 ? 1 : 0] * len) / 2;
+    const tMin = tdir[d % 2 === 0 ? 1 : 0] > 0 ? lo : lo + len, tMax = tdir[d % 2 === 0 ? 1 : 0] > 0 ? hi - len : hi;
+    t0 = tMin <= tMax ? Math.min(Math.max(t0, tMin), tMax) : tMin;
+    // 靠近这条边的两头时对齐到头
+    if (Math.abs(t0 - tMin) < 1) t0 = tMin;
+    else if (Math.abs(t0 - tMax) < 1) t0 = tMax;
+    const edge = [f.x1, f.y1, f.x0, f.y0][d] - RAIL_RADIUS * (d < 2 ? 1 : -1);
+    const local: P3 = d % 2 === 0 ? [edge, t0, under.z - RAIL_RADIUS] : [t0, edge, under.z - RAIL_RADIUS];
+    const w = toWorld(under, local);
+    const hdg = (Math.atan2(tdir[1], tdir[0]) * 180) / Math.PI + (under.ang ?? 0);
+    // 上轨偏向路外：路外是 n，路径左侧是 tdir 转 90°
+    const left = [-tdir[1], tdir[0]];
+    const o = JSON.parse(orig.get(sr.id)!) as RailElem;
+    Object.assign(o, { x: w[0], y: w[1], z: w[2], heading: ((hdg % 360) + 360) % 360, side: { ...o.side!, dir: left[0] * n[0] + left[1] * n[1] > 0 ? 1 : -1 } });
+    doc.elems[sr.id] = o;
+    anim = null;
+    snapTarget = null;
+    dragInfo = '侧轨贴住路边';
+    rebuildWanted = true;
+    return;
+  }
   const hd = handleOf(doc.elems[drag.ids[0]]);
   // 变球器 / 风扇拖到凹路、细边框凹路上：底座顶面直接放到下沉 0.7 的槽底，嵌进凹槽
   const first = doc.elems[drag.ids[0]];
@@ -2088,8 +2155,8 @@ const svgThumb = (body: string) => `<svg viewBox="0 0 64 64">${body}</svg>`;
 // 路面 / 素材件 / 钢轨的简图（等轴测的小方块），机关和装饰用模型渲染的预览图
 const ROAD_TOP = '#c9b48a', ROAD_SIDE = '#8a7558', SINK = '#9c8665', RAIL = '#aab4c2';
 const slab = (top: string, inner?: string) => svgThumb(`<path d="M8 30 L32 18 L56 30 L32 42 Z" fill="${top}"/><path d="M8 30 L32 42 L32 52 L8 40 Z" fill="${ROAD_SIDE}"/><path d="M56 30 L32 42 L32 52 L56 40 Z" fill="#76634a"/>${inner ?? ''}`);
-/** 道具：分数球、生命球、箱子、变球器、道具球（机关里的前 9 个） */
-const PROP_TYPES = new Set(['P_Extra_Point', 'P_Extra_Life', 'P_Box', 'P_Trafo_Paper', 'P_Trafo_Stone', 'P_Trafo_Wood', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood']);
+/** 道具：分数球、生命球、箱子、道具球 */
+const PROP_TYPES = new Set(['P_Extra_Point', 'P_Extra_Life', 'P_Box', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood']);
 const ZONE_ICON = svgThumb('<path d="M32 10 L54 22 L54 44 L32 56 L10 44 L10 22 Z" fill="rgba(255,64,64,0.28)" stroke="#ff6a6a" stroke-width="2" stroke-linejoin="round"/><path d="M10 22 L32 34 L54 22 M32 34 V56" fill="none" stroke="#ff6a6a" stroke-width="1.6" opacity="0.8"/><path d="M26 39 l12 7 M38 39 l-12 7" stroke="#ff8a8a" stroke-width="2.4" stroke-linecap="round"/>');
 /** 资产库里的特殊路面：tab 指定了放在哪个标签（特殊路块、旋转门放路面，交叉轨放钢轨），其余（木制件）在「木制」 */
 function assetItems(tab?: 'road' | 'rail'): LibItem[] {
@@ -2114,6 +2181,9 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
       { type: 'rail', label: '直轨', hint: 'Ctrl 拖改长度，Alt 拖做坡', icon: svgThumb(`<path d="M8 40 L48 20 M16 44 L56 24" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
       { type: 'rail-curve', label: '弯轨', hint: '属性里调半径、角度', icon: svgThumb(`<path d="M10 46 Q10 18 40 14 M18 50 Q18 26 46 22" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       { type: 'rail-spiral', label: '螺旋', hint: '属性里调圈数、半径', icon: svgThumb(`<path d="M32 52 C10 50 10 36 32 36 C54 36 54 22 32 22 C14 22 14 12 32 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
+      { type: 'side-rail', label: '侧轨', hint: '斜过来的双轨，下轨卡在路的棱角上，上轨两头像护栏一样固定在路边；拖到路面上会贴住最近的路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 46 L14 30 Q14 24 20 22 L52 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
+      { type: 'side-rail-open', label: '开放侧轨', hint: '两根成角度的钢轨，两头不弯；拖到路面上会贴住最近的路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 30 L54 10" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
+      { type: 'side-spiral', label: '螺旋侧轨', hint: '单轨螺旋，层间距固定 3.6', icon: svgThumb(`<path d="M32 50 C12 48 12 38 32 38 C52 38 52 28 32 28 C14 28 14 18 32 16" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       ...assetItems('rail'),
     ],
   },
@@ -2534,17 +2604,21 @@ function syncProps() {
     h += pos('顶面') + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '高', one.depth) + orient();
   } else if (one.kind === 'rail') {
     const pc = one.pieces[0];
-    const shape = pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
+    const shape = one.side ? '侧轨' : one.sideSpiral ? '螺旋侧轨' : pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
     h += `<div class="title">${shape}</div>`;
     h += num('x', '起点 x', one.x) + num('y', '起点 y', one.y) + num('z', '起点高', one.z);
     h += num('heading', '朝向 °', one.heading, 15);
-    h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    if (one.side) {
+      h += `<label>类型</label>${seg('side-type', [['normal', '普通'], ['stone', '石球']], one.side.stone ? 'stone' : 'normal')}`;
+      h += `<label>上轨</label>${seg('side-dir', [['1', '偏左'], ['-1', '偏右']], String(one.side.dir))}`;
+      h += `<label>两头</label><div class="chips">${chip('end0', '起点弯下', !!one.side.ends?.[0])}${chip('end1', '终点弯下', !!one.side.ends?.[1])}</div>`;
+    } else if (!one.sideSpiral) h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨'], ['transition', '单双转换']].map(([v, n]) => `<option value="${v}"${v === pc.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
     const rnum = (f: string, label: string, v: number, step = 0.5) => `<label>${label}</label><input data-rf="${f}" type="number" step="${step}" value="${+v.toFixed(3)}">`;
     if (pc.angle === 0) h += rnum('len', '长度', pc.len) + rnum('dz', '高差', pc.dz);
     else {
       h += `<label>方向</label><select data-rf="dir"><option value="1"${pc.angle > 0 ? ' selected' : ''}>左转</option><option value="-1"${pc.angle < 0 ? ' selected' : ''}>右转</option></select>`;
       h += rnum('radius', '半径', pc.radius);
-      if (Math.abs(pc.angle) >= 360) h += rnum('turns', '圈数', Math.abs(pc.angle) / 360, 0.25) + rnum('screw', '每圈升高', pc.dz / (Math.abs(pc.angle) / 360));
+      if (Math.abs(pc.angle) >= 360) h += rnum('turns', '圈数', Math.abs(pc.angle) / 360, 0.25) + (one.sideSpiral ? `<label>每圈升高</label><span class="muted">${SIDE_SPIRAL_SCREW}（固定）</span>` : rnum('screw', '每圈升高', pc.dz / (Math.abs(pc.angle) / 360)));
       else h += rnum('angle', '角度', Math.abs(pc.angle), 15) + rnum('dz', '高差', pc.dz);
     }
   } else if (one.kind === 'guard') {
@@ -2574,12 +2648,13 @@ function syncProps() {
     if (extra.length) h += `<label>附带</label><div class="chips">${extra.join('')}</div>`;
   }
   props.innerHTML = h;
+  enhanceFields(props);
 }
 props.addEventListener('change', (ev) => {
   const t = ev.target as HTMLInputElement;
   const e = sel.size === 1 ? doc.elems[[...sel][0]] : null;
   if (!e) return;
-  snapshot();
+  if (!numDrag) snapshot();
   const k = t.dataset.k;
   if ((k === 'x' || k === 'y' || k === 'z') && e.kind !== 'guard') {
     // 位置按世界坐标改：算出位移再平移（转过的元素也对）
@@ -2611,12 +2686,132 @@ props.addEventListener('change', (ev) => {
     else if (f === 'radius') pc.radius = Math.max(0.5, v);
     else if (f === 'dir') pc.angle = Math.abs(pc.angle) * (v > 0 ? 1 : -1);
     else if (f === 'angle') pc.angle = Math.sign(pc.angle) * Math.min(359, Math.max(1, v));
-    else if (f === 'turns') { const n = Math.max(1, v); pc.dz = (pc.dz / turns) * n; pc.angle = Math.sign(pc.angle) * 360 * n; }
+    else if (f === 'turns') { const n = Math.max(1, v); pc.dz = e.sideSpiral ? SIDE_SPIRAL_SCREW * n * Math.sign(pc.dz || 1) : (pc.dz / turns) * n; pc.angle = Math.sign(pc.angle) * 360 * n; }
     else if (f === 'screw') pc.dz = v * turns;
   }
   props.dataset.id = '';
   rebuild();
 });
+const ARROW_ICON = (d: string) => `<svg viewBox="0 0 16 16"><path d="${d}"/></svg>`;
+/** 换掉浏览器自带的数字框上下按钮和下拉：数字框两头加箭头，下拉换成自己画的按钮（原来的 select 留着存值、发 change） */
+function enhanceFields(root: Element) {
+  root.querySelectorAll<HTMLInputElement>('input[type=number]').forEach((inp) => {
+    if (inp.parentElement!.classList.contains('num-field')) return;
+    const w = document.createElement('span');
+    w.className = 'num-field';
+    inp.replaceWith(w);
+    w.innerHTML = `<button type="button" data-d="-1" tabindex="-1">${ARROW_ICON('M10 4L6 8l4 4')}</button><button type="button" data-d="1" tabindex="-1">${ARROW_ICON('M6 4l4 4-4 4')}</button>`;
+    w.insertBefore(inp, w.lastChild);
+  });
+  root.querySelectorAll<HTMLSelectElement>('select').forEach((s) => {
+    if (s.classList.contains('native')) return;
+    s.classList.add('native');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sel-btn';
+    b.innerHTML = `<span>${s.selectedOptions[0]?.text ?? ''}</span>${ARROW_ICON('M4 6l4 4 4-4')}`;
+    s.after(b);
+  });
+}
+
+const selPop = document.createElement('div');
+selPop.className = 'dropdown-menu sel-pop';
+document.body.appendChild(selPop);
+let selOpen: { btn: HTMLElement; sel: HTMLSelectElement } | null = null;
+function closeSel() {
+  selOpen?.btn.classList.remove('open');
+  selOpen = null;
+  selPop.classList.remove('open');
+}
+function openSel(btn: HTMLElement) {
+  const sel = btn.previousElementSibling as HTMLSelectElement;
+  selOpen = { btn, sel };
+  btn.classList.add('open');
+  selPop.innerHTML = [...sel.options].map((o, i) => `<button type="button" data-i="${i}" class="${o.selected ? 'on' : ''}"><span>${o.text}</span></button>`).join('');
+  const r = btn.getBoundingClientRect();
+  selPop.style.minWidth = `${r.width}px`;
+  selPop.classList.add('open');
+  // 下面放不下就往上开
+  const hgt = selPop.offsetHeight;
+  const top = r.bottom + 4 + hgt > window.innerHeight ? r.top - 4 - hgt : r.bottom + 4;
+  selPop.style.left = `${Math.min(r.left, window.innerWidth - selPop.offsetWidth - 8)}px`;
+  selPop.style.top = `${Math.max(8, top)}px`;
+  selPop.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+}
+selPop.addEventListener('click', (ev) => {
+  const b = (ev.target as Element).closest<HTMLButtonElement>('button');
+  if (!b || !selOpen) return;
+  const { sel, btn } = selOpen;
+  closeSel();
+  if (sel.selectedIndex === +b.dataset.i!) return;
+  sel.selectedIndex = +b.dataset.i!;
+  btn.querySelector('span')!.textContent = sel.selectedOptions[0].text;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+});
+document.addEventListener('pointerdown', (ev) => {
+  const t = ev.target as Element;
+  const btn = t.closest?.<HTMLElement>('.sel-btn');
+  if (selPop.contains(t)) return;
+  const again = !!btn && selOpen?.btn === btn;
+  closeSel();
+  if (btn) { ev.preventDefault(); if (!again) openSel(btn); }
+  if (t.closest?.('.num-field button')) ev.preventDefault(); // 不抢焦点：焦点在面板里时面板不刷新
+}, true);
+window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeSel(); }, true);
+window.addEventListener('resize', closeSel);
+
+/** 数字框一步的大小：长度一个格栅步长，角度、圈数和设置面板里的值按自己的 step */
+function numUnit(inp: HTMLInputElement): number {
+  const step = +inp.step || 1;
+  return inp.closest('#props') && step < 1 && inp.dataset.rf !== 'turns' ? prefs.gridStep : step;
+}
+document.addEventListener('click', (ev) => {
+  const b = (ev.target as Element).closest?.<HTMLButtonElement>('.num-field button');
+  if (!b) return;
+  const inp = b.parentElement!.querySelector('input')!;
+  inp.value = String(+(+inp.value + +b.dataset.d! * numUnit(inp)).toFixed(4));
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+});
+
+// 数字框像 Blender 一样按住左右拖：在当前值上一步一步加减（长度 ±1 格，角度 ±15°，Shift 一步 0.1）；
+// 没拖动就是点进去打字。改完面板会重画，所以每步按属性重新找输入框
+const NUM_DRAG_PX = 8;
+let numDrag = false;
+document.addEventListener('pointerdown', (ev) => {
+  const inp = (ev.target as Element).closest?.<HTMLInputElement>('#props input[type=number], .settings-panel input[type=number]');
+  if (!inp || ev.button !== 0 || document.activeElement === inp) return;
+  ev.preventDefault();
+  const root = inp.closest('#props, .settings-panel')!;
+  const attr = ['data-k', 'data-rf', 'data-key', 'id'].find((a) => inp.hasAttribute(a))!;
+  const query = `input[${attr}="${inp.getAttribute(attr)}"]`;
+  const unit = numUnit(inp);
+  const sx = ev.clientX, v0 = +inp.value;
+  let moved = false;
+  const move = (e: PointerEvent) => {
+    const dx = e.clientX - sx;
+    if (!moved) {
+      if (Math.abs(dx) < 3) return;
+      moved = true;
+      document.body.classList.add('num-drag');
+      if (root === props) { snapshot(); numDrag = true; }
+    }
+    const text = String(+(v0 + Math.round(dx / NUM_DRAG_PX) * (e.shiftKey ? 0.1 : unit)).toFixed(4));
+    const cur = root.querySelector<HTMLInputElement>(query);
+    if (!cur || cur.value === text) return;
+    cur.value = text;
+    cur.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    document.body.classList.remove('num-drag');
+    numDrag = false;
+    if (!moved) { inp.focus(); inp.select(); }
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
+
 // 分段开关（四边的自动 / 开口 / 封口）、药丸（挡块、专属路块）
 props.addEventListener('click', (ev) => {
   const t = ev.target as HTMLElement;
@@ -2624,6 +2819,16 @@ props.addEventListener('click', (ev) => {
   if (!e) return;
   const segBtn = t.closest<HTMLButtonElement>('.seg-toggle button');
   const chipBtn = t.closest<HTMLButtonElement>('button.chip');
+  if (e.kind === 'rail' && e.side && (segBtn || chipBtn)) {
+    snapshot();
+    const s = e.side;
+    if (segBtn?.parentElement!.dataset.seg === 'side-type') s.stone = segBtn.dataset.v === 'stone' || undefined;
+    else if (segBtn?.parentElement!.dataset.seg === 'side-dir') s.dir = segBtn.dataset.v === '1' ? 1 : -1;
+    else if (chipBtn) { const k = chipBtn.dataset.flag === 'end0' ? 0 : 1; const ends: [boolean, boolean] = [...(s.ends ?? [false, false])] as [boolean, boolean]; ends[k] = !ends[k]; s.ends = ends; }
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
   if (segBtn) {
     const key = segBtn.parentElement!.dataset.seg!;
     const m = /^side-(\d)$/.exec(key);
@@ -2701,13 +2906,36 @@ fileBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.class
 exportBtn.addEventListener('click', (e) => { e.stopPropagation(); fileMenu.classList.remove('open'); exportMenu.classList.toggle('open'); exportBtn.blur(); });
 window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !exportMenu.contains(t) && t !== fileBtn && t !== exportBtn) closeMenus(); });
 document.getElementById('scene-list')!.innerHTML = SCENES.map((sc, i) => `<button data-scene="${i}"><span>${sc.name}</span></button>`).join('');
-fileMenu.addEventListener('click', (e) => {
+/** 确认框（和设置面板一个样，不用浏览器自带的 confirm）：Enter 确定、Esc 或点外面取消 */
+function askConfirm(text: string, ok = '确定'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'confirm-mask';
+    mask.innerHTML = `<div class="confirm-box"><p></p><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary">${ok}</button></div></div>`;
+    mask.querySelector('p')!.textContent = text;
+    const done = (r: boolean) => { window.removeEventListener('keydown', key, true); mask.remove(); resolve(r); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' && e.key !== 'Escape') return;
+      e.preventDefault(); e.stopPropagation();
+      done(e.key === 'Enter');
+    };
+    mask.addEventListener('click', (e) => {
+      const b = (e.target as Element).closest<HTMLButtonElement>('button');
+      if (b) done(b.dataset.r === '1');
+      else if (e.target === mask) done(false);
+    });
+    window.addEventListener('keydown', key, true);
+    document.body.appendChild(mask);
+  });
+}
+
+fileMenu.addEventListener('click', async (e) => {
   const b = (e.target as Element).closest<HTMLButtonElement>('button');
   if (!b) return;
   closeMenus();
   if (b.dataset.scene !== undefined) { setScene(+b.dataset.scene); return; }
   const act = b.dataset.act;
-  if (act === 'new') { if (Object.keys(doc.elems).length && !confirm('清空当前地图？（可以撤销）')) return; setScene(-1); }
+  if (act === 'new') { if (Object.keys(doc.elems).length && !await askConfirm('清空当前地图？（可以撤销）', '清空')) return; setScene(-1); }
   else if (act === 'open') fileInput.click();
   else if (act === 'save') saveFile();
 });
@@ -2716,7 +2944,7 @@ exportMenu.addEventListener('click', async (e) => {
   if (!b) return;
   closeMenus();
   const desc = exportBoxScene(doc);
-  if (desc.warnings.length && !confirm(`${desc.warnings.join('\n')}\n\n仍然导出？`)) return;
+  if (desc.warnings.length && !await askConfirm(`${desc.warnings.join('\n')}\n\n仍然导出？`, '仍然导出')) return;
   if (b.dataset.format === 'json') { download('map.scene.json', JSON.stringify(desc), 'application/json'); flash('已导出 map.scene.json'); return; }
   try {
     flash('正在生成 .nmo…');
@@ -2762,6 +2990,7 @@ function renderSettings() {
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
     + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
     + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
+  enhanceFields(settingsPanel);
   settingsPanel.querySelectorAll<HTMLInputElement>('input[data-key]').forEach((inp) => inp.addEventListener('change', () => {
     const v = Number(inp.value);
     if (!Number.isFinite(v)) return;

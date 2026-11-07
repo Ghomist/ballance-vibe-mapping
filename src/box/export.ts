@@ -63,7 +63,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   let ri = 0;
   for (const r of elems) {
     if (r.kind !== 'rail') continue;
-    const rm = buildRail(r);
+    const rm = buildRail(r, { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) }.guardPostDepth);
     if (rm.pos.length) meshes.push({ name: `A_Rail_BVM_${String(++ri).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: rm.pos.map(r5) }] });
   }
 

@@ -171,6 +171,22 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     check(!names.includes('Sector_04'), '不该多出第 4 个小节组');
   });
 
+  scenario('NMO：侧轨和螺旋侧轨能导出、读回', async () => {
+    const line = { kind: 'double' as const, len: 20, radius: 0, angle: 0, dz: 0 };
+    const d = level();
+    d.elems[50] = rail(50, 0, 30, [line], { side: { dir: -1, ends: [true, false] } });
+    d.elems[51] = rail(51, 0, 40, [{ kind: 'mono', len: 0, radius: 5, angle: 720, dz: 7.2 }], { sideSpiral: true });
+    const before = exportBoxScene(level()).meshes.filter((m) => m.kind === 'rail').length;
+    const desc = exportBoxScene(d);
+    const rails = desc.meshes.filter((m) => m.kind === 'rail');
+    check(rails.length === before + 2, `应多出两根钢轨网格：${before} → ${rails.length}`);
+    check(rails.every((m) => m.smooth && m.parts.every((p) => p.pos.length > 0 && p.pos.every(Number.isFinite))), '钢轨网格平滑、数值有效');
+    const r = await readNmo(await writeNmo(buildNmoDoc(desc, lib())));
+    check(r.crcOk && r.chunksOk && r.sizesOk, 'NMO 校验通过');
+    const names = r.objects.map((o) => o.name);
+    check(rails.every((m) => names.includes(m.name)), '钢轨物体都写进了 NMO');
+  });
+
   scenario('NMO：导出是确定的', async () => {
     const a = await writeNmo(buildNmoDoc(exportBoxScene(level()), lib()));
     const b = await writeNmo(buildNmoDoc(exportBoxScene(level()), lib()));

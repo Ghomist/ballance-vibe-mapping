@@ -3,7 +3,7 @@
 import { objType } from '../model/objects';
 /** 盘点路面的路口离中心多远：圆盘边沿（自带的延伸路裁掉了，见 solve.ts 的 CP_CROP） */
 export const CP_PORT = { start: 7.386, check: 4.924 } as const;
-import { type RailPiece, sampleRail } from '../model/rail';
+import { type RailPiece, type SideRail, sampleRail } from '../model/rail';
 import { assetInfo } from './asset-info';
 import { type M3, type Quat, type V3, I3, apply, fromQuat, mul, rotZ } from './xform';
 
@@ -110,6 +110,10 @@ export interface RailElem extends ElemBase {
   z: number;
   heading: number;
   pieces: RailPiece[];
+  /** 侧轨（一段直的双轨斜过来） */
+  side?: SideRail;
+  /** 螺旋侧轨：单轨螺旋，层间距固定 3.6 */
+  sideSpiral?: boolean;
 }
 
 /**

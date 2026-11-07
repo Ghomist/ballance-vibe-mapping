@@ -1,16 +1,19 @@
 // 钢轨网格：正八边形截面沿路径扫掠。单轨平顶朝上、双轨尖顶朝上（与原版和 BBP 一致），法线取径向，呈平滑效果。
 import {
   DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, Rail, RailState,
-  kindSpans, sampleRail, stateAt,
+  advance, kindSpans, railCenters, sampleRail, sideLowerSpan, stateAt,
 } from '../model/rail';
+import { fillet, sweepTube } from './railing';
 
 export interface RailMesh { pos: number[]; nrm: number[] }
 
 const rad = (d: number) => (d * Math.PI) / 180;
 
-export function buildRail(r: Rail): RailMesh {
+/** postDepth：侧轨两头弯下去的上轨插到路面以下多深（和护栏立柱一样，默认 2） */
+export function buildRail(r: Rail, postDepth = 2): RailMesh {
   const out: RailMesh = { pos: [], nrm: [] };
   if (!r.pieces.length) return out;
+  if (r.side && r.pieces.length === 1 && r.pieces[0].angle === 0) return buildSideRail(r, postDepth);
   const samples = sampleRail(r);
   for (const span of kindSpans(r)) {
     // 取该区间内的采样点，并在区间两端补上精确的切点
@@ -22,6 +25,27 @@ export function buildRail(r: Rail): RailMesh {
     for (const off of offsets) tube(out, pts, span.kind, off);
   }
   return out;
+}
+
+/**
+ * 侧轨：下轨的轴线就是路径，上轨按倾斜角斜上去；两头可以让上轨像护栏立柱那样拐个圆角竖直插下去
+ *（立柱竖到路面以下 postDepth，路面比路径高一个钢轨半径），这一头的下轨缩短。两根都是一整根平滑的圆管。
+ */
+function buildSideRail(r: Rail, postDepth: number): RailMesh {
+  const [[, dzLo], [lat, dzUp]] = railCenters(r, 'double');
+  const s0: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
+  const pc = r.pieces[0];
+  const s1 = advance(s0, pc);
+  const h = rad(r.heading), L = [-Math.sin(h), Math.cos(h)];
+  const P = (s: RailState, l: number, dz: number): [number, number, number] => [s.x + L[0] * l, s.y + L[1] * l, s.z + dz];
+  const [ta, tb] = sideLowerSpan(r);
+  const lower = tb > ta ? sweepTube([P(advance(s0, pc, ta), 0, dzLo), P(advance(s0, pc, tb), 0, dzLo)], false, RAIL_RADIUS) : { pos: [], nrm: [] };
+  const up: [number, number, number][] = [P(s0, lat, dzUp), P(s1, lat, dzUp)];
+  const [e0, e1] = r.side!.ends ?? [false, false];
+  if (e0) up.unshift(P(s0, lat, RAIL_RADIUS - postDepth));
+  if (e1) up.push(P(s1, lat, RAIL_RADIUS - postDepth));
+  const upper = sweepTube(e0 || e1 ? fillet(up, false) : up, false, RAIL_RADIUS);
+  return { pos: [...lower.pos, ...upper.pos], nrm: [...lower.nrm, ...upper.nrm] };
 }
 
 function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number) {

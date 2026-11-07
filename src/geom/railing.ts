@@ -21,7 +21,7 @@ const dot = (a: P3, b: P3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: P3, b: P3): P3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
 /** 折线的拐角换成圆弧 */
-function fillet(poly: P3[], closed: boolean): P3[] {
+export function fillet(poly: P3[], closed: boolean): P3[] {
   const n = poly.length;
   const out: P3[] = [];
   for (let i = 0; i < n; i++) {

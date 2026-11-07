@@ -3,15 +3,15 @@
 // 钢轨这段的重点是「截面不能随坡度变」「顶端永远和路径高度齐平」「绕序朝外」——
 // 这三条错了在编辑器里看不出来，进游戏才会发现轨道是反的或者浮在路面上面。
 import {
-  DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, advance, kindSpans, pieceLength, railEnd, railTopOffset,
-  sampleRail, stateAt, type Rail, type RailPiece, type RailState,
+  DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, SIDE_BEND_TRIM, SIDE_RAIL_ANGLE, SIDE_RAIL_STONE_ANGLE, advance, kindSpans, pieceLength,
+  railCenters, railEnd, railTopOffset, sampleRail, sideLowerSpan, stateAt, type Rail, type RailPiece, type RailState,
 } from '../src/model/rail';
 import { buildRail } from '../src/geom/rail';
 import { sweepTube } from '../src/geom/railing';
 import { feats } from '../src/box/snap';
 import { edgeAt, routeLen, shortPath } from '../src/box/guard';
 import type { Loop, P3 } from '../src/model/outline';
-import { Box, RailElem, boxTopAt, footprint, toWorld } from '../src/box/types';
+import { Box, Obj, Piece, RailElem, boxTopAt, footprint, toWorld } from '../src/box/types';
 import { rotAxis, toQuat } from '../src/box/xform';
 
 type Check = (cond: boolean, msg: string) => void;
@@ -194,6 +194,41 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     check(triCount(sweepTube([[0, 0, 0]], false, 0.1)) === 0, '少于两个点不应产生三角形');
   });
 
+  scenario('侧轨：两根轨的位置、弯下去的那头、绕序', () => {
+    const rad = (d: number) => (d * Math.PI) / 180;
+    const side = (o: Partial<NonNullable<RailElem['side']>>, len = 20): RailElem => ({ ...railElem([line(len)]), z: 0, side: { dir: -1, ...o } });
+    const [lo, up] = railCenters(side({}), 'double');
+    check(near(lo[0], 0) && near(lo[1], 0), '下轨的轴线就是路径');
+    check(near(up[0], -RAIL_SPAN * Math.cos(rad(SIDE_RAIL_ANGLE))) && near(up[1], RAIL_SPAN * Math.sin(rad(SIDE_RAIL_ANGLE))), '上轨按 79.563° 斜上去，两轨间距不变');
+    const st = railCenters(side({ stone: true, dir: 1 }), 'double')[1];
+    check(near(st[0], RAIL_SPAN * Math.cos(rad(SIDE_RAIL_STONE_ANGLE))) && near(Math.hypot(st[0], st[1]), RAIL_SPAN), '石球型 57°，dir 决定偏向');
+
+    const span = sideLowerSpan(side({ ends: [true, false] }));
+    check(near(span[0] * 20, SIDE_BEND_TRIM) && near(span[1], 1), `弯下去的那头下轨缩短 ${SIDE_BEND_TRIM}，另一头不变`);
+    const short = sideLowerSpan(side({ ends: [true, true] }, 8));
+    check(short[0] === short[1], '太短时下轨缩没了，不能倒过来');
+    const noLower = buildRail(side({ ends: [true, true] }, 8));
+    check(noLower.pos.length > 0 && noLower.pos.every(Number.isFinite), '下轨缩没时上轨照常生成');
+
+    const r = side({ ends: [true, true] });
+    r.x = 0; r.y = 0; r.heading = 0;
+    const m = buildRail(r, 2);
+    check(m.pos.every(Number.isFinite) && m.nrm.every(Number.isFinite), '网格没有非数值');
+    let minZ = Infinity, wrong = 0;
+    for (let i = 0; i < m.pos.length; i += 9) {
+      const p = m.pos.slice(i, i + 9), n = m.nrm.slice(i, i + 3);
+      const a = [p[3] - p[0], p[4] - p[1], p[5] - p[2]], b = [p[6] - p[0], p[7] - p[1], p[8] - p[2]];
+      const g = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      if (Math.hypot(...g) > 1e-9 && g[0] * n[0] + g[1] * n[1] + g[2] * n[2] < 0) wrong++;
+      minZ = Math.min(minZ, p[2], p[5], p[8]);
+    }
+    check(wrong === 0, `绕序和法线要一致（朝外），有 ${wrong} 个三角形反了`);
+    // 路面比路径高一个半径，立柱竖到路面以下 2（圆管本身不再往下）
+    check(minZ > RAIL_RADIUS - 2 - RAIL_RADIUS - 0.05 && minZ < RAIL_RADIUS - 2 + 0.05, `立柱底端应在路面以下 2 左右，实际 ${minZ}`);
+    const open = buildRail(side({}));
+    check(open.pos.length < m.pos.length, '开放侧轨就是两根直管，比带弯的三角形少');
+  });
+
   scenario('吸附特征点：路面 / 钢轨 / 倾斜的元素', () => {
     const b: Box = { id: 1, kind: 'box', x: 0, y: 0, z: 0, sx: 5, sy: 5, depth: 1, style: 'normal' };
     const f = feats(b);
@@ -205,9 +240,34 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
 
     const r = railElem([line(10)]);
     const rf = feats(r);
-    check(rf.verts.length === 6, `直轨两头各有 1 个中心 + 左右两根轨的顶端 = 6 个顶点，实际 ${rf.verts.length}`);
-    check(rf.mids.length === 1 && rf.edges.length === 1, '单段直轨应有 1 个中点、1 条中线');
-    check(rf.verts.some((v) => near(v[1], RAIL_SPAN / 2) && near(v[2], 5)), '轨顶在路径两侧 RAIL_SPAN/2、高度等于路径高度');
+    check(rf.verts.length === 6, `直轨两头各有路径点 + 左右两根轨的截面中心 = 6 个顶点，实际 ${rf.verts.length}`);
+    check(rf.mids.length === 3 && rf.edges.length === 0, '单段直轨中间也是这 3 个预设点，没有边');
+    check(rf.verts.some((v) => near(v[1], RAIL_SPAN / 2) && near(v[2], 5 - RAIL_RADIUS)), '截面中心在路径两侧 RAIL_SPAN/2、比路径低一个钢轨半径');
+
+    const mf = feats(railElem([{ ...line(10), kind: 'mono' }]));
+    check(mf.verts.length === 2 && mf.verts.every((v) => near(v[2], 5 + MONO_OFFSET)), '单轨只有两头的截面中心');
+    const tf2 = feats(railElem([{ ...line(10), kind: 'transition' }]));
+    check(tf2.verts.length === 8, `单双转换的两头双轨、单轨的点都有，实际 ${tf2.verts.length}`);
+
+    // 侧轨：下轨截面中心 + 外接正方形靠上轨的顶点
+    const sr: RailElem = { ...railElem([line(20)]), x: 0, y: 0, z: 0, heading: 0, side: { dir: -1, ends: [true, false] } };
+    const sf = feats(sr);
+    check(sf.verts.length === 4 && sf.mids.length === 2 && sf.edges.length === 0, `侧轨 4 顶点 / 2 中点 / 没有边，实际 ${sf.verts.length}/${sf.mids.length}/${sf.edges.length}`);
+    check(sf.verts.some((v) => near(v[0], SIDE_BEND_TRIM) && near(v[1], 0) && near(v[2], 0)), '吸附点跟着缩短后的下轨走');
+    check(sf.verts.some((v) => near(v[0], 20) && near(v[1], -RAIL_RADIUS) && near(v[2], RAIL_RADIUS)), '顶点在靠上轨一侧、比中心高一个半径');
+
+    // 盘点：路口的两角、中点和圆盘中心
+    const cp = (type: 'start' | 'check', rot: Piece['rot']): Piece => ({ id: 3, kind: 'piece', type, x: 0, y: 0, z: 0, rot });
+    const cs = feats(cp('start', 0)), cc = feats(cp('check', 1));
+    check(cs.verts.length === 2 && cs.mids.length === 2 && cs.edges.length === 0, '起点一个路口：2 顶点 / 2 中点');
+    check(cc.verts.length === 4 && cc.mids.length === 3 && cc.edges.length === 0, '小节盘点两个路口：4 顶点 / 3 中点');
+    check(cs.verts.every((v) => near(v[0], footprint(cp('start', 0)).x1)), '起点的吸附点在路口那条边上');
+    check(feats(cp('start', 2)).verts.every((v) => near(v[0], footprint(cp('start', 2)).x0)), '转过去的起点路口在另一边');
+
+    // 机关：只有对准方块顶面的预设点
+    const of = feats({ id: 4, kind: 'obj', type: 'P_Modul_01', x: 0, y: 0, z: 0, rot: 0 } as Obj);
+    check(of.edges.length === 0, '机关没有边');
+    check(new Set(of.verts.map((v) => v[2])).size <= of.verts.length / 4, '机关的顶点都在对准方块的顶面上');
 
     // 倾斜的路面：吸附点要跟着转到世界坐标
     const flat = { ...b };
