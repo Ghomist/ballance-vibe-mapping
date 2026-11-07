@@ -373,6 +373,23 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     for (const w of woods) check(groupsOf(`A_Floor_${w}`) === WOOD, `${w} 要进路面物理组、02 声音组和影子组，实际 ${groupsOf(`A_Floor_${w}`)}`);
   });
 
+  scenario('NMO：影子组的物体不共用网格，别的物体照常共用', async () => {
+    const d = level();
+    const put = (id: number, name: string, extra = {}) => { d.elems[id] = { id, kind: 'asset', name, x: id * 20, y: 500, z: 0, rot: 0, ...extra } as Elem; };
+    put(60, 'Modul_02'); put(61, 'Modul_02'); put(62, 'Modul_02'); // 普通的
+    put(63, 'WoodPlate', { scale: [2, 1] }); put(64, 'WoodPlate', { scale: [2, 1] }); // 拉伸过的，缓存里是同一份
+    put(65, 'RailCrossing'); put(66, 'RailCrossing'); // 不进影子组
+    const n = buildNmoDoc(exportBoxScene(d), lib());
+    const shadow = n.groups.find((g) => g.name === 'Shadow')!.objects.map((i) => n.objects[i].mesh);
+    check(shadow.length >= 5 && new Set(shadow).size === shadow.length, `影子组 ${shadow.length} 个物体，只有 ${new Set(shadow).size} 个网格`);
+    const crossing = n.objects.filter((o) => o.name.startsWith('A_Rail_RailCrossing'));
+    check(crossing.length === 2 && crossing[0].mesh === crossing[1].mesh, '不进影子组的物体继续共用网格');
+    const names = n.meshes.map((m) => m.name);
+    check(new Set(names).size === names.length, '网格名不能重复');
+    const r = await readNmo(await writeNmo(n));
+    check(r.crcOk && r.chunksOk && r.sizesOk, 'NMO 校验通过');
+  });
+
   scenario('NMO：贴图全部外部引用', () => {
     const d = level();
     d.elems[60] = { id: 60, kind: 'asset', name: 'SkyLayerVortex', x: 0, y: 0, z: -80, rot: 0 };

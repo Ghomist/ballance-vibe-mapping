@@ -211,7 +211,16 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     }
     return i;
   };
+  const usedMeshes = new Set<number>();
   const addObject = (o: NmoDocObject, groups: string[]) => {
+    // 游戏按网格生成影子：Shadow 组的物体共用网格，球的影子会在每个物体上各投一份（原版里这些物体的网格都是独立的）
+    if (o.mesh !== null && groups.includes('Shadow') && usedMeshes.has(o.mesh)) {
+      const m = doc.meshes[o.mesh];
+      names.add(m.name);
+      doc.meshes.push({ ...m, name: unique(m.name) });
+      o = { ...o, mesh: doc.meshes.length - 1 };
+    }
+    if (o.mesh !== null) usedMeshes.add(o.mesh);
     const i = doc.objects.length;
     doc.objects.push(o);
     for (const g of groups) group(g).objects.push(i);
