@@ -54,8 +54,8 @@ const START_PORT = 7.386, CHECK_PORT = 4.924;
 
 export const SCENES: { name: string; build: () => Doc }[] = [
   {
-    // 第一次打开（本机没有存过地图）时显示的场景：起点 → 路 → 小节盘点 → 路 → 终点气球
-    name: '默认场景',
+    // 文件菜单里的示例：起点 → 路 → 小节盘点 → 路 → 终点气球（第一次打开是空白场景）
+    name: '最小场景',
     build: () => ({
       elems: {
         1: { id: 1, kind: 'piece', type: 'start', x: 0, y: 0, z: 0, rot: 0 },

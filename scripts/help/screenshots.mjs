@@ -1,28 +1,26 @@
-// 帮助教程的动图录制：无头 Edge 打开编辑器，按 clips.mjs 里的分镜真实操作（鼠标、键盘事件），逐帧截图，ffmpeg 合成 MP4（截图是 WebP）。
-//   页面的时钟（performance.now / requestAnimationFrame）由脚本接管：页面按 60 帧 / 秒推进，每 1/30 秒截一帧，录得再慢画面也是匀速的。
-//   不用素材库、顶栏菜单的分镜只录 3D 视图；每段控制在 8 秒以内（超了会提示）。
-//   画面上叠一个光标、点击波纹和按键提示，看得出在按什么。
+// 帮助教程的截图：无头 Edge 打开编辑器，按 stills.mjs 里的场景摆好（可以真实操作：打开菜单、按住右键漫游……），截一张全尺寸的图。
+//   实时演示（demos.ts）只放 3D 视图；界面、菜单、漫游这类用截图。截图时页面的时钟由脚本接管，按需推进几帧。
 //
-// 用法：node scripts/help/record.mjs [只录这些名字…] [--url http://127.0.0.1:5173/] [--keep]
-//   不给名字时录全部；输出到 public/help/<名字>.mp4（截图是 .webp）；--keep 保留逐帧的图片（在系统临时目录里）
-// 依赖：Edge（EDGE 环境变量可以指定路径）、ffmpeg（PATH 里，带 libx264、libwebp）；先 npm run dev 开着开发服务器。
+// 用法：node scripts/help/screenshots.mjs [只截这些名字…] [--url http://127.0.0.1:5173/]
+//   输出到 public/help/<名字>.webp（1600 × 900，不缩小）
+// 依赖：Edge（EDGE 环境变量可以指定路径）、ffmpeg（PATH 里，带 libwebp）；先 npm run dev 开着开发服务器。
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLIPS } from './clips.mjs';
+import { STILLS as CLIPS } from './stills.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = join(ROOT, 'public/help');
 const args = process.argv.slice(2);
 const opt = (k) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : undefined; };
 const URL_ = opt('url') ?? 'http://127.0.0.1:5173/';
-const KEEP = args.includes('--keep');
+const KEEP = false;
 const only = args.filter((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--url'));
 const EDGE = process.env.EDGE ?? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-/** 录制的窗口大小；输出缩到 OUT_W 宽 */
-const W = 1280, H = 720, OUT_W = 960;
+/** 截图的窗口大小（输出也是这么大） */
+const W = 1600, H = 900;
 /**
  * 输出 30 帧 / 秒；页面按 60 帧 / 秒推进（每输出一帧走两步）。
  * 镜头惯性、缓动这些是按帧衰减的，页面帧率和实际使用时一样，动起来才和真的一样（帧率低了松手后会一直飘）
@@ -147,14 +145,14 @@ async function ensurePage() {
 // ---------------- 帧 ----------------
 let recDir = null, fno = 0;
 /** 截哪一块（null：整个窗口；只录 3D 视图时是视图里居中的 16:9） */
-let crop = null;
+const crop = null;
 /** 推进 n 帧（录制中则每帧截图） */
 async function frame(n = 1) {
   for (let i = 0; i < n; i++) {
     await js(`for (let i = 0; i < ${SUB}; i++) window.__step(${DT / SUB})`);
     if (recDir) {
-      const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: 92, ...(crop ? { clip: { ...crop, scale: 1 } } : {}) });
-      writeFileSync(join(recDir, String(fno++).padStart(5, '0') + '.jpg'), Buffer.from(data, 'base64'));
+      const { data } = await send('Page.captureScreenshot', { format: 'png', ...(crop ? { clip: { ...crop, scale: 1 } } : {}) });
+      writeFileSync(join(recDir, String(fno++).padStart(5, '0') + '.png'), Buffer.from(data, 'base64'));
     }
   }
 }
@@ -363,35 +361,16 @@ async function recordClip(c) {
   await call((on) => document.body.classList.toggle('rec-notips', !on), !!c.tips);
   await c.setup?.(api);
   await wait(c.settle ?? 1500);
-  // 不用素材库、顶栏菜单的分镜只录 3D 视图（视图顶部的 16:9），按键提示也挪到这块的中间
-  crop = c.full || c.still ? null : await call(() => {
-    const r = document.getElementById('viewport').getBoundingClientRect();
-    const h = Math.min(r.height, Math.round((r.width * 9) / 16)), w = Math.round((h * 16) / 9);
-    // 贴着视图顶部取：左上角的属性面板不会被切掉
-    return { x: Math.round(r.left + (r.width - w) / 2), y: Math.round(r.top), width: w, height: h };
-  });
-  await call((cx, bottom) => { const k = document.getElementById('rec-keys'); k.style.left = cx + 'px'; k.style.bottom = bottom + 'px'; },
-    crop ? crop.x + crop.width / 2 : W / 2, crop ? H - (crop.y + crop.height) + 22 : 52);
+  await js(`document.getElementById('rec-cursor').style.display = 'none'; 1`); // 截图里不要模拟的光标
   const dir = mkdtempSync(join(tmpdir(), `bvm-help-${c.name}-`));
   recDir = dir; fno = 0;
-  await wait(c.still ? 0 : 300); // 开头停一下
-  if (!c.still) await c.act(api);
-  await wait(c.still ? 0 : 700); // 结尾停一下再循环
+  await wait(0); // 截一帧
   recDir = null;
-  await c.teardown?.(api); // 收尾（不录）：比如把录的时候打开的显示开关关回去
-  if (c.still) {
-    // 截图：只要最后一帧
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, String(fno - 1).padStart(5, '0') + '.jpg'), '-vf', `scale=${OUT_W}:-2`, '-c:v', 'libwebp', '-quality', '85', join(OUT, c.name + '.webp')]);
-  } else {
-    // 动图用 H.264 的 MP4：页面上是自动播放、循环、静音、没有控件的 <video>，看起来和动图一样，体积只有动态 WebP 的几分之一
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', join(dir, '%05d.jpg'), '-vf', `scale=${OUT_W}:-2:flags=lanczos`,
-      '-c:v', 'libx264', '-preset', 'slow', '-crf', String(c.crf ?? 28), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', join(OUT, c.name + '.mp4')]);
-  }
-  if (!KEEP) rmSync(dir, { recursive: true, force: true });
-  const file = join(OUT, c.name + (c.still ? '.webp' : '.mp4'));
-  const kb = Math.round((await import('node:fs')).statSync(file).size / 1024);
-  const sec = fno / FPS;
-  console.log(`${c.name}：${sec.toFixed(1)} 秒${sec > 8 ? '（超过 8 秒！）' : ''}，${kb} KB，录了 ${((Date.now() - t0) / 1000).toFixed(0)} 秒${KEEP ? '（帧在 ' + dir + '）' : ''}`);
+  await c.teardown?.(api); // 收尾：比如松开按住的右键、关掉打开的菜单
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, String(fno - 1).padStart(5, '0') + '.png'), '-c:v', 'libwebp', '-quality', '88', join(OUT, c.name + '.webp')]);
+  rmSync(dir, { recursive: true, force: true });
+  const kb = Math.round((await import('node:fs')).statSync(join(OUT, c.name + '.webp')).size / 1024);
+  console.log(`${c.name}：${kb} KB，用了 ${((Date.now() - t0) / 1000).toFixed(0)} 秒`);
 }
 ws.close();
 proc.kill();

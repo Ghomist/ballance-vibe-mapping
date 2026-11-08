@@ -1,0 +1,12 @@
+{
+  "name": "Ballance Vibe Mapping",
+  "short_name": "BVM",
+  "description": "Ballance 制图器",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1d2330",
+  "theme_color": "#1d2330",
+  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

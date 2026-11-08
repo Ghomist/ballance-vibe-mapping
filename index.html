@@ -2,9 +2,34 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#1d2330" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.webmanifest" />
   <title>Ballance Vibe Mapping</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <script>
+    // 帮助里的实时演示（?demo=名字，见 src/box/demo.ts）：编辑器跑在一个内存里的假存储上，不读也不写用户的地图和设置
+    (function () {
+      var q = new URLSearchParams(location.search);
+      if (!q.has('demo')) return;
+      var m = {};
+      m['bvm.box.prefs'] = JSON.stringify({ theme: q.get('theme') || 'dark', side: 'right', folded: true, followPick: false, align: true, grid: false, gizmo: true, gridShown: true });
+      m['bvm.box.helpTip'] = '1';
+      var s = {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null; },
+        setItem: function (k, v) { m[k] = String(v); },
+        removeItem: function (k) { delete m[k]; },
+        clear: function () { m = {}; },
+        key: function (i) { return Object.keys(m)[i] || null; },
+        get length() { return Object.keys(m).length; },
+      };
+      Object.defineProperty(window, 'localStorage', { value: s, configurable: true });
+      document.documentElement.classList.add('demo');
+    })();
+  </script>
   <link rel="stylesheet" href="./src/style.css" />
   <link rel="stylesheet" href="./src/box/app.css" />
 </head>
@@ -35,17 +60,34 @@
     </div>
 
     <div class="tb-center">
+      <!-- 编辑模式：点按钮或按 1～6 永久切换（蓝色，再点一次取消），按住字母 / 修饰键临时切换（橙色）；什么都不选是选择模式 -->
       <div class="seg" id="tools">
-        <button data-tool="select" data-help="1.3" title="选择：左键点选、拖动框选；G 移动、R 旋转（1）">
-          <svg viewBox="0 0 16 16"><path d="M3 2l9.5 6-4.2.8 2.4 4.6-1.7.9-2.4-4.6L3 12.6z" /></svg>选择<kbd>1</kbd>
+        <button data-mode="move" data-help="1.3" title="移动：拖东西或箭头移动（1）&#10;按住 G 临时切换；轻按 G 是自由移动">
+          <svg viewBox="0 0 16 16"><path d="M8 1.8v12.4M1.8 8h12.4M8 1.8L6.3 3.5M8 1.8l1.7 1.7M8 14.2l-1.7-1.7M8 14.2l1.7-1.7M1.8 8l1.7-1.7M1.8 8l1.7 1.7M14.2 8l-1.7-1.7M14.2 8l-1.7 1.7" /></svg>移动<kbd>1</kbd>
         </button>
-        <button data-tool="guard" data-help="2.4" title="护栏：点路边放整条直边，沿路边拖放一段（2 / H）">
-          <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg>护栏<kbd>2</kbd>
+        <button data-mode="stretch" data-help="1.4" title="拉伸：拖蓝色方块或路面的边改尺寸，拖橙色方块或侧面下半截改厚度（2）&#10;按住 Ctrl 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M5 5h6v6H5z M1.5 8H5M11 8h3.5M1.5 8l1.5-1.5M1.5 8L3 9.5M14.5 8L13 6.5M14.5 8L13 9.5" /></svg>拉伸<kbd>2</kbd>
         </button>
-        <button data-tool="split" data-help="1.5" title="切分：点路面在鼠标处切成两段（3 / K）">
-          <svg viewBox="0 0 16 16"><path d="M2 5h12v6H2z M8 2.5v11" /></svg>切分<kbd>3</kbd>
+        <button data-mode="slope" data-help="1.4" title="坡面：拖边上的圆圈上下拉成坡（3）&#10;按住 Alt 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M1.5 13.5h13V5z M11 2.5v4M11 2.5L9.8 3.7M11 2.5l1.2 1.2" /></svg>坡面<kbd>3</kbd>
+        </button>
+        <button data-mode="rotate" data-help="1.3" title="旋转：拖圆环绕那根轴转，拖东西绕竖直轴转（4）&#10;按住 R 临时切换；轻按 R 是自由旋转">
+          <svg viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6" ry="2.6" /><path d="M8 2v12" /><circle cx="8" cy="8" r="0.9" /><path d="M11.8 4.2l2 .9-1.4 1.6" /></svg>旋转<kbd>4</kbd>
+        </button>
+        <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，Tab 换方向，右键退出（5）&#10;按住 K 临时切换">
+          <svg viewBox="0 0 16 16"><circle cx="4.5" cy="11.5" r="2" /><circle cx="11.5" cy="11.5" r="2" /><path d="M6 10L12.5 2.5M10 10L3.5 2.5" /></svg>切分<kbd>5</kbd>
+        </button>
+        <button data-mode="pattern" data-help="1.4" title="花纹：点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（6）&#10;按住 P 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg>花纹<kbd>6</kbd>
         </button>
       </div>
+      <button id="guard-btn" data-tool="guard" data-help="2.4" class="ghost toggle" title="护栏：点路边放整条直边，沿路边拖放一段（H）">
+        <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg>护栏
+      </button>
+      <!-- 触摸屏：单指拖默认是环视，长按再拖是框选一次；打开它之后单指拖都是框选、轻点是加选减选 -->
+      <button id="touch-marquee" class="toggle touch-only" data-help="1.6" title="多选：打开后单指拖动是框选，轻点是加选 / 减选；不打开时长按再拖也能框选">
+        <svg viewBox="0 0 16 16"><path d="M2.5 2.5h3M7 2.5h2M10.5 2.5h3v3M13.5 7v2M13.5 10.5v3h-3M9 13.5H7M5.5 13.5h-3v-3M2.5 9V7M2.5 5.5" /></svg>
+      </button>
       <div class="sep"></div>
       <div class="group">
         <button id="merge" data-help="1.5" class="ghost op" title="把选中的几块路面合成一块（同样式、同高度、拼起来是矩形）（Ctrl+J）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg>合并</button>
@@ -61,6 +103,9 @@
         <button id="grid" data-help="1.7" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（Shift+Tab）
 默认步长 1，设置里可改">
           <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg>格栅
+        </button>
+        <button id="gizmo" data-help="1.3" class="toggle" title="手柄：移动、旋转、拉伸、坡面模式里，选中的东西上显示对应的手柄（箭头、圆环、抓点），按住拖动">
+          <svg viewBox="0 0 16 16"><path d="M5 11h8.5M12 9.5l1.5 1.5-1.5 1.5 M5 11V2.5M3.5 4L5 2.5 6.5 4 M5 11l-3 3M2 12.2V14h1.8" /></svg>手柄
         </button>
         <button id="align" data-help="1.7" class="toggle active" title="自动对齐：边、中线、顶面靠近别的物体时对齐（S）&#10;旋转（R）时每次吸附 15°">
           <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg>对齐
@@ -96,6 +141,26 @@
       <button id="help" class="ghost" title="帮助：图文教程，悬停在按钮上按 F1 直接看相关的部分（F1）">
         <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.5c0 1.3-1.9 1.6-1.9 2.8M8 11.4v.3" /></svg>帮助
       </button>
+      <!-- 触摸屏：顶栏放不下的按钮收进这里 -->
+      <span class="dropdown touch-only">
+        <button id="more-btn" class="ghost" title="更多"><svg viewBox="0 0 16 16"><path d="M3.5 8h.01M8 8h.01M12.5 8h.01" stroke-width="2.6" /></svg></button>
+        <div class="dropdown-menu" id="more-menu">
+          <button data-more="help"><span>帮助</span><small>图文教程</small></button>
+          <button data-more="settings"><span>设置</span></button>
+          <button data-more="theme"><span>切换亮色 / 暗色</span></button>
+          <button data-more="fullscreen" hidden><span>全屏</span><small>安卓上还会锁定横屏</small></button>
+          <div class="menu-sep"></div>
+          <button data-more="gizmo" class="check"><span>手柄</span></button>
+          <button data-more="align" class="check"><span>自动对齐</span></button>
+          <button data-more="grid" class="check"><span>格栅</span></button>
+          <div class="menu-sep"></div>
+          <button data-more="merge"><span>合并路面</span></button>
+          <button data-more="group"><span>绑定</span></button>
+          <button data-more="ungroup"><span>解绑</span></button>
+          <div class="menu-sep"></div>
+          <button data-more="about"><span>关于</span></button>
+        </div>
+      </span>
       <button id="about" class="ghost" title="关于">
         <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 7.2v3.6M8 5v.4" /></svg>关于
       </button>
@@ -131,6 +196,14 @@
     <div id="hints"></div>
     <div id="status"></div>
   </footer>
+  <!-- 触摸屏竖着拿时：请横过来（安卓上可以全屏并锁定横屏） -->
+  <div id="rotate-hint">
+    <svg viewBox="0 0 64 64"><rect x="20" y="8" width="24" height="44" rx="4" /><path d="M29 46h6" /><path class="arrow" d="M50 22a18 18 0 0 1 4 20M54 42l-5-1M54 42l1-5" /></svg>
+    <b>请把手机横过来</b>
+    <p>BVM 需要横屏使用</p>
+    <button id="rotate-lock" class="primary" hidden>全屏并横屏</button>
+    <small id="rotate-ios" hidden>iPhone 上请先关掉控制中心里的「竖排方向锁定」</small>
+  </div>
   <script type="module" src="/src/box/app.ts"></script>
 </body>
 </html>

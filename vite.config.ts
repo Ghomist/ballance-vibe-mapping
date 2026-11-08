@@ -43,4 +43,7 @@ export default defineConfig(({ command }) => ({
   // 构建产物放在 _app/，不和 public/assets（资产库模型）混在一起
   build: { assetsDir: '_app', rollupOptions: { input: { main: 'index.html', legacy: 'legacy.html' } } },
   plugins: [exportApi()],
+  // 监听所有网卡：同一局域网里的手机、平板能直接打开开发服务器调试
+  server: { host: '0.0.0.0' },
+  preview: { host: '0.0.0.0' },
 }));

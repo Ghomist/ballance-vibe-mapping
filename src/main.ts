@@ -1,3 +1,5 @@
+import { installCursors } from './box/cursors';
+installCursors();
 import { Editor, type Hint, type Tool } from './editor';
 import { OBJ_TYPES, sectorCount } from './model/objects';
 import { thumbnail } from './view/thumbs';

@@ -77,7 +77,7 @@ body.lib-resizing #work #palette { transition: none; }
 #work #palette > :not(.lib-resize) { transition: opacity 0.12s ease; }
 #work #palette.hiding > :not(.lib-resize) { opacity: 0; }
 #work #palette.narrow { width: 36px; }
-#work #palette.folded { cursor: pointer; }
+#work #palette.folded { cursor: var(--cur-pointer, pointer); }
 #work #palette.folded .lib-head { flex-direction: column; gap: 10px; padding: 10px 0; }
 #work #palette.folded .lib-head .title { display: block; writing-mode: vertical-rl; letter-spacing: 4px; }
 #work #palette.folded .lib-head .fold { order: -1; margin: 0; }
@@ -94,14 +94,14 @@ body.lib-resizing #work #palette { transition: none; }
 #work.dock-bottom #palette.folded .fold { transform: rotate(-90deg); }
 
 /* 拖边缘改宽度（在底部时改高度），双击恢复默认 */
-.lib-resize { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 6px; cursor: ew-resize; }
+.lib-resize { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 6px; cursor: var(--cur-ew-resize, ew-resize); }
 #work.dock-left .lib-resize { left: auto; right: 0; }
-#work.dock-bottom .lib-resize { top: 0; bottom: auto; left: 0; right: 0; width: auto; height: 6px; cursor: ns-resize; }
+#work.dock-bottom .lib-resize { top: 0; bottom: auto; left: 0; right: 0; width: auto; height: 6px; cursor: var(--cur-ns-resize, ns-resize); }
 .lib-resize::after { content: ''; position: absolute; inset: 0; background: var(--accent); opacity: 0; transition: opacity 0.12s; }
 .lib-resize:hover::after, .lib-resize.on::after { opacity: 0.6; }
 #palette.folded .lib-resize { display: none; }
-body.lib-resizing, body.lib-resizing * { cursor: ew-resize !important; }
-body.lib-resizing.ns, body.lib-resizing.ns * { cursor: ns-resize !important; }
+body.lib-resizing, body.lib-resizing * { cursor: var(--cur-ew-resize, ew-resize) !important; }
+body.lib-resizing.ns, body.lib-resizing.ns * { cursor: var(--cur-ns-resize, ns-resize) !important; }
 
 /* ---------------- 属性面板（素材库的另一侧） ---------------- */
 #props {
@@ -118,8 +118,8 @@ body.lib-resizing.ns, body.lib-resizing.ns * { cursor: ns-resize !important; }
   width: 100%; height: 26px; padding: 0 6px; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit;
 }
 #props input:focus, #props select:focus { outline: none; border-color: var(--accent); }
-.num-field input:not(:focus) { cursor: ew-resize; }
-body.num-drag, body.num-drag * { cursor: ew-resize !important; user-select: none; }
+.num-field input:not(:focus) { cursor: var(--cur-ew-resize, ew-resize); }
+body.num-drag, body.num-drag * { cursor: var(--cur-ew-resize, ew-resize) !important; user-select: none; }
 #props .row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--text-2); }
 #props .row label { display: flex; align-items: center; gap: 3px; }
 
@@ -133,7 +133,7 @@ body.num-drag, body.num-drag * { cursor: ew-resize !important; user-select: none
 .sec-label { position: fixed; z-index: 3; pointer-events: none; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 9px; background: rgba(20, 24, 32, 0.78); border: 1px solid rgba(255, 170, 80, 0.6); color: #ffd2a0; font: 600 11px system-ui, sans-serif; }
 
 /* 拖着素材往视图里放时 */
-body.placing, body.placing * { cursor: grabbing !important; }
+body.placing, body.placing * { cursor: var(--cur-grabbing, grabbing) !important; }
 
 /* ---------------- 淡入淡出：面板、标签、HUD 统一用 .fade / .shown ---------------- */
 .fade { opacity: 0; transition: opacity 0.14s ease, transform 0.14s ease; }
@@ -270,7 +270,7 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .confirm-box .hist-warn { margin: 0 0 10px; color: #ffb35c; font-size: 12px; font-weight: 700; white-space: normal; }
 [data-theme='light'] .confirm-box .hist-warn { color: #b25a10; }
 .hist-list { display: flex; flex-direction: column; gap: 4px; max-height: min(60vh, 460px); margin-bottom: 12px; overflow-y: auto; }
-.hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; transition: background 0.12s; }
+.hist-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; cursor: var(--cur-pointer, pointer); transition: background 0.12s; }
 .hist-row:hover { background: var(--hover); }
 .hist-row.on { border-color: var(--line-2); }
 .hist-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -332,12 +332,11 @@ select.native { display: none; }
 #viewcube canvas { display: block; width: 112px; height: 112px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.35)); }
 #viewcube .vc-label {
   padding: 1px 9px; border-radius: 9px; font: 600 11px system-ui, "Microsoft YaHei", sans-serif; color: var(--text-2);
-  background: var(--menu); border: 1px solid var(--line); cursor: default; user-select: none;
+  background: var(--menu); border: 1px solid var(--line); cursor: var(--cur-default, default); user-select: none;
 }
-#viewcube.ortho .vc-label { color: #0b2a14; background: #6fe0a0; border-color: #6fe0a0; cursor: pointer; }
+#viewcube.ortho .vc-label { color: #0b2a14; background: #6fe0a0; border-color: #6fe0a0; cursor: var(--cur-pointer, pointer); }
 
 /* ---------------- 修饰键：鼠标指针 + 指针旁边的模式提示 ---------------- */
-#viewport canvas.mod-cursor { cursor: var(--mod-cursor) !important; }
 #mod-chip {
   position: fixed; z-index: 40; pointer-events: none; display: flex; align-items: center; gap: 4px; padding: 4px 9px 4px 6px;
   border-radius: 8px; background: var(--tip-bg); border: 1px solid var(--tip-line); color: var(--text);
@@ -445,3 +444,136 @@ select.native { display: none; }
 /* 悬停提示里的「F1 看教程」 */
 #tooltip .tip-help { display: flex; align-items: center; gap: 5px; margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--tip-line); color: var(--text-3); font-size: 11px; }
 @media (max-width: 1680px) { #help { font-size: 0; gap: 0; padding: 0 8px; } }
+
+/* ---------------- 触摸屏（手机）：body.touch-ui，见 app.ts 的 touchUI ---------------- */
+.touch-only { display: none !important; }
+body.touch-ui #touch-marquee.touch-only { display: inline-flex !important; }
+body.touch-ui span.touch-only { display: inline-block !important; }
+#more-menu [hidden], #rotate-hint [hidden] { display: none !important; }
+body.touch-ui {
+  height: 100dvh; touch-action: manipulation; overscroll-behavior: none;
+  /* 横屏时刘海、底部手势条在左右和下面：让开 */
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+/* 顶栏：只留图标，放不下的收进「更多」 */
+body.touch-ui #toolbar { gap: 4px; padding: 4px 8px; min-height: 40px; }
+body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right { gap: 4px; }
+body.touch-ui .brand { font-size: 0; gap: 0; margin-right: 2px; }
+body.touch-ui #map-name, body.touch-ui #theme, body.touch-ui #settings, body.touch-ui #help, body.touch-ui #about,
+body.touch-ui #merge, body.touch-ui #group, body.touch-ui #ungroup { display: none !important; }
+body.touch-ui #toolbar button:not(.dropdown-menu button) { font-size: 0; gap: 0; height: 32px; min-width: 32px; padding: 0 7px; justify-content: center; }
+body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector, body.touch-ui #toolbar #view-btn { font-size: 12.5px; gap: 3px; }
+body.touch-ui #tools kbd { display: none; }
+body.touch-ui .sep { margin: 0 1px; }
+body.touch-ui .dropdown-menu button { padding: 9px 12px; }
+/* 素材库：窄一点（两列卡片），不能拖边缘改大小，不能停靠底部 */
+body.touch-ui #work #palette:not(.narrow) { width: min(var(--lib-w, 284px), 220px); }
+body.touch-ui #work #palette.narrow { width: 40px; }
+body.touch-ui .lib-resize, body.touch-ui #palette .lib-dock [data-dock='bottom'], body.touch-ui #palette .lib-foot { display: none !important; }
+body.touch-ui #palette .lib-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+body.touch-ui #palette .lib-search { padding: 4px 10px; }
+body.touch-ui #work #palette .lib-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+/* 属性面板：窄一点，点标题收起成一行 */
+body.touch-ui #props { width: 210px; padding: 8px 10px; gap: 5px 6px; grid-template-columns: 56px 1fr; }
+body.touch-ui #props .title { display: flex; align-items: center; justify-content: space-between; gap: 6px; cursor: var(--cur-pointer, pointer); }
+body.touch-ui #props .title::after { content: ''; flex: none; width: 7px; height: 7px; margin-right: 3px; border-right: 1.6px solid var(--text-3); border-bottom: 1.6px solid var(--text-3); transform: rotate(45deg) translateY(-2px); transition: transform 0.15s; }
+body.touch-ui #props.mini .title::after { transform: rotate(-45deg); }
+body.touch-ui #props.mini > :not(.title) { display: none !important; }
+body.touch-ui #props.mini .title small { display: none; }
+/* 视图里的小东西 */
+body.touch-ui #viewcube { transform: scale(0.72); transform-origin: top right; }
+body.touch-ui #fps { display: none; }
+body.touch-ui #statusbar { min-height: 22px; padding: 2px 10px; font-size: 11px; }
+body.touch-ui .settings-panel { max-height: calc(100% - 16px); overflow-y: auto; }
+/* 帮助：几乎铺满 */
+body.touch-ui #help-modal .help-win { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 170px minmax(0, 1fr); border-radius: 12px; }
+body.touch-ui .help-body { padding: 4px 24px 40px; }
+
+/* 竖着拿时：请横过来 */
+#rotate-hint { display: none; }
+@media (orientation: portrait) {
+  body.touch-ui #rotate-hint {
+    position: fixed; inset: 0; z-index: 300; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 24px; background: var(--bg); color: var(--text); text-align: center;
+  }
+}
+#rotate-hint svg { width: 92px; height: 92px; fill: none; stroke: var(--accent-2); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; animation: rotate-hint 2.6s ease-in-out infinite; }
+#rotate-hint b { font-size: 18px; }
+#rotate-hint p { margin: 0 0 8px; color: var(--text-2); }
+#rotate-hint small { color: var(--text-3); font-size: 12px; max-width: 260px; line-height: 1.5; }
+#rotate-hint button { height: 38px; padding: 0 18px; font-size: 14px; }
+@keyframes rotate-hint { 0%, 20% { transform: rotate(0); } 45%, 75% { transform: rotate(-90deg); } 100% { transform: rotate(0); } }
+body.touch-ui #palette .lib-tabs button { flex: none; white-space: nowrap; }
+/* 更窄的手机（iPhone SE 横屏 667 宽）：再收一档 */
+@media (max-width: 760px) {
+  body.touch-ui .brand { display: none; }
+  body.touch-ui #toolbar, body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right, body.touch-ui .group { gap: 2px; }
+  body.touch-ui #toolbar { padding: 4px 6px; }
+  body.touch-ui #toolbar button:not(.dropdown-menu button) { padding: 0 5px; min-width: 30px; }
+  body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector, body.touch-ui #toolbar #view-btn { font-size: 11.5px; padding: 0 6px; }
+  body.touch-ui .sep { display: none; }
+  body.touch-ui #toolbar .caret { display: none; }
+}
+
+/* ---------------- 帮助里的实时演示（?demo=名字）：只要 3D 视图 ---------------- */
+html.demo #toolbar, html.demo #palette, html.demo #statusbar, html.demo #fps, html.demo #rotate-hint, html.demo #tooltip { display: none !important; }
+html.demo body { grid-template-rows: minmax(0, 1fr); padding: 0; }
+html.demo #work { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
+html.demo:not(.demo-props) #props { display: none !important; }
+html.demo #props { transform: scale(0.82); transform-origin: top left; }
+html.demo #viewcube { transform: scale(0.7); transform-origin: top right; }
+
+/* ---------------- 帮助：一页一个小节、翻页动效、实时演示框 ---------------- */
+.help-doc .help-chapter { margin: 26px 0 2px; color: var(--text-3); font-size: 12px; letter-spacing: 1px; }
+.help-doc > h1 { margin: 4px 0 14px; padding-top: 0; border-top: none; font-size: 22px; }
+.help-doc > h1:first-child { margin-top: 26px; }
+.help-doc.enter { animation: help-in 0.22s ease both; }
+.help-doc.enter-next { animation: help-in-next 0.26s cubic-bezier(0.2, 0.8, 0.3, 1) both; }
+.help-doc.enter-prev { animation: help-in-prev 0.26s cubic-bezier(0.2, 0.8, 0.3, 1) both; }
+@keyframes help-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes help-in-next { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
+@keyframes help-in-prev { from { opacity: 0; transform: translateX(-22px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .help-doc.enter, .help-doc.enter-next, .help-doc.enter-prev { animation-duration: 0.01s; } }
+.help-pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 36px; padding-top: 16px; border-top: 1px solid var(--help-line); }
+.help-pager a { display: flex; flex-direction: column; gap: 2px; max-width: 48%; padding: 8px 12px; border-radius: 8px; color: var(--text); text-decoration: none; }
+.help-pager a:hover { background: var(--hover); text-decoration: none; }
+.help-pager a.next { margin-left: auto; text-align: right; }
+.help-pager small { color: var(--text-3); font-size: 11px; }
+.help-nav a.lv1 + a.lv1 { margin-top: 10px; }
+/* 实时演示：16:9 的框里嵌一个只有 3D 视图的编辑器，看着就行，点不了 */
+.help-doc .demo-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 10px; border: 1px solid var(--help-line); background: var(--help-fig); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22); }
+.help-doc .demo-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; opacity: 0; transition: opacity 0.3s ease; }
+.help-doc .demo-frame.ready iframe { opacity: 1; }
+.help-doc .demo-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 13px; }
+.help-doc figure img { aspect-ratio: auto; object-fit: contain; }
+
+/* 编辑模式：永久切换是蓝色（.active，和别的工具一样），按住键临时切换是橙色 */
+.seg button.temp, .seg button.active.temp { background: #f08c2e; color: #fff; box-shadow: 0 1px 4px rgba(200, 110, 30, 0.45); }
+#guard-btn.active { color: #cfe0ff; background: rgba(91, 141, 239, 0.18); border-color: rgba(91, 141, 239, 0.55); }
+
+/* 触摸屏：格栅、对齐、手柄这三个开关收进「⋯」菜单（菜单里开着的打勾） */
+body.touch-ui #grid, body.touch-ui #align, body.touch-ui #gizmo { display: none !important; }
+#more-menu button.check.on::after { content: ''; width: 9px; height: 5px; margin: -3px 2px 0 auto; border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); }
+#more-menu button.check { flex-direction: row; align-items: center; }
+
+/* 顶栏放不下时分档收（悬停提示里有名字和按键）：
+   2300 以下：编辑按钮、主题、设置、帮助、关于只留图标，模式按钮去掉数字键，格栅 / 手柄 / 对齐 / 护栏只留图标；
+   1440 以下：模式按钮也只留图标，地图名窄一些、标志只留球；1260 以下：和手机一样，次要的按钮收进「⋯」（body.narrow，见 app.ts） */
+@media (max-width: 2300px) {
+  #toolbar .op, #theme, #settings, #help, #about { font-size: 0; gap: 0; padding: 0 8px; }
+  #tools kbd { display: none; }
+  #toolbar #grid, #toolbar #gizmo, #toolbar #align, #toolbar #guard-btn { font-size: 0; gap: 0; padding: 0 8px; }
+}
+@media (max-width: 1440px) {
+  #tools button { font-size: 0; gap: 0; padding: 0 9px; }
+  #toolbar .brand { font-size: 0; gap: 0; }
+  #map-name { width: 96px; }
+  #toolbar, .tb-left, .tb-center, .tb-right { gap: 6px; }
+  #toolbar .sep { margin: 0 2px; }
+}
+body.narrow span.touch-only { display: inline-block !important; }
+body.narrow #map-name, body.narrow #theme, body.narrow #settings, body.narrow #help, body.narrow #about,
+body.narrow #merge, body.narrow #group, body.narrow #ungroup, body.narrow #grid, body.narrow #align, body.narrow #gizmo { display: none !important; }
+
+/* 帮助正文可以选中复制，指针用文字的 */
+.help-body p, .help-body li, .help-body td { cursor: var(--cur-text, text); }
