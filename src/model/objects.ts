@@ -57,6 +57,8 @@ export interface ObjType {
    * 装饰没有对准点，底部贴住路面。
    */
   anchor?: Anchor;
+  /** 模型上额外的吸附点（本地坐标，z 相对物体原点）：对准方块顶面之外还要吸的地方 */
+  snapTops?: [number, number, number][];
   /** 其余对准方块（有几个方块的机关，例如秋千、跷跷板）：放置时哪个方块离路面格子最近就用哪个吸附 */
   more?: Anchor[];
   /** 道具（球、箱子、加分 / 加命球）：放的时候再抬高 settings.propLift，防止穿模 */
@@ -95,7 +97,7 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]], split: [[0, 1]] },
   { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]], split: [[0, 1]] },
   { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: [[1, 2]] },
-  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
+  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', snapTops: [[2.525, -2.515, 0], [2.525, 2.485, 0], [-2.475, 2.485, 0], [-2.475, -2.515, 0]], anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   // 灯塔：对准方块是塔底那块 5×5 的地板（厚 2.23，顶面就是塔里的地面），像一格路面一样对齐
   { type: 'Latern', cat: 'deco', label: '灯塔', anchor: [0, 0, 2.23, 5, 5, 2.23] },

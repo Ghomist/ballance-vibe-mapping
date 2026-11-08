@@ -613,9 +613,20 @@ const keyHtml = (k: string) => (k in MOUSE ? mouseIcon(k) : `<kbd>${k}</kbd>`);
 /** 当前情况下的按键提示（Blender 式） */
 function currentHints(): Hint[] {
   const H = (keys: string[], label: string): Hint => ({ keys, label });
-  if (touchUI && !drag && !guardMode && !splitMode) {
+  if (touchUI) {
+    // 手机：只提示手势，没有键盘和鼠标
+    const t = drag?.t;
+    if (t === 'marquee') return [H(['拖动'], '框选范围'), H(['松手'], '完成框选')];
+    if (t === 'place') return [H(['拖动'], '摆放位置'), H(['松手'], '放下')];
+    if ((drag?.t === 'grab' || drag?.t === 'rotate') && !drag.gz) return [H(['轻点'], drag.t === 'grab' ? '放下' : '确定')];
+    if (t && t !== 'click') {
+      const what = t === 'grab' || t === 'vsnap' ? '移动' : t === 'rotate' ? '旋转' : t === 'thick' ? '改厚度' : t === 'tilt' || t === 'railTilt' ? '拉坡' : '改尺寸';
+      return [H(['拖动'], what), H(['松手'], '完成')];
+    }
+    if (guardMode) return [H(['轻点路边'], '放整条直边'), H(['沿路边拖'], '放一段'), H(['拖把手'], '改长度'), H(['护栏按钮'], '退出')];
+    if (splitMode) return [H(['轻点路面'], '切开'), H(['切分按钮'], '退出')];
     const m = mode();
-    return [H(['单指拖'], touchMarquee ? '框选' : '环视'), ...(touchMarquee ? [] : [H(['长按再拖'], '框选')]), H(['双指'], '平移 / 缩放'), H(['轻点'], touchMarquee ? '加选 / 减选' : '选中'), ...(m ? [H([MODE_NAME[m]], MODE_HINT[m])] : [])];
+    return [H(['单指拖'], touchMarquee ? '框选' : '环视'), ...(touchMarquee ? [] : [H(['长按再拖'], '框选')]), H(['双指'], '平移 / 缩放'), H(['轻点'], touchMarquee ? '加选 / 减选' : '选中'), ...(m ? [H([MODE_NAME[m]], modeHint(m))] : [])];
   }
   if (drag?.t === 'place') return [H(['LMB'], '松开放下'), H(['R'], '旋转'), H(['RMB'], '取消')];
   if (drag?.t === 'grab') {
@@ -639,6 +650,8 @@ function currentHints(): Hint[] {
   else hs.push(H(['LMB'], '点选 / 框选'), H(['Shift', 'LMB'], '加选'), H(['F'], '看全部'));
   return hs;
 }
+/** 手机上切分没有 Tab 和右键，提示换成手势 */
+const modeHint = (m: Mode) => (touchUI && m === 'split' ? '点路面切开，再点一次按钮退出' : MODE_HINT[m]);
 /** 每个编辑模式在状态栏上的一句话 */
 const MODE_HINT: Record<Mode, string> = {
   move: '拖东西或箭头：移动',
@@ -1533,6 +1546,7 @@ el.addEventListener('pointerdown', (e) => {
   // 不带修饰键（或者鼠标下什么都没有）：只负责点选 / 框选；移动用 G，旋转用 R
   if (!h || !(ctrlV || altV || vHeld)) { drag = { t: 'click', id: h?.id ?? null, sx: e.clientX, sy: e.clientY, add: addPick(e) }; return; }
   if (!modDrag(e, h, ctrlV, altV)) { drag = { t: 'click', id: h.id, sx: e.clientX, sy: e.clientY, add: addPick(e) }; return; }
+  pauseControls(); // 拉伸、拉坡是单指拖的，这时候不环视
   drawOverlay(); syncProps(); updateStatus();
 });
 
@@ -2823,7 +2837,7 @@ function guardDown(e: PointerEvent) {
     snapshot();
     sel = new Set([end.id]);
     if (!startGuardLen(end.id, end.end)) { undo.pop(); return; }
-    el.setPointerCapture(e.pointerId);
+    el.setPointerCapture(e.pointerId); pauseControls();
     guardPreview = null;
     drawOverlay();
     return;
@@ -2834,6 +2848,7 @@ function guardDown(e: PointerEvent) {
   if (!pr || pr.dist > 1.5) return;
   el.setPointerCapture(e.pointerId);
   guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, moved: false };
+  pauseControls();
 }
 function guardUp(e: PointerEvent) {
   const gd = guardDrag!;
@@ -4145,7 +4160,7 @@ const gizmoShown = () => gizmoOn() && mode() === 'move' && sel.size > 0 && !guar
 /** 每帧画之前：放到选中整体的顶面中心，屏幕上保持大约 80 像素长（手指操作时再大一些） */
 function syncGizmo(cam: THREE.Camera) {
   // 拖手柄时暂停了环视（手指按在手柄上，OrbitControls 也会开始转）：拖完（松手、右键、Esc）恢复
-  if (gizmoPausedControls && !drag) { gizmoPausedControls = false; if (!fly) controls.enabled = true; moveGizmo.setHot(null); rotGizmo.setHot(null); }
+  if (gizmoPausedControls && !drag && !guardDrag) { gizmoPausedControls = false; if (!fly) controls.enabled = true; moveGizmo.setHot(null); rotGizmo.setHot(null); }
   syncRotGizmo(cam);
   const o = gizmoShown() ? gizmoOrigin() : null;
   moveGizmo.group.visible = !!o;
@@ -4209,8 +4224,7 @@ const modeButtons = [...document.querySelectorAll<HTMLButtonElement>('button[dat
 modeButtons.forEach((b) => b.addEventListener('click', () => {
   const m = b.dataset.mode as Mode;
   setPermMode(m);
-  const hint = touchUI && m === 'split' ? '点路面切开，再点一次按钮退出' : MODE_HINT[m];
-  announceTool(b, permMode === m ? `${MODE_NAME[m]} · ${hint}` : `退出${MODE_NAME[m]}，回到选择`);
+  announceTool(b, permMode === m ? `${MODE_NAME[m]} · ${modeHint(m)}` : `退出${MODE_NAME[m]}，回到选择`);
   b.blur();
 }));
 const guardToolBtn = document.getElementById('guard-btn')!;

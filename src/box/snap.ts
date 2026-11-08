@@ -2,6 +2,7 @@
 import { assetInfo } from './asset-info';
 import { ASSET_SNAP } from './asset-snap';
 import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
+import { objType } from '../model/objects';
 import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, sideLowerSpan } from '../model/rail';
 
 export type P3 = [number, number, number];
@@ -101,6 +102,8 @@ function localFeats(e: Elem): Feats {
     out.verts.push([r.x0, r.y0, r.top], [r.x1, r.y0, r.top], [r.x1, r.y1, r.top], [r.x0, r.y1, r.top]);
     out.mids.push([cx, r.y0, r.top], [r.x1, cy, r.top], [cx, r.y1, r.top], [r.x0, cy, r.top], [cx, cy, r.top]);
   }
+  const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
+  for (const [x, y, z] of objType(e.type)?.snapTops ?? []) out.verts.push([e.x + x * c - y * s, e.y + x * s + y * c, e.z + z]);
   if (!out.verts.length) out.verts.push([e.x, e.y, e.z]);
   return out;
 }
