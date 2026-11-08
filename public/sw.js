@@ -3,7 +3,7 @@
 //   带哈希的脚本 / 样式：内容不会变，有缓存就直接用
 //   页面本身：先走网络（发布新版本后马上生效），断网时用缓存
 const CACHE = 'bvm-v1';
-const DATA = /\/(textures|assets|elements|fakes)\/[^/]+\.(bmp|tga|png|jpg|json)$|\/nmo-lib\.json$/i;
+const DATA = /\/(textures|assets|elements|fakes|help)\/[^/]+\.(bmp|tga|png|jpg|json|webp)$|\/nmo-lib\.json$/i;
 const HASHED = /\/_app\/[^/]+-[\w-]{8,}\.(js|css)$/;
 
 self.addEventListener('install', () => self.skipWaiting());

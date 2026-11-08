@@ -13,7 +13,7 @@ import { DOUBLE_OFFSET, RAIL_RADIUS, advance } from '../src/model/rail';
 import { elemBounds, rotateWorld, uprightElem } from '../src/box/ops';
 import { feats } from '../src/box/snap';
 import { rotAxis } from '../src/box/xform';
-import { stopperMesh } from '../src/model/stoppers';
+import { stopperCount, stopperMesh, stopperOff, stopperTops } from '../src/model/stoppers';
 import { readNmo } from './nmo';
 import { Box, Doc, Elem, GuardElem, Obj, Piece, RailElem, ZoneElem, canTilt } from '../src/box/types';
 
@@ -151,6 +151,19 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     check(!!st && !!meshNamed(withBox, 'A_Stopper_BVM_01'), 'P_Modul_25 带挡块，应导出 A_Stopper_BVM_01');
     const noStop = exportBoxScene(doc([box(1, 0, 0), obj(2, 'P_Modul_25', 1, 1, { noStopper: true })]));
     check(!meshNamed(noStop, 'A_Stopper_BVM_01'), 'noStopper 的机关不应导出挡块');
+
+    // 逐块开关：Modul 30 两块挡块，各 8 个三角形；stopOff 按位关掉
+    check(stopperCount('P_Modul_25') === 1 && stopperCount('P_Modul_30') === 2 && stopperCount('P_Modul_19') === 2 && stopperCount('P_Modul_37') === 2, '挡块块数：25 一块，19、30、37 各两块');
+    const stopTris = (extra: Partial<Obj>) => {
+      const m = meshNamed(exportBoxScene(doc([box(1, 0, 0), obj(2, 'P_Modul_30', 1, 1, extra)])), 'A_Stopper_BVM_01');
+      return m ? triCount(m.parts[0].pos) : 0;
+    };
+    check(stopTris({}) === 16, `两块都生成：16 个三角形，实际 ${stopTris({})}`);
+    check(stopTris({ stopOff: 1 }) === 8 && stopTris({ stopOff: 2 }) === 8, '关掉一块只剩 8 个三角形');
+    check(stopTris({ stopOff: 3 }) === 0, '两块都关掉就不导出挡块');
+    const tops = stopperTops('P_Modul_30');
+    check(tops.length === 2 && tops[0][0] > 6 && tops[1][0] < -6, `Modul 30 两块挡块在两头：${JSON.stringify(tops)}`);
+    check(stopperOff({ noStopper: true }, 1) && !stopperOff({ stopOff: 1 }, 1) && stopperOff({ stopOff: 2 }, 1), 'stopperOff：noStopper 全关，stopOff 按位');
   });
 
   scenario('NMO：导出后能读回、对象齐全', async () => {

@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { MatName } from '../geom/floor';
 import { FAKE_EXTRA, FAKE_FIX, OBJ_TYPES, fakeModel, objType } from '../model/objects';
-import { stopperMesh } from '../model/stoppers';
+import { stopperCount, stopperMesh, stopperOff, stopperTops } from '../model/stoppers';
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
@@ -15,6 +15,7 @@ import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, 
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
+import { initHelp } from './help';
 import { stretchUV } from '../view/uvstretch';
 import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
@@ -98,19 +99,29 @@ scene.add(world, overlay, selLayer);
 
 // ---------------- 状态 ----------------
 
+// 帮助要在编辑器的键盘监听之前装上：开着时键盘留给它
+initHelp(document.getElementById('help')!);
 const STORE = 'bvm.box.doc';
+/** 素材库默认的宽度（在两边时）和高度（在底部时） */
+const LIB_W = 284, LIB_H = 236;
 /** 本机偏好：素材库在哪一侧、格栅步长、机关显示方式、主题 */
 /** 本机偏好，连同顶栏开关这些临时状态（格栅、对齐、小节、死亡区显示、漫游速度、素材库收起），刷新后保持 */
 interface Prefs {
-  side: 'left' | 'right'; gridStep: number; modelView: boolean; theme: 'dark' | 'light'; tab: string;
+  side: 'left' | 'right' | 'bottom'; gridStep: number; modelView: boolean; theme: 'dark' | 'light'; tab: string;
   grid: boolean; align: boolean; sectors: boolean; sector: number; flySpeed: number; folded: boolean;
+  /** 护栏工具点一下放整条直边时，两头各往里缩多少 */
+  guardInset: number;
+  /** 自动追踪：点选时视图中心移到点中的东西上（只拉远不拉近），默认开；换过键名，之前存下的 follow 不沿用 */
+  autoFollow: boolean;
+  /** 素材库的宽度（在两边时）、高度（在底部时） */
+  libW: number; libH: number;
   /** 显示死亡区（换了键名：之前默认隐藏时存下的 zones 不再沿用，默认显示） */
   zonesShown: boolean;
   skyShown: boolean;
   gridShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false };
+  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, autoFollow: true, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 const savePrefs = () => { try { localStorage.setItem('bvm.box.prefs', JSON.stringify(prefs)); } catch { /* 存不了就算了 */ } };
@@ -420,7 +431,7 @@ function rebuildInner() {
         m.rotation.z = r;
       });
     }
-    const st = e.noStopper || e.q ? null : stopperMesh({ id: 0, cat: 'module', type: e.type, x: e.x, y: e.y, z: e.z, rot: deg });
+    const st = e.noStopper || e.q ? null : stopperMesh({ id: 0, cat: 'module', type: e.type, x: e.x, y: e.y, z: e.z, rot: deg, stopOff: e.stopOff });
     if (st) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(st.pos, 3));
@@ -979,6 +990,12 @@ function drawOverlayInner() {
       put(overlay, 'guardPreview', m);
     }
   }
+  // 选中一个带挡块的机关时：每块挡块顶上一个开关（实心绿点：生成；灰色圆环：不生成），关掉的挡块画成红色虚影
+  if (!drag && !guardMode && !splitMode) for (const t of stopToggles()) {
+    const hov = t.id === stopHover?.id && t.part === stopHover.part;
+    put(overlay, `stop:${t.id}:${t.part}:${t.on}:${hov}`, marks([t.p], t.on ? 'dot' : 'ring', t.on ? 0x4cff8a : hov ? 0xffffff : 0xc4ccda, hov ? 16 : 13));
+    if (!t.on) put(overlay, `stopghost:${t.id}:${t.part}`, stopGhost(t.id, t.part));
+  }
   // 选中一块路面时：四条边的中点显示开口开关（实心点：封口；绿色圆环：开口），点一下切换
   if (!drag && !guardMode && !splitMode) for (const t of openToggles()) {
     const hov = t.id === openHover?.id && t.side === openHover.side;
@@ -1373,6 +1390,14 @@ el.addEventListener('pointerdown', (e) => {
   if (drag?.t === 'grab' || drag?.t === 'rotate') { finishDrag(); return; } // 移动 / 旋转模式里：左键确定
   if (splitMode) { doSplit(e); return; }
   if (guardMode) { guardDown(e); return; }
+  // 点机关挡块上的开关：这块挡块生成 / 不生成
+  const stog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? stopToggleAt(e) : null;
+  if (stog) {
+    snapshot();
+    toggleStopper(doc.elems[stog.id] as Obj, stog.part);
+    rebuild();
+    return;
+  }
   // 点路面边上的开口开关：切换这一侧开口 / 封口
   const tog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? openToggleAt(e) : null;
   if (tog) {
@@ -1701,9 +1726,16 @@ window.addEventListener('pointermove', (e) => {
     if (splitMode) { splitHover(e); return; }
     if (guardMode) { guardHover(e); return; }
     // 按住 Ctrl / Alt 时不提示别的路面（这时只会操作已经选中的东西）
-    const tg = openToggleAt(e);
+    const sg = stopToggleAt(e);
+    const sh = sg ? { id: sg.id, part: sg.part } : null;
+    const tg = sg ? null : openToggleAt(e);
     const th = tg ? { id: tg.id, side: tg.side } : null;
-    if (th?.id !== openHover?.id || th?.side !== openHover?.side) { openHover = th; el.style.cursor = th ? 'pointer' : ''; if (th) dragInfo = '点击切换这一侧：自动 → 开口 → 封口'; else dragInfo = ''; drawOverlay(); updateStatus(); }
+    if (sh?.id !== stopHover?.id || sh?.part !== stopHover?.part || th?.id !== openHover?.id || th?.side !== openHover?.side) {
+      stopHover = sh; openHover = th;
+      el.style.cursor = th || sh ? 'pointer' : '';
+      dragInfo = sh ? '点击切换这块挡块：生成 / 不生成' : th ? '点击切换这一侧：自动 → 开口 → 封口' : '';
+      drawOverlay(); updateStatus();
+    }
     const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
     if (id !== hoverId) { hoverId = id; drawOverlay(); }
     return;
@@ -2056,6 +2088,8 @@ window.addEventListener('pointerup', (e) => {
       else for (const g of group) sel.add(g);
     }
     drawOverlay(); syncProps(); updateStatus();
+    // 自动追踪：点中的东西（连同绑定组）移到视图中心；Shift 减选掉的不追
+    if (prefs.autoFollow && id !== null && sel.has(id)) followTo(expandGroups(doc, [id]));
     return;
   }
   finishDrag();
@@ -2321,10 +2355,23 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
   { id: 'deco', label: '装饰', items: [...OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })), ...assetItems('deco')] },
 ];
+/** 素材卡片悬停时按 F1 跳到哪一节教程 */
+function helpOf(type: string): string {
+  if (type === 'zone') return '2.5';
+  if (type.startsWith('rail') || type.startsWith('side-') || /^asset:(Rail|Monorail)/.test(type)) return '2.2';
+  if (type === 'start' || type === 'check' || type.startsWith('obj:')) return objType(type.slice(4))?.cat === 'deco' ? '2.4' : '2.3';
+  if (type.startsWith('asset:') && assetInfo(type.slice(6))?.tab === 'deco') return '2.4';
+  return '2.1';
+}
 const palette = document.getElementById('palette')!;
 palette.innerHTML = `
   <div class="lib-head">
     <span class="title">素材库</span>
+    <span class="lib-dock">
+      <button data-dock="left" title="停靠在左边"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5" /><path class="fill" d="M3 4h3.5v8H3z" /></svg></button>
+      <button data-dock="bottom" title="停靠在底部"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5" /><path class="fill" d="M3 8.5h10V12H3z" /></svg></button>
+      <button data-dock="right" title="停靠在右边"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5" /><path class="fill" d="M9.5 4H13v8H9.5z" /></svg></button>
+    </span>
     <button class="fold" id="lib-fold" title="收起 / 展开"><svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg></button>
   </div>
   <div class="lib-tabs">${LIB.map((g) => `<button data-tab="${g.id}">${g.label}<small>${g.items.length}</small></button>`).join('')}</div>
@@ -2339,7 +2386,7 @@ function renderLib() {
   // 搜索时跨所有标签找；不搜索时只显示当前标签
   const items = q ? LIB.flatMap((g) => g.items).filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q)) : (LIB.find((g) => g.id === prefs.tab) ?? LIB[0]).items;
   palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => b.classList.toggle('on', !q && b.dataset.tab === prefs.tab));
-  libGrid.innerHTML = items.map((it) => `<div class="lib-card" data-type="${it.type}" title="${it.label}
+  libGrid.innerHTML = items.map((it) => `<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
 ${it.hint}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></div>`).join('');
   libEmpty.hidden = items.length > 0;
   fillThumbs();
@@ -2394,27 +2441,99 @@ libGrid.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   startPlace(c.dataset.type!);
 });
-palette.querySelector('#lib-fold')!.addEventListener('click', () => { prefs.folded = palette.classList.toggle('folded'); savePrefs(); placeViewCube(); });
+/** 收起 / 展开：内容先淡出，大小缓动到位后再换内容淡入（见 app.css 的 .hiding / .narrow / .folded） */
+const FOLD_MS = 200;
+let foldSeq = 0;
+function toggleFold() {
+  const fold = !prefs.folded;
+  prefs.folded = fold; savePrefs();
+  const t = ++foldSeq;
+  palette.classList.add('hiding');
+  if (fold) palette.classList.add('narrow');
+  else palette.classList.remove('folded', 'narrow');
+  setTimeout(() => {
+    if (t !== foldSeq) return; // 动画中途又点了一下，以后一次为准
+    if (fold) palette.classList.add('folded');
+    palette.classList.remove('hiding');
+  }, FOLD_MS);
+}
+palette.querySelector('#lib-fold')!.addEventListener('click', (e) => { e.stopPropagation(); toggleFold(); });
+// 收起时点哪里都能展开
+palette.addEventListener('click', () => { if (palette.classList.contains('folded')) toggleFold(); });
 palette.classList.toggle('folded', prefs.folded);
+palette.classList.toggle('narrow', prefs.folded);
+palette.querySelector<HTMLElement>('.lib-head .title')!.title = '按住卡片拖到场景里放下（拖动中 R 旋转、右键取消），点一下放到视图中心';
+// 拖素材库的内侧边缘改宽度（在底部时改高度），双击恢复默认
+const libResize = document.createElement('div');
+libResize.className = 'lib-resize';
+libResize.title = '拖动改大小，双击恢复默认';
+palette.appendChild(libResize);
+function applyLibSize() {
+  palette.style.setProperty('--lib-w', `${prefs.libW}px`);
+  palette.style.setProperty('--lib-h', `${prefs.libH}px`);
+}
+libResize.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  libResize.setPointerCapture(e.pointerId);
+  libResize.classList.add('on');
+  document.body.classList.add('lib-resizing');
+  document.body.classList.toggle('ns', prefs.side === 'bottom');
+  const r = palette.getBoundingClientRect(), work = palette.parentElement!.getBoundingClientRect();
+  const move = (ev: PointerEvent) => {
+    if (prefs.side === 'bottom') prefs.libH = Math.round(Math.min(Math.max(r.bottom - ev.clientY, 120), work.height * 0.7));
+    else prefs.libW = Math.round(Math.min(Math.max(prefs.side === 'right' ? r.right - ev.clientX : ev.clientX - r.left, 200), Math.min(640, work.width * 0.5)));
+    applyLibSize();
+  };
+  const up = () => {
+    libResize.classList.remove('on');
+    document.body.classList.remove('lib-resizing', 'ns');
+    libResize.removeEventListener('pointermove', move);
+    savePrefs();
+  };
+  libResize.addEventListener('pointermove', move);
+  libResize.addEventListener('pointerup', up, { once: true });
+  libResize.addEventListener('pointercancel', up, { once: true });
+});
+libResize.addEventListener('dblclick', () => {
+  if (prefs.side === 'bottom') prefs.libH = LIB_H; else prefs.libW = LIB_W;
+  applyLibSize(); savePrefs();
+});
+applyLibSize();
 setAssetLoadedCallback(fillThumbs);
 setTextureLoadedCallback(fillThumbs);
-/** 素材库在左边还是右边；属性面板放在另一边 */
+/** 素材库在左边、右边还是底部：嵌在视图旁边。属性面板放在视图里素材库的另一边（素材库在底部时放左边） */
 function applySide() {
-  palette.classList.toggle('left', prefs.side === 'left');
+  const work = document.getElementById('work')!;
+  work.classList.remove('dock-left', 'dock-right', 'dock-bottom');
+  work.classList.add(`dock-${prefs.side}`);
   props.classList.toggle('right', prefs.side === 'left');
+  palette.querySelectorAll<HTMLButtonElement>('.lib-dock button').forEach((b) => b.classList.toggle('on', b.dataset.dock === prefs.side));
 }
+// 标题栏上的停靠按钮：左 / 下 / 右
+palette.querySelector('.lib-dock')!.addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button[data-dock]');
+  if (!b) return;
+  e.stopPropagation();
+  b.blur();
+  if (prefs.side === b.dataset.dock) return;
+  prefs.side = b.dataset.dock as Prefs['side']; savePrefs();
+  applySide();
+});
 applySide();
 renderLib();
-// 拖放中右键：取消
-window.addEventListener('pointerdown', (e) => {
-  if (e.button === 2 && drag?.t === 'place') {
-    e.preventDefault(); e.stopPropagation();
-    if (drag.ids) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
-    anim = null; snapping = false; drag = null; snapTarget = null;
-    document.body.classList.remove('placing');
-    rebuild();
-  }
-}, true);
+// 拖放中右键：取消。按住左键拖着卡片时再按右键，浏览器不发 pointerdown（同一个指针的第二个键只发 pointermove，
+// button 是 2），所以两种都要接住
+function cancelPlace(e: PointerEvent) {
+  if (e.button !== 2 || drag?.t !== 'place') return;
+  e.preventDefault(); e.stopPropagation();
+  if (drag.ids) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
+  anim = null; snapping = false; drag = null; snapTarget = null;
+  document.body.classList.remove('placing');
+  rebuild();
+}
+window.addEventListener('pointerdown', cancelPlace, true);
+window.addEventListener('pointermove', (e) => { if (e.button === 2 && e.buttons & 2) cancelPlace(e); }, true);
 
 // ---------------- 切分 ----------------
 
@@ -2485,6 +2604,45 @@ function openToggleAt(e: { clientX: number; clientY: number }) {
   return openToggles().find((t) => toScreen(t.p).distanceTo(at) < 11) ?? null;
 }
 
+/** 选中一个带挡块的机关时，每块挡块顶上的开关（倾斜的机关没有挡块，不显示） */
+function stopToggles(): { id: number; part: number; p: P3; on: boolean }[] {
+  if (sel.size !== 1) return [];
+  const o = doc.elems[[...sel][0]];
+  if (o?.kind !== 'obj' || o.q || !stopperCount(o.type)) return [];
+  const r = (o.rot * Math.PI) / 2, c = Math.cos(r), s = Math.sin(r);
+  return stopperTops(o.type).map(([x, y, z], part) => ({
+    id: o.id, part, on: !stopperOff(o, part),
+    p: toWorld(o, [o.x + x * c - y * s, o.y + x * s + y * c, o.z + z + 0.05]),
+  }));
+}
+let stopHover: { id: number; part: number } | null = null;
+function stopToggleAt(e: { clientX: number; clientY: number }) {
+  const at = new THREE.Vector2(e.clientX, e.clientY);
+  return stopToggles().find((t) => toScreen(t.p).distanceTo(at) < 11) ?? null;
+}
+/** 关掉的那块挡块：红色半透明虚影，看得出关的是哪一块 */
+function stopGhost(id: number, part: number): THREE.Object3D {
+  const o = doc.elems[id] as Obj;
+  const m = stopperMesh({ id: 0, cat: 'module', type: o.type, x: o.x, y: o.y, z: o.z, rot: o.rot * 90 }, (i) => i === part)!;
+  const pos: number[] = [];
+  for (let i = 0; i < m.pos.length; i += 3) pos.push(...toWorld(o, [m.pos[i], m.pos[i + 1], m.pos[i + 2]]));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xff6a6a, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
+  mesh.renderOrder = 6; // 挡块多半嵌在路面里，透过路面也要看得见
+  return mesh;
+}
+/** 切换一块挡块：以前整体关掉的（noStopper）先换成逐块的记法 */
+function toggleStopper(o: Obj, part: number) {
+  const n = stopperCount(o.type);
+  let mask = o.noStopper ? 2 ** n - 1 : o.stopOff ?? 0;
+  mask ^= 1 << part;
+  delete o.noStopper;
+  if (mask) o.stopOff = mask; else delete o.stopOff;
+  const on = !stopperOff(o, part);
+  flash(n > 1 ? `第 ${part + 1} 块挡块：${on ? '生成' : '不生成'}` : `挡块：${on ? '生成' : '不生成'}`);
+}
+
 /** 护栏端头的把手位置：立柱顶上（和实际的护栏一样往外偏 guardOffset） */
 function guardHandle(g: Extract<Elem, { kind: 'guard' }>, end: 0 | 1): P3 {
   const p = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
@@ -2516,7 +2674,7 @@ function guardHover(e: PointerEvent) {
     const end = guardEndAt(e);
     guardEndHover = end;
     el.style.cursor = end ? 'ew-resize' : '';
-    guardPreview = end ? null : p ? edgeAt(lastSolved.loops, p) : null;
+    guardPreview = end ? null : p ? edgeAt(lastSolved.loops, p, prefs.guardInset) : null;
   }
   dragInfo = guardPreview ? `护栏长 ${fmt(routeLen(guardPreview))}` : '';
   drawOverlay(); updateStatus();
@@ -2544,7 +2702,7 @@ function guardUp(e: PointerEvent) {
   const gd = guardDrag!;
   guardDrag = null;
   // 点一下：整条直边；拖动：从按下的地方沿外沿走到松开的地方
-  const route = gd.moved ? guardPreview : edgeAt(lastSolved.loops, gd.a);
+  const route = gd.moved ? guardPreview : edgeAt(lastSolved.loops, gd.a, prefs.guardInset);
   if (route && route.pts.length > 1 && routeLen(route) > 0.2) {
     snapshot();
     const id = gd.replace ?? doc.nextId++;
@@ -2769,10 +2927,13 @@ function syncProps() {
     h += `<div class="title">${t?.label ?? one.type}${one.q ? '<small>倾斜：没有专属路块和挡块</small>' : ''}</div>`;
     h += pos('z') + orient();
     const extra: string[] = [];
-    if (stopperMesh({ id: 0, cat: 'module', type: one.type, x: 0, y: 0, z: 0, rot: 0 })) extra.push(chip('noStopper', '挡块', !one.noStopper));
     if (baseSpec(one.type)) extra.push(chip('noBase', '专属路块', !one.noBase));
     if (t?.cat === 'module' && one.type !== 'PE_Balloon') h += `<label>小节</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
     if (extra.length) h += `<label>附带</label><div class="chips">${extra.join('')}</div>`;
+    if (!one.q && stopperCount(one.type)) {
+      const n = stopperCount(one.type), on = Array.from({ length: n }, (_, i) => !stopperOff(one, i)).filter(Boolean).length;
+      h += `<label>挡块</label><div class="muted">${on} / ${n} 块生成 · 点场景里的圆圈开关</div>`;
+    }
   }
   props.innerHTML = h;
   enhanceFields(props);
@@ -3211,8 +3372,9 @@ function renderSettings() {
     + SETTING_FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${st[f.key]}"></label>`).join('')
     + '<h3 class="sub">编辑</h3>'
     + `<label><span>格栅步长<small>打开格栅时位置和尺寸的步长（默认 1）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${prefs.gridStep}"></label>`
+    + `<label><span>护栏端头内缩<small>点路边放整条直边时，两头各往里缩（默认 1.5）</small></span><input type="number" id="guard-inset" step="0.25" min="0" value="${prefs.guardInset}"></label>`
+    + `<label class="stack"><span>自动追踪<small>点选时视角移到它上面：不拉近，太近时按 F 的距离拉远</small></span>${seg('follow', [['off', '关'], ['on', '开']], prefs.autoFollow ? 'on' : 'off')}</label>`
     + '<h3 class="sub">界面</h3>'
-    + `<label class="stack"><span>素材库位置<small>属性面板在另一边</small></span>${seg('lib-side', [['left', '左边'], ['right', '右边']], prefs.side)}</label>`
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
     + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
     + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
@@ -3228,11 +3390,15 @@ function renderSettings() {
     const v = Number((e.target as HTMLInputElement).value);
     if (Number.isFinite(v) && v > 0) { prefs.gridStep = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.gridStep);
   });
+  settingsPanel.querySelector<HTMLInputElement>('#guard-inset')!.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v) && v >= 0) { prefs.guardInset = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.guardInset);
+  });
   const segClick = (id: string, fn: (v: string) => void) => settingsPanel.querySelectorAll<HTMLButtonElement>(`#${id} button`).forEach((b) => b.addEventListener('click', () => { fn(b.dataset.v!); renderSettings(); }));
-  segClick('lib-side', (v) => { prefs.side = v as 'left' | 'right'; savePrefs(); applySide(); });
   segClick('module-view', (v) => { modelView = v === 'model'; prefs.modelView = modelView; savePrefs(); renderLib(); rebuild(); });
   segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
-  settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; savePrefs(); rebuild(); renderSettings(); });
+  segClick('follow', (v) => { prefs.autoFollow = v === 'on'; savePrefs(); });
+  settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; prefs.guardInset = 1.5; savePrefs(); rebuild(); renderSettings(); });
   settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => showEl(settingsPanel, false));
 }
 window.addEventListener('pointerdown', (e) => {
@@ -3395,12 +3561,11 @@ el.addEventListener('pointerdown', (e) => {
   if ((e.button === 1 && !e.shiftKey) || e.button === 2) { viewAnim = null; setOrtho(false); }
 }, true);
 
-/** 立方体放在右边那块面板的左边（素材库在右边时让开素材库；在左边时让开属性面板） */
+/** 立方体在视图右上角；属性面板在右边时让开它 */
 let cubeRight = -1;
 function placeViewCube() {
   let right = 12;
-  if (prefs.side === 'right') right = palette.offsetWidth + 20;
-  else if (!props.hidden && props.classList.contains('shown')) right = props.offsetWidth + 20;
+  if (prefs.side === 'left' && !props.hidden && props.classList.contains('shown')) right = props.offsetWidth + 20;
   if (right !== cubeRight) { cubeRight = right; cubeWrap.style.right = `${right}px`; }
 }
 /** 帧数：一秒里真正画了多少帧（画面没变不画，所以静止时是 0）。放在视图左上角，左边有面板时让开 */
@@ -3411,8 +3576,7 @@ host.appendChild(fpsEl);
 let fpsLeft = -1, fpsAt = performance.now(), fpsBase = 0;
 function tickFps(now: number) {
   let left = 12;
-  if (prefs.side === 'left') left = palette.offsetWidth + 20;
-  else if (!props.hidden && props.classList.contains('shown')) left = props.offsetWidth + 20;
+  if (prefs.side !== 'left' && !props.hidden && props.classList.contains('shown')) left = props.offsetWidth + 20;
   if (left !== fpsLeft) { fpsLeft = left; fpsEl.style.left = `${left}px`; }
   if (now - fpsAt < 1000) return;
   fpsEl.textContent = `${Math.round(((renderCount - fpsBase) * 1000) / (now - fpsAt))} FPS`;
@@ -3516,6 +3680,16 @@ function moveCamera(center: THREE.Vector3, dist: number) {
 function frameSelection() {
   const ids = sel.size ? [...sel] : Object.keys(doc.elems).map(Number);
   if (!ids.length) { flash('场景是空的'); return; }
+  const f = frameOf(ids);
+  moveCamera(f.center, f.dist);
+}
+/** 自动追踪：视图中心移到这些东西上；距离取 F 的距离和现在的距离里远的那个（F 会拉近时不拉近，会拉远时照 F 拉远） */
+function followTo(ids: Iterable<number>) {
+  const f = frameOf([...ids]);
+  moveCamera(f.center, Math.max(f.dist, camera.position.distanceTo(controls.target)));
+}
+/** F 的取景：包围盒中心，距离 = 尺寸 × 1.4，限制在 20～800 */
+function frameOf(ids: number[]): { center: THREE.Vector3; dist: number } {
   const box = new THREE.Box3();
   for (const id of ids) {
     // 路面按它自己的范围（它的网格可能是和别的路面连在一起的一整片）
@@ -3525,7 +3699,7 @@ function frameSelection() {
     if (!elemGroups.get(id)?.length) box.union(new THREE.Box3(new THREE.Vector3(b.x0, b.y0, b.z0), new THREE.Vector3(b.x1, b.y1, b.z1)));
   }
   const size = box.getSize(new THREE.Vector3()).length();
-  moveCamera(box.getCenter(new THREE.Vector3()), THREE.MathUtils.clamp(size * 1.4, 20, 800));
+  return { center: box.getCenter(new THREE.Vector3()), dist: THREE.MathUtils.clamp(size * 1.4, 20, 800) };
 }
 function frameAll() {
   const ids = sel.size ? [...sel] : Object.keys(doc.elems).map(Number);
@@ -3545,6 +3719,14 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
+// 素材库收起、改大小、换位置时视图也会变大小。这个回调在排版之后、上屏之前：改了画布大小马上画一帧，不然会闪一下空白
+new ResizeObserver(() => {
+  if (renderer.domElement.width === Math.round(host.clientWidth * renderer.getPixelRatio()) && renderer.domElement.height === Math.round(host.clientHeight * renderer.getPixelRatio())) return;
+  resize();
+  syncOrtho();
+  renderer.render(scene, viewCam());
+  invalidate(100);
+}).observe(host);
 resize();
 (() => {
   try {
@@ -3661,3 +3843,11 @@ renderer.setAnimationLoop(() => {
   get doc() { return doc; },
   set doc(d: Doc) { doc = d; rebuild(); },
 };
+
+// 第一次打开编辑器：提示一下有教程
+try {
+  if (!localStorage.getItem('bvm.box.helpTip')) {
+    localStorage.setItem('bvm.box.helpTip', '1');
+    setTimeout(() => flash('第一次用？点右上角的「帮助」或按 F1 看图文教程'), 1200);
+  }
+} catch { /* 存不了就算了 */ }

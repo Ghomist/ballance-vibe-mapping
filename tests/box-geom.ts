@@ -304,6 +304,10 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
 
     const e = edgeAt([loop], [4, 0.5, 0]);
     check(!!e && e.pts.length === 2 && near(routeLen(e), side), `点在外沿附近应取到那一整条直边：${e ? routeLen(e) : 'null'}`);
+    const ins = edgeAt([loop], [4, 0.5, 0], 1.5);
+    check(!!ins && near(routeLen(ins), side - 3) && near(ins.pts[0][0], 1.5) && near(ins.pts[1][0], side - 1.5), `两头各内缩 1.5：${ins ? JSON.stringify(ins.pts) : 'null'}`);
+    const shortLoop: Loop = { pts: [[0, 0, 0], [3, 0, 0], [3, 3, 0], [0, 3, 0]], outs, closed: true, cum: [0, 3, 6, 9], len: 12 };
+    check(near(routeLen(edgeAt([shortLoop], [1.5, 0.3, 0], 1.5)!), 3), '边太短（缩完不到 1）时不缩');
     check(edgeAt([loop], [4, 5, 0]) === null, '离外沿太远不应取到边');
     check(edgeAt([loop], [4, 0.5, 9]) === null, '离外沿太高（>3）不应取到边');
 

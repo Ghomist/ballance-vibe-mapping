@@ -83,7 +83,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   for (const o of objs) {
     if (o.noStopper || o.q) continue;
     const w = toWorld(o, [o.x, o.y, o.z]);
-    const st = stopperMesh({ id: 0, cat: 'module', type: o.type, x: w[0], y: w[1], z: w[2], rot: yawDeg(o) });
+    const st = stopperMesh({ id: 0, cat: 'module', type: o.type, x: w[0], y: w[1], z: w[2], rot: yawDeg(o), stopOff: o.stopOff });
     if (st) { sp.push(...st.pos.map(r5)); su.push(...st.uv.map(r5)); }
   }
   if (sp.length) meshes.push({ name: 'A_Stopper_BVM_01', kind: 'stopper', parts: [{ mat: 'Stopper', pos: sp, uv: su }] });

@@ -370,3 +370,67 @@ export function boxSolveScenarios(check: Check, scenario: Scenario) {
     }
   });
 }
+
+/** 路面顶面在 (x, y) 处的花纹 u（找包含这一点的顶面三角形，按重心插值）：u 随离外沿的距离变化，边上和中间不一样 */
+function uAt(solved: Solved, x: number, y: number): number | null {
+  for (const t of allTris(solved)) {
+    if (!isTop(t.mat)) continue;
+    const [a, b, c] = t.p;
+    const d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    if (Math.abs(d) < 1e-12) continue;
+    const l1 = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / d;
+    const l2 = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / d;
+    const l3 = 1 - l1 - l2;
+    if (l1 < -1e-9 || l2 < -1e-9 || l3 < -1e-9) continue;
+    return l1 * t.u[0][0] + l2 * t.u[1][0] + l3 * t.u[2][0];
+  }
+  return null;
+}
+
+export function boxConnScenarios(check: Check, scenario: Scenario) {
+  scenario('box 求解：接机关、特殊路块 16 的路端自动开口（T 型板不带挡块的那头除外，手动封口优先）', () => {
+    const doc = emptyDoc();
+    const E = doc.elems as Record<number, unknown>;
+    // 跷跷板：两个对准方块在 x = ±9.9（5×5），嵌在路面里，路的端面在方块朝中间的那一面（x = ±7.4）
+    E[1] = { id: 1, kind: 'box', x: 7.4, y: -2.45, z: 0, sx: 20, sy: 5, depth: 5, style: 'normal' };
+    E[2] = { id: 2, kind: 'box', x: -27.4, y: -2.45, z: 0, sx: 20, sy: 5, depth: 5, style: 'normal' };
+    E[3] = { id: 3, kind: 'obj', type: 'P_Modul_30', x: 0, y: 0, z: -0.5, rot: 0 };
+    // T 型板：中间那个不带挡块的对准方块（x0 = -1.27）照常封口
+    E[4] = { id: 4, kind: 'obj', type: 'P_Modul_37', x: 0, y: 40, z: 0, rot: 0 };
+    E[5] = { id: 5, kind: 'box', x: -1.27, y: 37.6, z: 0, sx: 20, sy: 5, depth: 5, style: 'normal' };
+    E[6] = { id: 6, kind: 'box', x: -16.27, y: 44.73, z: 0, sx: 5, sy: 20, depth: 5, style: 'normal' };
+    // 特殊路块 16：两头（y = 0、y = 37.205）接路
+    E[7] = { id: 7, kind: 'asset', name: 'Modul_16', x: 60, y: 0, z: 0, rot: 0 };
+    E[8] = { id: 8, kind: 'box', x: 57.5, y: -20, z: 0, sx: 5, sy: 20, depth: 5, style: 'normal' };
+    // 终点气球：对准方块朝着气球的那一面
+    E[9] = { id: 9, kind: 'obj', type: 'PE_Balloon', x: 0, y: -40, z: -0.01, rot: 0 };
+    E[10] = { id: 10, kind: 'box', x: 22.07, y: -42.33, z: 0, sx: 20, sy: 5, depth: 5, style: 'normal' };
+    // 同样的路，什么都不接：端头封口，用来对照
+    E[11] = { id: 11, kind: 'box', x: 100, y: 100, z: 0, sx: 20, sy: 5, depth: 5, style: 'normal' };
+    doc.nextId = 12;
+    const s = solve(doc);
+    // 端头正中间离外沿多远决定 u：开口时离两侧各 2.5（和路中间一样），封口时就在边上（和侧边一样）
+    const edgeU = uAt(s, 110, 100.001)!, midU = uAt(s, 110, 102.5)!;
+    check(Math.abs(edgeU - midU) > 0.05, `对照：路边和路中间的 u 应不同（${edgeU} / ${midU}）`);
+    const isOpen = (name: string, x: number, y: number) => {
+      const u = uAt(s, x, y);
+      check(u !== null && Math.abs(u - midU) < 1e-3, `${name}：端头应开口（u = ${u}，路中间 ${midU}，路边 ${edgeU}）`);
+    };
+    const isClosed = (name: string, x: number, y: number) => {
+      const u = uAt(s, x, y);
+      check(u !== null && Math.abs(u - edgeU) < 1e-3, `${name}：端头应封口（u = ${u}，路边 ${edgeU}）`);
+    };
+    isOpen('跷跷板右边', 7.401, 0.05);
+    isOpen('跷跷板左边', -7.401, 0.05);
+    isOpen('T 型板带挡块的一头', -13.77, 44.731);
+    isClosed('T 型板不带挡块的一头', -1.269, 40.1);
+    isOpen('特殊路块 16 的一头', 60, -0.001);
+    isOpen('终点气球', 22.071, -39.83);
+    isClosed('什么都不接的路', 100.001, 102.5);
+    // 手动封口优先
+    (E[1] as Box).closed = 1 << 2;
+    const s2 = solve(doc);
+    const u2 = uAt(s2, 7.401, 0.05);
+    check(u2 !== null && Math.abs(u2 - edgeU) < 1e-3, `手动封口时接机关的端头也要封口（u = ${u2}）`);
+  });
+}

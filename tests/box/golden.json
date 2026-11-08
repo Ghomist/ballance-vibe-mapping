@@ -1,24 +1,24 @@
 {
   "默认场景": {
     "meshes": 2,
-    "tris": 19,
+    "tris": 20,
     "topArea": 150,
-    "loops": 3,
+    "loops": 4,
     "assets": 6,
     "mats": {
-      "FloorTopBorder": 9,
-      "FloorSide": 10
+      "FloorTopBorder": 8,
+      "FloorSide": 12
     }
   },
   "完整小关卡": {
     "meshes": 10,
-    "tris": 125,
+    "tris": 126,
     "topArea": 890,
-    "loops": 9,
+    "loops": 10,
     "assets": 8,
     "mats": {
-      "FloorTopBorder": 41,
-      "FloorSide": 58,
+      "FloorTopBorder": 40,
+      "FloorSide": 60,
       "FloorTopBorderless": 12,
       "FloorTopProfil": 8,
       "FloorTopProfilFlat": 6
@@ -68,13 +68,13 @@
   },
   "机关与盘点": {
     "meshes": 11,
-    "tris": 156,
+    "tris": 158,
     "topArea": 1000,
     "loops": 11,
     "assets": 17,
     "mats": {
-      "FloorTopBorder": 46,
-      "FloorSide": 84,
+      "FloorTopBorder": 44,
+      "FloorSide": 88,
       "FloorTopBorderless": 8,
       "FloorTopProfil": 18
     }

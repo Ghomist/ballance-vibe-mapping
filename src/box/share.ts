@@ -126,7 +126,7 @@ const F2 = <T>(kind: Elem['kind'], name: string, c: Codec<T>): [Elem['kind'], st
  * 后来加的可选字段：SPECS 是按列存的，往里插一列旧地图码就全错位了，所以新字段一律排在所有元素后面，只能往这里追加。
  * 旧地图码读到这里数据就结束了，这些字段就是没有。
  */
-const EXTRAS: [Elem['kind'], string, Codec<never>][] = [F2('rail', 'tips', bools), F2('rail', 'q', tuple(num, 4))];
+const EXTRAS: [Elem['kind'], string, Codec<never>][] = [F2('rail', 'tips', bools), F2('rail', 'q', tuple(num, 4)), F2('obj', 'stopOff', uint)];
 
 /** 可选的一列：先写哪些元素有（大多数地图整列都没有，一个 0 就结束），再写它们的值 */
 function writeColumn(o: Writer, es: Record<string, never>[], name: string, c: Codec) {

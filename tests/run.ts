@@ -1,6 +1,6 @@
 // 轻量场景测试：执行一串编辑操作，检查模型一致性与网格质量。
 import { nmoScenarios } from './nmo';
-import { boxSolveScenarios } from './box-solve';
+import { boxConnScenarios, boxSolveScenarios } from './box-solve';
 import { boxGoldenScenarios } from './box-golden';
 import { boxOpsScenarios } from './box-ops';
 import { boxGeomScenarios } from './box-geom';
@@ -287,6 +287,7 @@ platformToRoadScenarios(emptyModel, check, scenario, validate);
 railEditScenarios(emptyModel, check, scenario);
 gapScenarios(emptyModel, check, scenario);
 boxSolveScenarios(check, scenario);
+boxConnScenarios(check, scenario);
 boxOpsScenarios(check, scenario);
 boxGoldenScenarios(check, scenario);
 boxGeomScenarios(check, scenario);

@@ -25,6 +25,8 @@ export interface Obj {
   base?: number;
   /** 机关：不要挡块 */
   noStopper?: boolean;
+  /** 机关：关掉了哪几块挡块（按位，第 i 位是第 i 块） */
+  stopOff?: number;
 }
 
 /** 对准方块：本地中心 x、y，顶面 z（= 路面高度），以及大小（默认 5×5）、厚度（默认 5） */

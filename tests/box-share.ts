@@ -31,6 +31,7 @@ function everything(): Doc {
     { id: 11, kind: 'guard', x: 0, y: 0, z: 0, pts: [[0, 0, 0], [5, 0, 0.5], [5, 5, 1]], outs: [[0, -1], [1, 0]], group: 2 },
     { id: 12, kind: 'asset', name: 'WoodPlate', x: 1, y: 1, z: 1, rot: 1, scale: [2, 1.5], ang: 45 },
     { id: 13, kind: 'zone', x: -100, y: -100, z: -20, sx: 200, sy: 200, depth: 10, ang: 10, q },
+    { id: 14, kind: 'obj', type: 'P_Modul_30', x: 5, y: 5, z: 0, rot: 1, stopOff: 2 },
   ];
   const d: Doc = { elems: {}, nextId: 20, name: '测试地图', settings: { guardTop: 3 } };
   for (const e of es) d.elems[e.id] = e;

@@ -96,7 +96,10 @@ export interface Obj extends ElemBase, Oriented {
   y: number;
   z: number;
   rot: Dir;
+  /** 以前的整体开关：所有挡块都不要（现在逐块开关，点圆圈时换成 stopOff） */
   noStopper?: boolean;
+  /** 关掉了哪几块挡块（按位，第 i 位是第 i 块，见 stoppers.ts 的编号）；默认全部生成 */
+  stopOff?: number;
   noBase?: boolean;
   /** 机关属于第几小节（放的时候取顶栏选的小节） */
   sector?: number;

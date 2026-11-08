@@ -50,7 +50,8 @@ function place(el: HTMLElement) {
 function show(el: HTMLElement) {
   const text = el.dataset.tip;
   if (!text) return;
-  tip.innerHTML = render(text);
+  // 带 data-help 的按钮：提示一下按 F1 能看对应的教程
+  tip.innerHTML = render(text) + (el.closest('[data-help]') ? '<div class="tip-help"><kbd>F1</kbd>看教程</div>' : '');
   tip.classList.add('measuring');
   place(el);
   tip.classList.remove('measuring');

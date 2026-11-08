@@ -13,9 +13,10 @@
 import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
 import { type Edge as OEdge, type Loop, loopsFromEdges, push as pushEdge } from '../model/outline';
 import {
-  BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Piece, SINK_DEPTH, Style,
-  basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
+  type AssetElem, BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Obj, Piece, SINK_DEPTH, Style,
+  anchorRects, basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
 } from './types';
+import { objType } from '../model/objects';
 import { type M3, apply, rotZ } from './xform';
 import { ShapeUtils, Vector2 } from 'three';
 
@@ -173,6 +174,79 @@ interface Layer {
 }
 
 let runSeq = 0;
+
+// ---------------- 连接面：路面的边贴着它时算开口 ----------------
+
+/**
+ * 机关、特殊路块和路面相接的那一面：路面的边正好落在这一面上（同一条线、同一高度）时，这条边按开口处理（不画边框）。
+ * ax、c、a、b 和 Edge 一样；n 是路面的边朝外的方向（朝着机关）；z 是这一面顶上的高度。
+ */
+interface ConnFace { ax: 0 | 1; c: number; a: number; b: number; n: Dir; z: number }
+/** 当前朝向的连接面（frameCells 里算好，buildFlatCells 用） */
+let connFaces: ConnFace[] = [];
+const CONN_TOL = 0.02, CONN_TOL_Z = 0.05;
+
+/**
+ * 两头接路的机关：秋千、双向挡板、推板、软木桥、跷跷板、T 型板（两个带挡块的对准方块）、终点气球。
+ * 对准方块嵌在路面里，路的端面就是方块朝机关中间的那一面（成对的方块朝着对方，终点气球的方块朝着气球）。
+ * T 型板中间那个不带挡块的对准方块不在 split 里，不算连接面，照常封口。
+ */
+const CONN_MODULES = new Set(['P_Modul_08', 'P_Modul_19', 'P_Modul_25', 'P_Modul_29', 'P_Modul_30', 'P_Modul_37', 'PE_Balloon']);
+/** 特殊路块 16：两头 5 宽的端面（本地 y = 0 和 y = 长度），顶面在本地 z = 0 */
+const MODUL16_LEN = 37.205;
+
+/** 矩形 r 朝 (tx, ty) 那一侧的面（看横竖哪个方向差得多） */
+function faceToward(r: { x0: number; y0: number; x1: number; y1: number }, tx: number, ty: number, z: number): ConnFace {
+  const dx = tx - (r.x0 + r.x1) / 2, dy = ty - (r.y0 + r.y1) / 2;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? { ax: 1, c: r.x1, a: r.y0, b: r.y1, n: 0, z } : { ax: 1, c: r.x0, a: r.y0, b: r.y1, n: 2, z };
+  return dy > 0 ? { ax: 0, c: r.y1, a: r.x0, b: r.x1, n: 1, z } : { ax: 0, c: r.y0, a: r.x0, b: r.x1, n: 3, z };
+}
+
+/** 一个朝向里所有的连接面：机关的对准方块、木栅栏底座的顶层、特殊路块 16 的两头 */
+function connectorFaces(all: Elem[], pieces: Piece[], assets: AssetElem[]): ConnFace[] {
+  const out: ConnFace[] = [];
+  for (const o of all) {
+    if (o.kind !== 'obj' || o.q || !CONN_MODULES.has(o.type)) continue;
+    const rs = anchorRects(o as Obj), t = objType(o.type);
+    const pairs = t?.split ?? [];
+    for (const [i, j] of pairs) {
+      const ri = rs[i], rj = rs[j];
+      if (!ri || !rj) continue;
+      out.push(faceToward(ri, (rj.x0 + rj.x1) / 2, (rj.y0 + rj.y1) / 2, ri.top), faceToward(rj, (ri.x0 + ri.x1) / 2, (ri.y0 + ri.y1) / 2, rj.top));
+    }
+    if (!pairs.length && rs[0]) out.push(faceToward(rs[0], o.x, o.y, rs[0].top));
+  }
+  // 木栅栏底座（Slider）：第一格是和路面一样高的顶层，它的两个侧面（不是栅栏推动的方向）接路时开口；第二格低 2.5，不算
+  for (const p of pieces) {
+    if (p.base?.kind !== 'fence') continue;
+    const r = { x0: p.x - 2.5, y0: p.y - 2.5, x1: p.x + 2.5, y1: p.y + 2.5 };
+    for (const w of [(p.rot + 1) % 4, (p.rot + 3) % 4] as Dir[]) {
+      const f = faceToward(r, p.x + DX[w] * 10, p.y + DY[w] * 10, p.z);
+      out.push({ ...f, n: opp(f.n) }); // 路面在外面，朝着底座
+    }
+  }
+  // 特殊路块 16：两头的端面，路面在外面
+  for (const e of assets) {
+    if (e.name !== 'Modul_16' || e.q) continue;
+    const c = [1, 0, -1, 0][e.rot], sn = [0, 1, 0, -1][e.rot];
+    const P = (x: number, y: number): V2 => [e.x + x * c - y * sn, e.y + x * sn + y * c];
+    for (const [ly, ldir] of [[0, 1], [MODUL16_LEN, 3]] as const) {
+      const [p0, p1] = [P(-2.5, ly), P(2.5, ly)];
+      const n = ((ldir + e.rot) % 4) as Dir;
+      const ax: 0 | 1 = n % 2 === 0 ? 1 : 0;
+      const c0 = ax === 1 ? p0[0] : p0[1];
+      const [a, b] = ax === 1 ? [Math.min(p0[1], p1[1]), Math.max(p0[1], p1[1])] : [Math.min(p0[0], p1[0]), Math.max(p0[0], p1[0])];
+      out.push({ ax, c: c0, a, b, n, z: e.z });
+    }
+  }
+  return out;
+}
+
+/** 路面的这段边（同 Edge 的 ax、c、a、b、n，高度 z）是不是贴着一个连接面 */
+function connAt(ax: 0 | 1, c: number, a: number, b: number, n: Dir, z: number) {
+  const m = (a + b) / 2;
+  return connFaces.some((f) => f.ax === ax && f.n === n && Math.abs(f.c - c) < CONN_TOL && m > f.a - CONN_TOL && m < f.b + CONN_TOL && Math.abs(f.z - z) < CONN_TOL_Z);
+}
 /** 插进平台的路（"路:平台"）：重叠的部分由平台盖住，不按后放的优先 */
 let inserted = new Set<string>();
 /** 坡插进平台（"坡:平台"）：掏空平台，或者叠在平台上 */
@@ -217,7 +291,14 @@ function solveAll(doc: Doc): Solved {
     if (!l) frames.set(k, (l = []));
     l.push(e);
   }
-  const ctxs = [...frames].map(([ang, es]) => frameCells(es, ang));
+  // 特殊路块 16 的端面算连接面：按朝向分好（倾斜的不算）
+  const assetsBy = new Map<number, AssetElem[]>();
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'asset' || e.q) continue;
+    const k = e.ang ?? 0;
+    (assetsBy.get(k) ?? assetsBy.set(k, []).get(k)!).push(e);
+  }
+  const ctxs = [...frames].map(([ang, es]) => frameCells(es, ang, assetsBy.get(ang) ?? []));
   crossCover(ctxs);
   for (const c of ctxs) frameRuns(c);
   crossField(ctxs);
@@ -417,7 +498,7 @@ function mergeSolved(out: Solved, r: Omit<Solved, 'loops'>, m: M3 | null, t: V3,
 }
 
 /** 一个朝向：分层、折线、格子与外沿（到合并外沿之前） */
-function frameCells(all: Elem[], ang: number): FrameCtx {
+function frameCells(all: Elem[], ang: number, assets: AssetElem[] = []): FrameCtx {
   const bases = all.flatMap((e) => (e.kind === 'obj' ? [basePiece(e)].filter((p): p is Piece => !!p) : []));
   const docElems = all.filter((e) => e.kind === 'box' || e.kind === 'piece');
   slopeOver = slopeOverlaps(docElems);
@@ -491,6 +572,7 @@ function frameCells(all: Elem[], ang: number): FrameCtx {
   elemGrid = new Grid<Elem>(10);
   for (const e of elems) { const f = footprint(e); elemGrid.add(e, f.x0, f.y0, f.x1, f.y1); }
   findFolds(layers);
+  connFaces = connectorFaces(all, pieces, assets);
   for (const L of layers) (L.slope ? buildSlopeCells : buildFlatCells)(L, elems);
   return { ang, elems, pieces, layers, owner: auto.owner };
 }
@@ -777,6 +859,11 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
     xs.push(clamp(f.x0, bx0, bx1), clamp(f.x1, bx0, bx1)); ys.push(clamp(f.y0, by0, by1), clamp(f.y1, by0, by1));
   }
   for (const f of L.folds) for (const v of [f.q0, f.q1]) (f.ax === 0 ? ys : xs).push(v);
+  // 连接面的两端也切一刀：路比连接面宽时只有贴着的那一段开口
+  for (const f of connFaces) {
+    if (Math.abs(f.z - L.z) >= CONN_TOL_Z || f.b < (f.ax === 0 ? bx0 : by0) || f.a > (f.ax === 0 ? bx1 : by1)) continue;
+    for (const v of [f.a, f.b]) (f.ax === 0 ? xs : ys).push(clamp(v, f.ax === 0 ? bx0 : by0, f.ax === 0 ? bx1 : by1));
+  }
   const cx = clusterer(xs), cy = clusterer(ys);
   const X = cx.reps, Y = cy.reps;
   const nx = X.length - 1, ny = Y.length - 1;
@@ -849,6 +936,8 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
         const pid = isPiece(o) ? o : nb;
         const face = faceIn(L, piece(pid), pid === o ? d : opp(d));
         if (face.t !== 'wall' && face.style === L.style) continue;
+        if (connAt(ax, c, a, b, d, L.z) || connAt(ax, c, a, b, opp(d), L.z)) continue; // 木栅栏底座顶层的侧面
+
         units.push({ ax, c, a, b, n: d, owner: o, kind: 'exp' });
         continue;
       }
@@ -859,7 +948,9 @@ function buildFlatCells(L: Layer, elems: Elem[]) {
       if (!forced && L.folds.some((f) => f.n === d && Math.abs(f.line - c) < EPS_TOUCH && m > f.q0 && m < f.q1)) continue;
       const bx = box(o);
       const openSide = !!bx && !!((bx.open ?? 0) & (1 << d)) && Math.abs(c - [sfp.get(o)!.x1, sfp.get(o)!.y1, sfp.get(o)!.x0, sfp.get(o)!.y0][d]) < EPS;
-      units.push({ ax, c, a, b, n: d, owner: o, kind: openSide ? 'open' : 'exp' });
+      // 贴着机关的对准方块、特殊路块 16 的端面：自动开口（手动封口的除外）
+      const conn = !forced && !!bx && connAt(ax, c, a, b, d, L.z);
+      units.push({ ax, c, a, b, n: d, owner: o, kind: openSide || conn ? 'open' : 'exp' });
     }
   }
   L.edges = mergeEdges(units, true);
