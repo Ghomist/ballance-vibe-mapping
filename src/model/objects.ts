@@ -97,7 +97,7 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'P_Modul_30', cat: 'module', label: '跷跷板', anchor: [9.9, 0.05, 0.5], more: [[-9.9, 0.05, 0.5]], split: [[0, 1]] },
   { type: 'P_Modul_34', cat: 'module', label: '落石', anchor: [-2.5, 0, 0], more: [[-12.9, 0, 0]], split: [[0, 1]] },
   { type: 'P_Modul_37', cat: 'module', label: 'T 型板', anchor: [1.23, 0.1, 0], more: [[-13.77, 7.23, 0], [-13.77, -7.24, 0]], split: [[1, 2]] },
-  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', snapTops: [[2.525, -2.515, 0], [2.525, 2.485, 0], [-2.475, 2.485, 0], [-2.475, -2.515, 0]], anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
+  { type: 'P_Modul_41', cat: 'module', label: '箱式浮板（帆板）', snapTops: [[2.475, -2.485, 0], [2.475, 2.515, 0], [-2.525, 2.515, 0], [-2.525, -2.485, 0]], anchor: [3.98, 0.02, 0, 1, 5], more: [[-4.03, 0.02, 0, 1, 5]], split: [[0, 1]] },
   { type: 'PE_Balloon', cat: 'module', label: '终点气球', anchor: [24.57, 0.17, 0.01], unique: true },
   // 灯塔：对准方块是塔底那块 5×5 的地板（厚 2.23，顶面就是塔里的地面），像一格路面一样对齐
   { type: 'Latern', cat: 'deco', label: '灯塔', anchor: [0, 0, 2.23, 5, 5, 2.23] },
@@ -127,7 +127,8 @@ const FAKES = new Set([
 export const FAKE_FIX: Record<string, { rot?: number; dx?: number; dy?: number; dz?: number; pitch?: number }> = {
   Fake_Modul_17: { rot: 90, dz: -3 },
   Fake_Modul_03: { dz: -9.1 },
-  Fake_Modul_41: { dz: -1.35 },
+  // 模型和占位符差 180°：转过来箱子才在两个对准方块正中间（箱子、横杆的范围都和占位符对上）
+  Fake_Modul_41: { rot: 180, dz: -1.35 },
   Fake_Modul_30: { pitch: -10, dz: 2.55 },
   Fake_Modul_19: { dx: -2.92, dy: -2.5, dz: -0.1 },
 };

@@ -577,3 +577,12 @@ body.narrow #merge, body.narrow #group, body.narrow #ungroup, body.narrow #grid,
 
 /* 帮助正文可以选中复制，指针用文字的 */
 .help-body p, .help-body li, .help-body td { cursor: var(--cur-text, text); }
+
+/* 手机：卡片上的滑动由 app.ts 的 cardPress 处理，长按不弹系统菜单 */
+#work #palette .lib-card { -webkit-touch-callout: none; }
+/* 手机：设置、关于、属性面板手指滑动翻页，滚到头不带动页面；数字框竖着滑也是翻页 */
+body.touch-ui .settings-panel, body.touch-ui #props { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+body.touch-ui .num-field input { touch-action: pan-y; }
+
+/* 设置、关于弹窗的最大高度由 app.ts 的 fitPanels 按屏幕可见高度算 */
+#settings-panel, #about-panel { box-sizing: border-box; overflow-y: auto; }

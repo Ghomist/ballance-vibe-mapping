@@ -284,7 +284,7 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
 
     // 顶端的吸附点：箱式浮板箱子的四个角、特殊路块 16 高墙墙顶
     const sail = feats({ id: 7, kind: 'obj', type: 'P_Modul_41', x: 10, y: 20, z: 3, rot: 1 } as Obj);
-    check(sail.verts.length === 12 && sail.verts.some((v) => near(v[0], 10 - 2.485, 2e-3) && near(v[1], 20 + 2.525, 2e-3) && near(v[2], 3, 2e-3)), '箱式浮板箱顶四个角跟着位置和朝向走');
+    check(sail.verts.length === 12 && sail.verts.some((v) => near(v[0], 10 - 2.515, 2e-3) && near(v[1], 20 + 2.475, 2e-3) && near(v[2], 3, 2e-3)), '箱式浮板箱顶四个角跟着位置和朝向走');
     check(ASSET_SNAP.Modul_16.verts.filter((v) => v[2] > 5).length === 8, '特殊路块 16 高墙顶有 8 个吸附点');
 
     // 机关：只有对准方块顶面的预设点

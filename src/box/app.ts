@@ -144,6 +144,12 @@ TOUCH_MQ.addEventListener('change', () => {
 });
 /** 触摸屏的框选开关：打开时单指在空白处拖是框选，关着是环视（按钮在文件末尾） */
 let touchMarquee = false;
+/** 手指按下时要做的单击操作：等手指抬起、确认没有变成拖动或双指才执行 */
+let touchTap: { fn: () => void } | null = null;
+/** 手机上正在拖着摆放的那根手指 */
+let grabTouchId: number | null = null;
+/** 鼠标立刻执行；手指等抬起（双指时第一根手指碰到开关不算数） */
+const tapOr = (e: PointerEvent, fn: () => void) => { if (e.pointerType === 'touch') touchTap = { fn }; else fn(); };
 /** 这次点选是加选：按着 Shift，或者手机上开着多选 */
 const addPick = (e: PointerEvent) => e.shiftKey || (touchMarquee && e.pointerType === 'touch');
 /**
@@ -618,7 +624,8 @@ function currentHints(): Hint[] {
     const t = drag?.t;
     if (t === 'marquee') return [H(['拖动'], '框选范围'), H(['松手'], '完成框选')];
     if (t === 'place') return [H(['拖动'], '摆放位置'), H(['松手'], '放下')];
-    if ((drag?.t === 'grab' || drag?.t === 'rotate') && !drag.gz) return [H(['轻点'], drag.t === 'grab' ? '放下' : '确定')];
+    if (drag?.t === 'grab' && !drag.gz) return [H(['单指拖'], '移动'), H(['轻点'], '放下'), H(['双指'], '平移 / 缩放')];
+    if (drag?.t === 'rotate' && !drag.gz) return [H(['轻点'], '确定')];
     if (t && t !== 'click') {
       const what = t === 'grab' || t === 'vsnap' ? '移动' : t === 'rotate' ? '旋转' : t === 'thick' ? '改厚度' : t === 'tilt' || t === 'railTilt' ? '拉坡' : '改尺寸';
       return [H(['拖动'], what), H(['松手'], '完成')];
@@ -1305,7 +1312,7 @@ function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
 
 type Drag =
   /** G：移动模式（跟着鼠标走，X / Y / Z 限制轴向，Shift+轴 排除这根轴；左键 / 回车确定，右键 / Esc 取消）；dup：复制出来的，取消就删掉 */
-  | { t: 'grab'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; axis: 0 | 1 | 2 | null; excl: 0 | 1 | 2 | null; grab: P3 | null; num: string; dup?: boolean; /** 按住移动手柄的箭头拖：松手就确定 */ gz?: boolean }
+  | { t: 'grab'; orig: Map<number, string>; b: Bounds; start: THREE.Vector3; axis: 0 | 1 | 2 | null; excl: 0 | 1 | 2 | null; grab: P3 | null; num: string; dup?: boolean; /** 按住移动手柄的箭头拖：松手就确定 */ gz?: boolean; /** 手机：手指上一次在移动平面上的落点（世界坐标） */ touchHit?: THREE.Vector3 }
   /** R：旋转模式（绕选中整体的中心，默认绕 Z，X / Y / Z 换轴，Ctrl 按 15° 吸附） */
   | { t: 'rotate'; orig: Map<number, string>; pivot: THREE.Vector3; axis: 0 | 1 | 2; prev: number; acc: number; num: string; /** 按住圆环或东西拖：松手就确定 */ gz?: boolean }
   | { t: 'size'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; side: Dir }
@@ -1318,7 +1325,7 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean; rotOff: number }
+  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
   | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean };
 let drag: Drag | null = null;
@@ -1466,8 +1473,13 @@ function tickFly(dt: number) {
 
 el.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
-  if (drag?.t === 'grab' || drag?.t === 'rotate') { finishDrag(); return; } // 移动 / 旋转模式里：左键确定
-  if (splitMode) { doSplit(e); return; }
+  if (e.pointerType === 'touch' && touchPos.size > 1) return; // 双指手势：别的操作都不响应
+  if (drag?.t === 'grab' || drag?.t === 'rotate') { // 移动 / 旋转模式里：左键确定（手机：轻点确定，拖动摆放）
+    tapOr(e, finishDrag);
+    if (e.pointerType === 'touch' && drag.t === 'grab' && !drag.gz) beginTouchGrab(e, drag);
+    return;
+  }
+  if (splitMode) { tapOr(e, () => doSplit(e)); return; }
   if (guardMode) { guardDown(e); return; }
   // 模式的手柄：移动的箭头、旋转的圆环、拉伸 / 坡面的抓点（按着 Ctrl / Alt / V 时是别的拖法）
   if (!e.ctrlKey && !e.altKey && !vHeld) {
@@ -1489,21 +1501,25 @@ el.addEventListener('pointerdown', (e) => {
   // 点机关挡块上的开关：这块挡块生成 / 不生成
   const stog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? stopToggleAt(e) : null;
   if (stog) {
-    snapshot();
-    toggleStopper(doc.elems[stog.id] as Obj, stog.part);
-    rebuild();
+    tapOr(e, () => {
+      snapshot();
+      toggleStopper(doc.elems[stog.id] as Obj, stog.part);
+      rebuild();
+    });
     return;
   }
   // 点路面边上的开口开关：切换这一侧开口 / 封口
   const tog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? openToggleAt(e) : null;
   if (tog) {
-    snapshot();
-    const b = doc.elems[tog.id] as Box;
-    // 点一下依次切换：自动 → 开口 → 封口 → 自动
-    const next: SideMode = ({ auto: 'open', open: 'closed', closed: 'auto' } as const)[sideMode(b, tog.side)];
-    setSideMode(b, tog.side, next);
-    flash(SIDE_MSG[next]);
-    rebuild();
+    tapOr(e, () => {
+      snapshot();
+      const b = doc.elems[tog.id] as Box;
+      // 点一下依次切换：自动 → 开口 → 封口 → 自动
+      const next: SideMode = ({ auto: 'open', open: 'closed', closed: 'auto' } as const)[sideMode(b, tog.side)];
+      setSideMode(b, tog.side, next);
+      flash(SIDE_MSG[next]);
+      rebuild();
+    });
     return;
   }
   if (vHeld && sel.size) {
@@ -1835,7 +1851,7 @@ function transformKey(e: KeyboardEvent): boolean {
 }
 function cancelTransform() {
   const d = drag;
-  if (d?.t !== 'grab' && d?.t !== 'rotate') return;
+  if (!d || !('orig' in d) || d.t === 'place') return;
   anim = null; snapping = false;
   if (d.t === 'grab' && d.dup) { for (const id of d.orig.keys()) delete doc.elems[id]; sel.clear(); }
   else restore(d.orig);
@@ -1852,6 +1868,8 @@ window.addEventListener('keyup', (e) => { if (e.key === 'Control' && rotCtrl) { 
 
 window.addEventListener('pointermove', (e) => {
   if (!drag) {
+    // 手指没有悬停：环视、双指时什么都不高亮（只有沿路边拖护栏要跟着手指）
+    if (e.pointerType === 'touch') { if (guardDrag) guardHover(e); return; }
     if (e.target !== el) { setHandleAim(null); return; }
     if (splitMode) { splitHover(e); return; }
     // 悬停在模式手柄上：高亮，鼠标变成手形
@@ -1883,6 +1901,14 @@ window.addEventListener('pointermove', (e) => {
     const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
     if (id !== hoverId) { hoverId = id; drawOverlay(); }
     return;
+  }
+  // 双指手势时不动；手机上复制后的放置模式：按下它的那根手指拖动才摆放（手指还没动的时候可能只是轻点确定）
+  if (e.pointerType === 'touch') {
+    if (touchPos.size > 1) return;
+    if ((drag.t === 'grab' || drag.t === 'rotate') && !drag.gz) {
+      if (drag.t !== 'grab' || e.pointerId !== grabTouchId || touchTap) return;
+      drag.touchHit = planeHit(e, grabPlane(drag)) ?? drag.touchHit;
+    }
   }
   nearVirtual.clear();
   if (drag.t === 'grab') { grabMove(e); return; }
@@ -2436,8 +2462,8 @@ function placeEnd(e: PointerEvent) {
   if (drag?.t !== 'place') return;
   const over = document.elementFromPoint(e.clientX, e.clientY) === el;
   document.body.classList.remove('placing');
-  if (!drag.moved && !over) {
-    // 点击按钮：放到视图中心
+  if (!drag.moved && !over && !drag.touch) {
+    // 点击按钮：放到视图中心（手指按住又松开不算）
     snapshot();
     const es = newElems(drag.type);
     for (const n of es) doc.elems[n.id] = n;
@@ -2588,9 +2614,72 @@ libSearch.addEventListener('input', renderLib);
 libGrid.addEventListener('pointerdown', (e) => {
   const c = (e.target as Element).closest<HTMLElement>('.lib-card');
   if (!c || e.button !== 0) return;
+  if (e.pointerType === 'touch') {
+    const quiet = libFling !== 0; // 正在惯性滚动：这一下只是按停，不算点卡片
+    cancelAnimationFrame(libFling); libFling = 0;
+    cardPress = { id: e.pointerId, type: c.dataset.type!, x: e.clientX, y: e.clientY, timer: window.setTimeout(liftCard, CARD_HOLD_MS), quiet, scroll: null };
+    return;
+  }
   e.preventDefault();
   startPlace(c.dataset.type!);
 });
+// 手机上卡片要让位给滑动翻页：竖着滑是翻页，轻点什么都不放；按住一会儿，或者横着拖出来，才开始摆放。
+// 滚动自己做（卡片是 touch-action: none）：交给浏览器的话，按住之后再竖着拖会被它抢去滚动，停靠在底部时就拖不上去了
+const CARD_HOLD_MS = 300;
+let cardPress: { id: number; type: string; x: number; y: number; timer: number; quiet: boolean; scroll: { top: number; y0: number; y: number; t: number; v: number } | null } | null = null;
+let libFling = 0;
+const libBody = palette.querySelector<HTMLElement>('.lib-body')!;
+function liftCard() {
+  if (!cardPress) return;
+  clearTimeout(cardPress.timer);
+  const { type } = cardPress;
+  cardPress = null;
+  if (drag) return;
+  startPlace(type);
+  const d = drag as Drag | null; // startPlace 刚设的，TS 看不出来
+  if (d?.t === 'place') { d.touch = true; navigator.vibrate?.(12); }
+}
+function dropCardPress() { if (cardPress) { clearTimeout(cardPress.timer); cardPress = null; } }
+/** 松手后接着滑一段，慢慢停下 */
+function flingLib(v: number) {
+  let last = performance.now();
+  const step = (now: number) => {
+    const dt = now - last;
+    last = now;
+    libBody.scrollTop += v * dt;
+    v *= Math.pow(0.95, dt / 16);
+    libFling = Math.abs(v) > 0.03 ? requestAnimationFrame(step) : 0;
+  };
+  libFling = requestAnimationFrame(step);
+}
+window.addEventListener('pointermove', (e) => {
+  const p = cardPress;
+  if (!p || e.pointerId !== p.id) return;
+  if (!p.scroll) {
+    const dx = Math.abs(e.clientX - p.x), dy = Math.abs(e.clientY - p.y);
+    if (dx > 12 && dx > dy) { liftCard(); return; }
+    if (dy <= 8) return;
+    clearTimeout(p.timer);
+    p.scroll = { top: libBody.scrollTop, y0: e.clientY, y: e.clientY, t: performance.now(), v: 0 };
+    return;
+  }
+  const sc = p.scroll, now = performance.now(), dt = Math.max(1, now - sc.t);
+  libBody.scrollTop = sc.top - (e.clientY - sc.y0);
+  sc.v = sc.v * 0.6 + ((sc.y - e.clientY) / dt) * 0.4;
+  sc.y = e.clientY; sc.t = now;
+}, true);
+window.addEventListener('pointerup', (e) => {
+  const p = cardPress;
+  if (!p || e.pointerId !== p.id) return;
+  dropCardPress();
+  if (p.scroll) { if (performance.now() - p.scroll.t < 80 && Math.abs(p.scroll.v) > 0.1) flingLib(p.scroll.v); }
+  else if (!p.quiet) flash('按住卡片，或者横着拖出来，放到场景里');
+}, true);
+window.addEventListener('pointercancel', (e) => {
+  if (e.pointerId === cardPress?.id) dropCardPress();
+  if (e.pointerType === 'touch' && drag?.t === 'place' && drag.touch) placeEnd(e);
+}, true);
+libGrid.addEventListener('contextmenu', (e) => e.preventDefault());
 /** 收起 / 展开：内容先淡出，大小缓动到位后再换内容淡入（见 app.css 的 .hiding / .narrow / .folded） */
 const FOLD_MS = 200;
 let foldSeq = 0;
@@ -2612,7 +2701,7 @@ palette.querySelector('#lib-fold')!.addEventListener('click', (e) => { e.stopPro
 palette.addEventListener('click', () => { if (palette.classList.contains('folded')) toggleFold(); });
 palette.classList.toggle('folded', prefs.folded);
 palette.classList.toggle('narrow', prefs.folded);
-palette.querySelector<HTMLElement>('.lib-head .title')!.title = '按住卡片拖到场景里放下（拖动中 R 旋转、右键取消），点一下放到视图中心';
+palette.querySelector<HTMLElement>('.lib-head .title')!.title = touchUI ? '竖着滑动翻页；按住卡片或横着拖出来，放到场景里' : '按住卡片拖到场景里放下（拖动中 R 旋转、右键取消），点一下放到视图中心';
 // 拖素材库的内侧边缘改宽度（在底部时改高度），双击恢复默认
 const libResize = document.createElement('div');
 libResize.className = 'lib-resize';
@@ -2719,7 +2808,7 @@ function doSplit(e: PointerEvent) {
   const n = splitBox(doc, s.id, s.axis, s.t);
   if (n === null) { undo.pop(); flash('太靠边了，切不开', true); return; }
   rebuild();
-  splitHover(e);
+  if (e.pointerType !== 'touch') splitHover(e);
 }
 // ---------------- 护栏 ----------------
 
@@ -2922,7 +3011,7 @@ function doDuplicate(mouse: { clientX: number; clientY: number }) {
   rebuild();
   // 复制出来的直接进入移动模式（和 Blender 的 Shift+D 一样）
   startGrab(mouse, true);
-  flash('复制：移动鼠标，左键放下，右键 / Esc 取消');
+  flash(touchUI ? '复制：单指拖动摆放，轻点放下' : '复制：移动鼠标，左键放下，右键 / Esc 取消');
 }
 function nudge(d: V3) {
   if (!sel.size) return;
@@ -2937,7 +3026,8 @@ function undoOnce() { if (undo.length) { redo.push(JSON.stringify(doc)); restore
 function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); restoreDoc(redo.pop()!); keepSel(); rebuild(); } }
 
 const lastMouse = { clientX: 0, clientY: 0 };
-window.addEventListener('pointermove', (e) => { lastMouse.clientX = e.clientX; lastMouse.clientY = e.clientY; }, true);
+let lastPointerTouch = false;
+window.addEventListener('pointermove', (e) => { lastMouse.clientX = e.clientX; lastMouse.clientY = e.clientY; lastPointerTouch = e.pointerType === 'touch'; }, true);
 
 document.getElementById('merge')!.addEventListener('click', doMerge);
 document.getElementById('group')!.addEventListener('click', doGroup);
@@ -3245,11 +3335,20 @@ document.addEventListener('pointerdown', (ev) => {
   const attr = ['data-k', 'data-rf', 'data-key', 'id'].find((a) => inp.hasAttribute(a))!;
   const query = `input[${attr}="${inp.getAttribute(attr)}"]`;
   const unit = numUnit(inp);
-  const sx = ev.clientX, v0 = +inp.value;
+  const sx = ev.clientX, sy = ev.clientY, v0 = +inp.value;
   let moved = false;
+  const stop = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', stop);
+    document.body.classList.remove('num-drag');
+    numDrag = false;
+  };
   const move = (e: PointerEvent) => {
     const dx = e.clientX - sx;
     if (!moved) {
+      // 手指竖着滑：是在滚动面板，不改数值
+      if (e.pointerType === 'touch' && Math.abs(e.clientY - sy) >= 3 && Math.abs(e.clientY - sy) > Math.abs(dx)) { stop(); return; }
       if (Math.abs(dx) < 3) return;
       moved = true;
       document.body.classList.add('num-drag');
@@ -3262,12 +3361,10 @@ document.addEventListener('pointerdown', (ev) => {
     cur.dispatchEvent(new Event('change', { bubbles: true }));
   };
   const up = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    document.body.classList.remove('num-drag');
-    numDrag = false;
+    stop();
     if (!moved) { inp.focus(); inp.select(); }
   };
+  window.addEventListener('pointercancel', stop);
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 });
@@ -3586,6 +3683,22 @@ document.getElementById('settings')!.addEventListener('click', (e) => {
 });
 
 const aboutPanel = document.getElementById('about-panel')!;
+/**
+ * 设置、关于弹窗限高成可滚动的区域：按屏幕实际看得见的高度算。
+ * 手机上地址栏、工具栏占着位置时，视图容器可能比可见区域还高，CSS 按容器算的 100% 会超出屏幕
+ */
+function fitPanels() {
+  const vv = window.visualViewport;
+  const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  for (const p of [settingsPanel, aboutPanel]) {
+    if (p.hidden) continue;
+    const box = (p.offsetParent ?? document.body).getBoundingClientRect();
+    p.style.maxHeight = `${Math.max(120, Math.min(bottom, box.bottom) - (box.top + p.offsetTop) - 8)}px`;
+  }
+}
+for (const p of [settingsPanel, aboutPanel]) new MutationObserver(fitPanels).observe(p, { attributes: true, attributeFilter: ['hidden'] });
+window.addEventListener('resize', fitPanels);
+window.visualViewport?.addEventListener('resize', fitPanels);
 aboutPanel.classList.add('fade');
 document.getElementById('about')!.addEventListener('click', (e) => {
   showEl(aboutPanel, !aboutPanel.classList.contains('shown'));
@@ -4042,6 +4155,40 @@ const touchPos = new Map<number, { x: number; y: number }>();
 // 长按再拖：框选一次（手指没怎么动地按住一会儿才算，手指一动就还是环视）；手机上没有 Shift，所以框选一律是加选，轻点空白处取消选择
 const LONG_PRESS_MS = 320;
 let pressTimer = 0, pressAt = { x: 0, y: 0 };
+/** 手机上放置模式的移动平面：物体顶面的高度 */
+const grabPlane = (d: { start: THREE.Vector3 }) => new THREE.Plane(new THREE.Vector3(0, 0, 1), -d.start.z);
+/** 手指按下开始摆放：手指按在哪里都行，物体从现在的位置跟着手指的位移走，不跳到手指下面。落点用世界坐标记，中途双指调过视角也对得上 */
+function beginTouchGrab(e: PointerEvent, d: Extract<Drag, { t: 'grab' }>) {
+  const hit = planeHit(e, grabPlane(d));
+  if (!hit) return;
+  d.start.add(hit.clone().sub(d.touchHit ?? d.start));
+  d.touchHit = hit;
+  grabTouchId = e.pointerId;
+  el.setPointerCapture(e.pointerId);
+  pauseControls();
+}
+/** 第二根手指落下：双指手势优先。第一根手指已经开始的编辑作废并撤回，视图操作交还给 OrbitControls（要赶在它处理这根手指之前） */
+function yieldToGesture() {
+  touchTap = null;
+  grabTouchId = null;
+  clearTimeout(pressTimer);
+  if (guardDrag) { guardDrag = null; guardPreview = null; dragInfo = ''; drawOverlay(); }
+  if (drag?.t === 'click' || drag?.t === 'marquee') { drag = null; marqueeEl.classList.remove('shown', 'open'); }
+  else if (drag && drag.t !== 'place' && !((drag.t === 'grab' || drag.t === 'rotate') && !drag.gz)) {
+    cancelTransform();
+    snapGrab = null;
+    moveGizmo.setHot(null); rotGizmo.setHot(null);
+    syncProps();
+  }
+  if (gizmoPausedControls) {
+    gizmoPausedControls = false;
+    if (!fly) controls.enabled = true;
+    // 暂停期间 OrbitControls 没记手指位置：补上，不然双指一开始视图会跳
+    const known = (controls as unknown as { _pointerPositions: Record<number, THREE.Vector2> })._pointerPositions;
+    for (const [id, p] of touchPos) known[id]?.set(p.x, p.y);
+  }
+  updateStatus();
+}
 function pressMarquee() {
   if (drag?.t !== 'click') return;
   const { sx, sy } = drag;
@@ -4060,12 +4207,12 @@ el.addEventListener('pointerdown', (e) => {
   clearTimeout(pressTimer);
   pressAt = { x: e.clientX, y: e.clientY };
   if (touchPos.size === 1 && !touchMarquee) pressTimer = window.setTimeout(pressMarquee, LONG_PRESS_MS);
-  if (touchPos.size > 1 && (drag?.t === 'click' || drag?.t === 'marquee')) { drag = null; marqueeEl.classList.remove('shown', 'open'); updateStatus(); }
+  if (touchPos.size > 1) yieldToGesture();
 }, true);
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType !== 'touch' || !touchPos.has(e.pointerId)) return;
   touchPos.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) >= 10) clearTimeout(pressTimer);
+  if (Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) >= 10) { clearTimeout(pressTimer); touchTap = null; }
   if (touchPos.size !== 2) return;
   const d = fingerDist();
   if (pinchDist > 0 && d > 0) {
@@ -4079,6 +4226,17 @@ for (const t of ['pointerup', 'pointercancel']) window.addEventListener(t, (e) =
   clearTimeout(pressTimer);
   touchPos.delete((e as PointerEvent).pointerId);
   pinchDist = touchPos.size === 2 ? fingerDist() : 0;
+  if (touchTap && touchPos.size === 0) { const t = touchTap; touchTap = null; if (e.type === 'pointerup') t.fn(); }
+  if (touchPos.size === 0) {
+    grabTouchId = null;
+    // 放置模式抬手后还没结束：环视要还回去，下一根手指 OrbitControls 才记得住
+    if (gizmoPausedControls && drag?.t === 'grab' && !drag.gz) { gizmoPausedControls = false; controls.enabled = true; }
+  }
+}, true);
+window.addEventListener('blur', () => { touchPos.clear(); touchTap = null; pinchDist = 0; });
+// 双指操作视图时，别的手指碰到面板、按钮都不算（手掌、拇指误触）
+for (const t of ['pointerdown', 'click']) window.addEventListener(t, (e) => {
+  if (touchPos.size >= 2 && e.target !== el) { e.stopImmediatePropagation(); e.preventDefault(); }
 }, true);
 // iOS Safari 不认 user-scalable=no：双指缩放整个页面要另外拦住
 document.addEventListener('gesturestart', (e) => e.preventDefault());
@@ -4425,7 +4583,7 @@ function syncHandles() {
   if (k) {
     drawOverlay(); invalidate();
     // 按住 Ctrl / Alt 进模式时鼠标可能没动，这里也算一次
-    if (document.elementFromPoint(lastMouse.clientX, lastMouse.clientY) === el) updateAim(lastMouse, modKeys.ctrl || modKeys.alt);
+    if (!lastPointerTouch && document.elementFromPoint(lastMouse.clientX, lastMouse.clientY) === el) updateAim(lastMouse, modKeys.ctrl || modKeys.alt);
   }
 }
 function handleAt(e: { clientX: number; clientY: number }): Handle | null {
