@@ -1,8 +1,9 @@
 // 钢轨网格：正八边形截面沿路径扫掠。单轨平顶朝上、双轨尖顶朝上（与原版和 BBP 一致），法线取径向，呈平滑效果。
 import {
   DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, Rail, RailState,
-  advance, kindSpans, railCenters, sampleRail, sideLowerSpan, stateAt,
+  advance, curveSamples, kindSpans, railCenters, sampleRail, sideLowerSpan, stateAt,
 } from '../model/rail';
+import { parallelFrames } from '../model/spline';
 import { dome, fillet, sweepTube, type TubeCap } from './railing';
 import { apply, fromQuat, type V3 } from '../box/xform';
 
@@ -26,6 +27,7 @@ export function buildRail(r: Rail, postDepth = 2): RailMesh {
 function railLocal(r: Rail, postDepth: number): RailMesh {
   const out: RailMesh = { pos: [], nrm: [], caps: [] };
   if (!r.pieces.length) return out;
+  if (r.curve?.frame === 'parallel') return parallelRail(r);
   if (r.side && r.pieces.length === 1 && r.pieces[0].angle === 0) return buildSideRail(r, postDepth);
   const samples = sampleRail(r);
   const spans = kindSpans(r);
@@ -108,10 +110,39 @@ export function mergeRails(rails: RailMesh[]): number[][] {
   return [...out.values()];
 }
 
+/** 平行传递的样条线钢轨：截面垂直于曲线，朝向由平行传递和侧倾角决定，能竖直爬升、翻圈 */
+function parallelRail(r: Rail): RailMesh {
+  const out: RailMesh = { pos: [], nrm: [], caps: [] };
+  const sm = curveSamples(r);
+  if (sm.length < 2) return out;
+  const kind = r.pieces[0]?.kind === 'mono' ? 'mono' : 'double';
+  const fr = parallelFrames(sm);
+  const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
+  const phase = kind === 'mono' ? 22.5 : 0;
+  for (const off of kind === 'double' ? [-RAIL_SPAN / 2, RAIL_SPAN / 2] : [0]) {
+    const rings: Ring[] = sm.map((m, i) => {
+      const { L, U } = fr[i];
+      const c = m.p.map((v, n) => v + L[n] * off + U[n] * zOff);
+      const n: number[][] = [], v: number[][] = [];
+      for (let k = 0; k < 8; k++) {
+        const th = rad(phase + k * 45), co = Math.cos(th), si = Math.sin(th);
+        const d = [L[0] * co + U[0] * si, L[1] * co + U[1] * si, L[2] * co + U[2] * si];
+        n.push(d);
+        v.push(c.map((x, a) => x + d[a] * RAIL_RADIUS));
+      }
+      return { c, v, n };
+    });
+    skin(out, rings, [!!r.tips?.[0], !!r.tips?.[1]], [[...sm[0].t], [...sm[sm.length - 1].t]]);
+  }
+  return out;
+}
+
+type Ring = { c: number[]; v: number[][]; n: number[][] };
+
 function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number, round: [boolean, boolean]) {
   const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
   const phase = kind === 'mono' ? 22.5 : 0;
-  const rings: { c: number[]; v: number[][]; n: number[][] }[] = [];
+  const rings: Ring[] = [];
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     const h = rad(p.heading);
@@ -134,6 +165,11 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     }
     rings.push({ c, v, n });
   }
+  skin(out, rings, round);
+}
+
+/** 一圈圈截面连成管子，两头封盖。ends：两头的切线（平行传递时端面垂直于切线）；没给就是竖直端面，封盖朝水平方向 */
+function skin(out: RailMesh, rings: Ring[], round: [boolean, boolean], ends?: [number[], number[]]) {
   const tri = (p: number[][], n: number[][]) => { for (let i = 0; i < 3; i++) { out.pos.push(...p[i]); out.nrm.push(...n[i]); } };
   for (let i = 0; i + 1 < rings.length; i++) {
     const A = rings[i], B = rings[i + 1];
@@ -149,7 +185,7 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     if (ball) {
       // 截面是竖直的，半球和管子一样按坡度错切：顶点沿水平方向走出去，同时升高坡度那么多
       const d = sub(R.c, inner.c), l = Math.hypot(d[0], d[1]) || 1;
-      dome(R.v, R.c, [dir[0], dir[1], d[2] / l], RAIL_RADIUS, out);
+      dome(R.v, R.c, ends ? dir : [dir[0], dir[1], d[2] / l], RAIL_RADIUS, out);
       return;
     }
     const at = out.pos.length;
@@ -162,8 +198,8 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
   const first = rings[0], last = rings[rings.length - 1];
   // 端面是竖直的：封盖朝水平方向
   const flat = (a: number[]) => normalize([a[0], a[1], 0]);
-  const t0 = flat(sub(rings[Math.min(1, rings.length - 1)].c, first.c));
-  const t1 = flat(sub(last.c, rings[Math.max(rings.length - 2, 0)].c));
+  const t0 = ends?.[0] ?? flat(sub(rings[Math.min(1, rings.length - 1)].c, first.c));
+  const t1 = ends?.[1] ?? flat(sub(last.c, rings[Math.max(rings.length - 2, 0)].c));
   cap(first, t0.map((x) => -x), true, round[0], rings[Math.min(1, rings.length - 1)]);
   cap(last, t1, false, round[1], rings[Math.max(rings.length - 2, 0)]);
 }

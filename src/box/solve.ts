@@ -13,11 +13,13 @@
 import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
 import { type Edge as OEdge, type Loop, loopsFromEdges, push as pushEdge } from '../model/outline';
 import {
-  type AssetElem, BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Obj, Piece, SINK_DEPTH, Style,
-  anchorRects, basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles,
+  type AssetElem, BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Obj, Piece, type RailElem, SINK_DEPTH, Style,
+  anchorRects, basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles, toWorld,
 } from './types';
 import { objType } from '../model/objects';
 import { type M3, apply, rotZ } from './xform';
+import { buildCurveRoad, roadRings, type RoadRing } from '../geom/curve-road';
+import type { CurveRoadEnd } from '../model/spline';
 import { ShapeUtils, Vector2 } from 'three';
 
 export interface ElemMeshOut {
@@ -247,6 +249,101 @@ function connAt(ax: 0 | 1, c: number, a: number, b: number, n: Dir, z: number) {
   const m = (a + b) / 2;
   return connFaces.some((f) => f.ax === ax && f.n === n && Math.abs(f.c - c) < CONN_TOL && m > f.a - CONN_TOL && m < f.b + CONN_TOL && Math.abs(f.z - z) < CONN_TOL_Z);
 }
+// ---------------- 曲线路面 ----------------
+
+/** 曲线路面的一个元素：两头算好的状态。P、out：端点和朝外的方向（世界坐标）；open：这一头要让相接的路面开口 */
+interface CurveEndInfo { r: RailElem; rings: RoadRing[]; kinds: [CurveRoadEnd, CurveRoadEnd]; ends: { P: V3; out: V3; z: number; open: boolean }[] }
+let curveEnds: CurveEndInfo[] = [];
+const CURVE_AXIS = 0.9995, CURVE_FLAT = 0.03;
+
+/** 方向 d 在朝向 ang 的坐标系里是不是沿着坐标轴、而且水平。是的话返回朝向（0 +x、1 +y、2 -x、3 -y） */
+function axisDir(d: V3, ang: number): Dir | null {
+  if (Math.abs(d[2]) > CURVE_FLAT) return null;
+  const a = (-ang * Math.PI) / 180, x = d[0] * Math.cos(a) - d[1] * Math.sin(a), y = d[0] * Math.sin(a) + d[1] * Math.cos(a);
+  const l = Math.hypot(x, y) || 1;
+  if (x / l > CURVE_AXIS) return 0;
+  if (y / l > CURVE_AXIS) return 1;
+  if (-x / l > CURVE_AXIS) return 2;
+  if (-y / l > CURVE_AXIS) return 3;
+  return null;
+}
+
+/** 算每条曲线路面两头的状态：自动模式下，朝外一点的地方有一样高、一样样式的平路面，或者别的曲线路面的一头正对着，就算接上了 */
+function curveRoadEnds(doc: Doc): CurveEndInfo[] {
+  const roads = Object.values(doc.elems).filter((e): e is RailElem => e.kind === 'rail' && !!e.road && !!e.curve && e.curve.pts.length >= 2);
+  if (!roads.length) return [];
+  const boxes = Object.values(doc.elems).filter((e): e is Box => e.kind === 'box' && !e.q && !e.slope);
+  const infos = roads.map((r) => {
+    const rings = roadRings(r);
+    const A = rings[0], B = rings[rings.length - 1];
+    const neg = (v: V3): V3 => [-v[0], -v[1], -v[2]];
+    return { r, rings, raw: [{ P: A.p, out: neg(A.t), z: A.p[2] }, { P: B.p, out: B.t, z: B.p[2] }] };
+  });
+  return infos.map((inf) => {
+    const kinds: CurveRoadEnd[] = [], ends: CurveEndInfo['ends'] = [];
+    inf.raw.forEach((e, n) => {
+      const mode = inf.r.road!.ends?.[n] ?? 'auto';
+      const onBox = boxes.some((b) => {
+        const ang = b.ang ?? 0;
+        if (b.style !== inf.r.road!.style || axisDir(e.out, ang) === null) return false;
+        const a = (-ang * Math.PI) / 180, qx = e.P[0] + e.out[0] * 0.3, qy = e.P[1] + e.out[1] * 0.3;
+        const x = qx * Math.cos(a) - qy * Math.sin(a), y = qx * Math.sin(a) + qy * Math.cos(a), f = footprint(b);
+        return x > f.x0 && x < f.x1 && y > f.y0 && y < f.y1 && Math.abs(b.z - e.z) < CONN_TOL_Z;
+      });
+      const onRoad = infos.some((o) => o !== inf && o.r.road!.style === inf.r.road!.style && o.raw.some((x) => Math.hypot(x.P[0] - e.P[0], x.P[1] - e.P[1], x.P[2] - e.P[2]) < 0.05 && x.out[0] * e.out[0] + x.out[1] * e.out[1] + x.out[2] * e.out[2] < -0.99));
+      const joined = onBox || onRoad;
+      kinds.push(mode === 'closed' ? 'closed' : mode === 'open' ? (joined ? 'joined' : 'open') : joined ? 'joined' : 'closed');
+      ends.push({ ...e, open: mode !== 'closed' && (mode === 'open' || joined) });
+    });
+    return { r: inf.r, rings: inf.rings, kinds: kinds as [CurveRoadEnd, CurveRoadEnd], ends };
+  });
+}
+
+/** 朝向 ang 的连接面：曲线路面开口的一头正对着坐标轴时，贴着它的路面边也开口 */
+function curveFaces(ang: number): ConnFace[] {
+  const out: ConnFace[] = [];
+  const a = (-ang * Math.PI) / 180, co = Math.cos(a), si = Math.sin(a);
+  for (const info of curveEnds) for (const e of info.ends) {
+    if (!e.open) continue;
+    const d = axisDir(e.out, ang);
+    if (d === null) continue;
+    const x = e.P[0] * co - e.P[1] * si, y = e.P[0] * si + e.P[1] * co;
+    // 路面的边朝着曲线路面：朝外的方向和曲线这一头朝外的方向相反
+    const n = opp(d);
+    out.push(d % 2 === 0 ? { ax: 1, c: x, a: y - HALF_ROAD, b: y + HALF_ROAD, n, z: e.z } : { ax: 0, c: y, a: x - HALF_ROAD, b: x + HALF_ROAD, n, z: e.z });
+  }
+  return out;
+}
+const HALF_ROAD = 2.5;
+
+/** 倾斜的曲线路面：元素坐标换到世界坐标 */
+function transformRoad(r: RailElem, parts: ElemMeshOut['parts']): ElemMeshOut['parts'] {
+  if (!r.q) return parts;
+  for (const p of Object.values(parts) as MeshPart[]) {
+    for (let i = 0; i + 2 < p.pos.length; i += 3) {
+      const w = toWorld(r, [p.pos[i], p.pos[i + 1], p.pos[i + 2]]);
+      p.pos[i] = w[0]; p.pos[i + 1] = w[1]; p.pos[i + 2] = w[2];
+    }
+  }
+  return parts;
+}
+
+/** 曲线路面的外沿：两侧，加上封口的端头（接着别的路的那头不算，外沿在那里接到别的路面上） */
+function curveRoadEdges(r: RailElem, rings: RoadRing[], kinds: [CurveRoadEnd, CurveRoadEnd]): OEdge[] {
+  if (r.q) return [];
+  const out: OEdge[] = [];
+  const P = (f: RoadRing, l: number): V3 => [f.p[0] + f.L[0] * l, f.p[1] + f.L[1] * l, f.p[2] + f.L[2] * l];
+  const unit2 = (x: number, y: number): [number, number] => { const l = Math.hypot(x, y) || 1; return [x / l, y / l]; };
+  for (let i = 0; i + 1 < rings.length; i++) {
+    const a = rings[i], b = rings[i + 1];
+    for (const side of [1, -1]) pushEdge(out, P(a, side * HALF_ROAD), P(b, side * HALF_ROAD), unit2(a.L[0] * side, a.L[1] * side));
+  }
+  const cap = (f: RoadRing, sg: number) => pushEdge(out, P(f, HALF_ROAD), P(f, -HALF_ROAD), unit2(f.t[0] * sg, f.t[1] * sg));
+  if (kinds[0] === 'closed') cap(rings[0], -1);
+  if (kinds[1] === 'closed') cap(rings[rings.length - 1], 1);
+  return out;
+}
+
 /** 插进平台的路（"路:平台"）：重叠的部分由平台盖住，不按后放的优先 */
 let inserted = new Set<string>();
 /** 坡插进平台（"坡:平台"）：掏空平台，或者叠在平台上 */
@@ -298,6 +395,7 @@ function solveAll(doc: Doc): Solved {
     const k = e.ang ?? 0;
     (assetsBy.get(k) ?? assetsBy.set(k, []).get(k)!).push(e);
   }
+  curveEnds = curveRoadEnds(doc);
   const ctxs = [...frames].map(([ang, es]) => frameCells(es, ang, assetsBy.get(ang) ?? []));
   crossCover(ctxs);
   for (const c of ctxs) frameRuns(c);
@@ -310,6 +408,15 @@ function solveAll(doc: Doc): Solved {
     const m = c.ang ? rotZ(c.ang) : null;
     mergeSolved(out, r, m, [0, 0, 0], c.ang);
     edgeFns.push(() => r.edges().map((e) => (m ? { a: apply(m, e.a), b: apply(m, e.b), out: apply(m, [...e.out, 0]).slice(0, 2) as [number, number] } : e)));
+  }
+  // 曲线路面：网格和普通路面一样按元素出，外沿并进护栏用的环
+  for (const c of curveEnds) {
+    const sig = `curve:${JSON.stringify([c.r, c.kinds])}`;
+    const hit = meshCache.get(sig);
+    const parts = hit?.parts ?? transformRoad(c.r, buildCurveRoad(c.r, c.kinds));
+    nextMeshCache.set(sig, { id: c.r.id, parts });
+    out.meshes.set(c.r.id, { id: c.r.id, parts, sig });
+    edgeFns.push(() => curveRoadEdges(c.r, c.rings, c.kinds));
   }
   let loops: Loop[] | null = null;
   Object.defineProperty(out, 'loops', { get: () => (loops ??= loopsFromEdges(edgeFns.flatMap((f) => f()))), enumerable: true, configurable: true });
@@ -572,7 +679,7 @@ function frameCells(all: Elem[], ang: number, assets: AssetElem[] = []): FrameCt
   elemGrid = new Grid<Elem>(10);
   for (const e of elems) { const f = footprint(e); elemGrid.add(e, f.x0, f.y0, f.x1, f.y1); }
   findFolds(layers);
-  connFaces = connectorFaces(all, pieces, assets);
+  connFaces = [...connectorFaces(all, pieces, assets), ...curveFaces(ang)];
   for (const L of layers) (L.slope ? buildSlopeCells : buildFlatCells)(L, elems);
   return { ang, elems, pieces, layers, owner: auto.owner };
 }

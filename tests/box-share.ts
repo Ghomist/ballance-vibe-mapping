@@ -72,6 +72,12 @@ export function boxShareScenarios(check: Check, scenario: Scenario) {
     }
   });
 
+  scenario('地图码：样条线钢轨原样回来', async () => {
+    const curve = { frame: 'parallel' as const, pts: [{ p: [0, 0, 0] as [number, number, number], out: [12.5, 0, 1] as [number, number, number], bank: 30 }, { p: [30, 15.25, 4] as [number, number, number], in: [-12, 0, 0] as [number, number, number] }] };
+    const d: Doc = { nextId: 3, elems: { 1: { id: 1, kind: 'rail', x: 1, y: 2, z: 3, heading: 90, pieces: [{ kind: 'mono', len: 0, radius: 0, angle: 0, dz: 0 }], curve }, 2: { id: 2, kind: 'rail', x: 0, y: 40, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve, road: { style: 'sink', depth: 6.5, ends: ['closed', 'auto'] } } } };
+    check(same(await decodeShare(await encodeShare(d)), d), '样条线解出来不一样');
+  });
+
   scenario('分享链接：所有元素、可选字段原样回来', async () => {
     const d = everything();
     const text = await encodeShare(d);

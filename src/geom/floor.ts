@@ -25,7 +25,7 @@ export interface ElemMesh {
   parts: Partial<Record<MatName, MeshPart>>;
 }
 
-class MeshBuilder {
+export class MeshBuilder {
   parts: Partial<Record<MatName, MeshPart>> = {};
 
   /** 按期望朝外的法线自动修正绕序 */

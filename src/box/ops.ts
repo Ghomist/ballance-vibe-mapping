@@ -7,7 +7,7 @@ export interface Bounds { x0: number; y0: number; z0: number; x1: number; y1: nu
 
 /** 元素的包围盒（世界坐标；机关按对准方块；转过的元素取 8 个角转过去之后的包围盒） */
 export function elemBounds(e: Elem): Bounds {
-  if (e.kind === 'rail') { const f = footprint(e); const zs = railPath(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - 1.2, z1: Math.max(...zs) }; }
+  if (e.kind === 'rail') { const f = footprint(e); const zs = railPath(e).map((p) => p.z); return { ...f, z0: Math.min(...zs) - (e.road ? e.road.depth : 1.2), z1: Math.max(...zs) }; }
   if (e.kind === 'guard') { const f = footprint(e); return { ...f, z0: Math.min(...e.pts.map((p) => p[2])) - 2, z1: Math.max(...e.pts.map((p) => p[2])) + 2.6 }; }
   const b = localBounds(e);
   if (!e.ang && !e.q) return b;

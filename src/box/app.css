@@ -580,6 +580,11 @@ body.narrow #merge, body.narrow #group, body.narrow #ungroup, body.narrow #grid,
 body.touch-ui #props { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
 body.touch-ui .num-field input { touch-action: pan-y; }
 
+/* 曲线的加点 / 删点按钮：和全局按钮一样，平分一行 */
+#props .curve-btns { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 2px; }
+#props .curve-btns button { flex: 1; justify-content: center; }
+#props .warn-note { color: #ffb35c; }
+
 /* 设置弹窗：外壳和帮助共用（help-win、help-nav），里面沿用 .settings-panel 的表单样式 */
 #settings-modal .settings-panel { position: static; width: auto; max-width: 620px; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; }
 #settings-modal .settings-panel label { margin: 14px 0; font-size: 13px; }

@@ -20,6 +20,12 @@ import {
   DX, DY, HALF, Model, emptyModel as baseModel, endPos, endZ, isFree, nodeHalf, nodePorts, opp, portCount,
 } from '../src/model/types';
 
+// 测试是单进程跑满一个核：调低优先级，不抢别的程序的 CPU
+try {
+  const os = (await import('node:os' as string)) as { setPriority(pid: number, p: number): void; constants: { priority: { PRIORITY_BELOW_NORMAL: number } } };
+  os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL);
+} catch { /* 调不了就算了 */ }
+
 let failed = 0;
 
 /** 测试沿用以原点为中心的 1×1，坐标更直观 */

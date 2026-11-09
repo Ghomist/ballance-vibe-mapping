@@ -62,7 +62,7 @@ export function exportBoxScene(doc: Doc): SceneDesc {
 
   // ---- 钢轨：头尾相接的合成一个物体，接头处法线和 UV 才连续 ----
   const postDepth = { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) }.guardPostDepth;
-  const railMeshes = elems.flatMap((r) => (r.kind === 'rail' ? [buildRail(r, postDepth)] : [])).filter((m) => m.pos.length);
+  const railMeshes = elems.flatMap((r) => (r.kind === 'rail' && !r.road ? [buildRail(r, postDepth)] : [])).filter((m) => m.pos.length);
   mergeRails(railMeshes).forEach((pos, i) => {
     meshes.push({ name: `A_Rail_BVM_${String(i + 1).padStart(2, '0')}`, kind: 'rail', smooth: true, parts: [{ mat: 'Rail', pos: pos.map(r5) }] });
   });

@@ -2,6 +2,8 @@
 // 路径高度 z 为双轨的最顶端：双轨接路面时，钢轨最顶端与路面顶面对齐。
 // 单轨相对双轨的位置固定为 BBP 单双轨转换的下沉量；单双转换是一种同时带双轨与单轨的特殊轨道。
 
+import { type CurveRoad, sampleSpline, type SplineCurve, type SplineSample } from './spline';
+
 export type RailKind = 'double' | 'mono' | 'transition';
 
 export interface RailPiece {
@@ -46,6 +48,10 @@ export interface Rail {
   tips?: [boolean, boolean];
   /** 倾斜（绕 X / Y 转过）：四元数，绕起点转 */
   q?: [number, number, number, number];
+  /** 样条线钢轨：路径由曲线决定，pieces 只留一段用来记轨型（双轨或单轨） */
+  curve?: SplineCurve;
+  /** 曲线路面：有这一项时按路面放样，不再是钢轨 */
+  road?: CurveRoad;
 }
 
 export const SIDE_RAIL_ANGLE = 79.563;
@@ -122,7 +128,26 @@ export function advance(st: RailState, p: RailPiece, frac = 1): RailState {
   return { x: cx + Math.cos(a1) * p.radius, y: cy + Math.sin(a1) * p.radius, z: st.z + p.dz * frac, heading: st.heading + p.angle * frac };
 }
 
+/** 样条线在元素坐标里的采样（x、y、z 原点和朝向已经算进去，倾斜 q 没算） */
+export function curveSamples(r: Rail): SplineSample[] {
+  const h = rad(r.heading), c = Math.cos(h), s = Math.sin(h);
+  return sampleSpline(r.curve!).map((m) => ({
+    ...m,
+    p: [r.x + m.p[0] * c - m.p[1] * s, r.y + m.p[0] * s + m.p[1] * c, r.z + m.p[2]],
+    t: [m.t[0] * c - m.t[1] * s, m.t[0] * s + m.t[1] * c, m.t[2]],
+  }));
+}
+/** 样条线的采样点换成钢轨的状态：朝向取切线的水平方向，切线竖直时沿用上一个点的朝向 */
+function curveStates(r: Rail): RailSample[] {
+  let heading = r.heading;
+  return curveSamples(r).map((m) => {
+    if (Math.hypot(m.t[0], m.t[1]) > 1e-4) heading = (Math.atan2(m.t[1], m.t[0]) * 180) / Math.PI;
+    return { x: m.p[0], y: m.p[1], z: m.p[2], heading, s: m.s, piece: 0 };
+  });
+}
+
 export function railEnd(r: Rail): RailState {
+  if (r.curve) return curveStates(r).at(-1)!;
   let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
   for (const p of r.pieces) st = advance(st, p);
   return st;
@@ -130,6 +155,7 @@ export function railEnd(r: Rail): RailState {
 
 /** 沿路径采样（圆弧按每 360° 32 段细分，与 BBP 默认步数相近） */
 export function sampleRail(r: Rail): RailSample[] {
+  if (r.curve) return curveStates(r);
   const out: RailSample[] = [];
   let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
   let s = 0;
@@ -146,6 +172,14 @@ export function sampleRail(r: Rail): RailSample[] {
 
 /** 在路径上任意弧长处取状态 */
 export function stateAt(r: Rail, s: number): RailState {
+  if (r.curve) {
+    const ps = curveStates(r);
+    let i = 0;
+    while (i < ps.length - 2 && ps[i + 1].s < s) i++;
+    const a = ps[i], b = ps[i + 1], k = Math.min(1, Math.max(0, (s - a.s) / ((b.s - a.s) || 1)));
+    const dh = ((b.heading - a.heading + 540) % 360) - 180;
+    return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, heading: a.heading + dh * k };
+  }
   let st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
   let acc = 0;
   for (const p of r.pieces) {
@@ -159,6 +193,7 @@ export function stateAt(r: Rail, s: number): RailState {
 
 /** 双轨 / 单轨各自覆盖的弧长区间（单双转换段两者都有） */
 export function kindSpans(r: Rail): { kind: 'double' | 'mono'; s0: number; s1: number }[] {
+  if (r.curve) return [{ kind: r.pieces[0]?.kind === 'mono' ? 'mono' : 'double', s0: 0, s1: curveSamples(r).at(-1)?.s ?? 0 }];
   const spans: { kind: 'double' | 'mono'; s0: number; s1: number }[] = [];
   for (const kind of ['double', 'mono'] as const) {
     let s = 0;

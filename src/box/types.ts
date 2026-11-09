@@ -1,6 +1,7 @@
 // 重构版的数据模型：地图由互相独立的 box（路面）、素材件和机关组成，元素之间不存任何连接关系。
 // 连接、花纹、遮挡、机关的专属路块都由 solve.ts 按几何关系现算。坐标系与 Blender 一致：Z 轴向上。
 import { objType } from '../model/objects';
+import type { CurveRoad, SplineCurve } from '../model/spline';
 /** 盘点路面的路口离中心多远：圆盘边沿（自带的延伸路裁掉了，见 solve.ts 的 CP_CROP） */
 export const CP_PORT = { start: 7.386, check: 4.924 } as const;
 import { type RailPiece, type SideRail, sampleRail } from '../model/rail';
@@ -121,6 +122,10 @@ export interface RailElem extends ElemBase {
   tips?: [boolean, boolean];
   /** 倾斜（绕 X / Y 转过）：四元数，绕起点转；这时 heading 是 0，朝向都在 q 里 */
   q?: [number, number, number, number];
+  /** 样条线钢轨：路径由曲线决定，pieces 只留一段用来记轨型 */
+  curve?: SplineCurve;
+  /** 曲线路面：有这一项时按路面放样，不再是钢轨（元素的其他东西和样条线钢轨一样） */
+  road?: CurveRoad;
 }
 
 /**
@@ -224,7 +229,7 @@ export function footprint(e: Elem): Rect {
   if (e.kind === 'guard') return { x0: Math.min(...e.pts.map((p) => p[0])) - 0.5, y0: Math.min(...e.pts.map((p) => p[1])) - 0.5, x1: Math.max(...e.pts.map((p) => p[0])) + 0.5, y1: Math.max(...e.pts.map((p) => p[1])) + 0.5 };
   if (e.kind === 'rail') {
     const ps = railPath(e);
-    const pad = 2.25; // 双轨半宽 + 轨道半径
+    const pad = e.road ? 3 : 2.25; // 路面半宽留点余量；双轨半宽 + 轨道半径
     return { x0: Math.min(...ps.map((p) => p.x)) - pad, y0: Math.min(...ps.map((p) => p.y)) - pad, x1: Math.max(...ps.map((p) => p.x)) + pad, y1: Math.max(...ps.map((p) => p.y)) + pad };
   }
   if (e.kind === 'box' || e.kind === 'zone') return { x0: e.x, y0: e.y, x1: e.x + e.sx, y1: e.y + e.sy };

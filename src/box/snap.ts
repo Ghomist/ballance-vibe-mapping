@@ -3,7 +3,8 @@ import { assetInfo } from './asset-info';
 import { ASSET_SNAP } from './asset-snap';
 import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
 import { objType } from '../model/objects';
-import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, sideLowerSpan } from '../model/rail';
+import { roadRings } from '../geom/curve-road';
+import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, sampleRail, sideLowerSpan } from '../model/rail';
 
 export type P3 = [number, number, number];
 export interface Feats { verts: P3[]; mids: P3[]; edges: [P3, P3][] }
@@ -78,6 +79,23 @@ function localFeats(e: Elem): Feats {
   if (e.kind === 'rail') {
     // 钢轨只有预设的吸附点：两头和（单段时）中间的 railPoints，没有边
     const out: Feats = { verts: [], mids: [], edges: [] };
+    if (e.curve && e.road) {
+      // 曲线路面：两头的顶面两角、中点、底面两角，和路面的端面对得上
+      const rs = roadRings(e), d = e.road.depth;
+      for (const f of [rs[0], rs[rs.length - 1]]) {
+        if (!f) continue;
+        const P = (l: number, dz: number): P3 => [f.p[0] + f.L[0] * l + f.U[0] * dz, f.p[1] + f.L[1] * l + f.U[1] * dz, f.p[2] + f.L[2] * l + f.U[2] * dz];
+        out.verts.push(P(2.5, 0), P(-2.5, 0), P(2.5, -d), P(-2.5, -d));
+        out.mids.push(P(0, 0));
+      }
+      return out;
+    }
+    if (e.curve) {
+      // 样条线：只吸两头。平行传递的两头截面不一定竖直，只留路径点
+      const ps = sampleRail(e), kind = e.pieces[0]?.kind ?? 'double';
+      for (const s of [ps[0], ps[ps.length - 1]]) if (s) out.verts.push(...(e.curve.frame === 'parallel' ? [[s.x, s.y, s.z] as P3] : railPoints(s, kind)));
+      return out;
+    }
     const s0: RailState = { x: e.x, y: e.y, z: e.z, heading: e.heading };
     if (e.side && e.pieces.length === 1) {
       // 侧轨只对下轨：截面中心（对齐别的钢轨）和外接正方形靠上轨的顶点（对齐路面的棱角）

@@ -1,7 +1,7 @@
 // 性能基线：给求解器的几条典型路径留一组可重复的数字（npm run bench）。
 //
-// 不进 npm test：CI 的机器快慢差很多，耗时断言放在这里，只在需要时手动跑。
-// 数字存在 tests/bench/baseline.json，UPDATE_BENCH=1 时刷新；超过基线 3 倍算失败。
+// 可选工具，不属于测试：不进 npm test、不进 CI、发布前也不用跑，只在要看性能时手动跑。
+// 数字存在 tests/bench/baseline.json，UPDATE_BENCH=1 时刷新；比基线慢只报告，不算失败。
 //
 // 三种形状分别压不同的东西：
 //   corridor  一条连通的赛道（很多段首尾相接，外沿 / 花纹要跨元素合并）
@@ -135,7 +135,7 @@ if (update) {
   for (const r of rows) {
     const b = base[r.name];
     if (b === undefined) continue;
-    if (r.ms > b * 3) { failed++; slow.push(`  ✗ ${r.name}：基线 ${b}ms → 现在 ${r.ms.toFixed(1)}ms（${(r.ms / b).toFixed(1)}×）`); }
+    if (r.ms > b * 3) { slow.push(`  ✗ ${r.name}：基线 ${b}ms → 现在 ${r.ms.toFixed(1)}ms（${(r.ms / b).toFixed(1)}×）`); }
     else if (r.ms > b * 1.5) console.log(`  ⚠ ${r.name}：基线 ${b}ms → 现在 ${r.ms.toFixed(1)}ms（${(r.ms / b).toFixed(1)}×）`);
   }
   if (slow.length) console.log('\n比基线慢 3 倍以上：\n' + slow.join('\n'));

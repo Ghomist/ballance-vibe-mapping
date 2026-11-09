@@ -7,6 +7,9 @@ import {
   railCenters, railEnd, railTopOffset, sampleRail, sideLowerSpan, stateAt, type Rail, type RailPiece, type RailState,
 } from '../src/model/rail';
 import { buildRail } from '../src/geom/rail';
+import { insertAfter, parallelFrames, removePoint, sampleSpline, type SplineCurve } from '../src/model/spline';
+import { solve, type Solved } from '../src/box/solve';
+import { exportBoxScene } from '../src/box/export';
 import { sweepTube } from '../src/geom/railing';
 import { feats } from '../src/box/snap';
 import { edgeAt, routeLen, shortPath } from '../src/box/guard';
@@ -67,6 +70,95 @@ const normalsUnit = (m: { nrm: number[] }, eps = 1e-9) => {
 };
 
 export function boxGeomScenarios(check: Check, scenario: Scenario) {
+  scenario('曲线路面：放样、自动接路面、外沿', () => {
+    const curve: SplineCurve = { pts: [{ p: [0, 0, 0], out: [10, 0, 0] }, { p: [30, 0, 0], in: [-10, 0, 0] }] };
+    const road = (o: Partial<RailElem> = {}): RailElem => ({ ...railElem([line(1)]), id: 1, x: 0, y: 2.5, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve, road: { style: 'normal', depth: 5 }, ...o });
+    const box = (id: number, x: number, sx: number, o: Partial<Box> = {}): Box => ({ id, kind: 'box', x, y: 0, z: 0, sx, sy: 5, depth: 5, style: 'normal', ...o });
+    const top = (m: Solved, id: number, mat: string) => (m.meshes.get(id)?.parts as Record<string, { pos: number[] }>)[mat]?.pos.length ?? 0;
+    // 一条孤零零的路：两头封口
+    const alone = solve({ nextId: 2, elems: { 1: road() } });
+    check(top(alone, 1, 'FloorTopBorder') > 0 && top(alone, 1, 'FloorSide') > 0, '生成顶面和侧面');
+    // 顶面三角形都朝上，侧面朝外
+    const tp = (alone.meshes.get(1)!.parts as Record<string, { pos: number[] }>).FloorTopBorder.pos;
+    let down = 0;
+    for (let i = 0; i + 8 < tp.length; i += 9) { const a = tp.slice(i, i + 3), b = tp.slice(i + 3, i + 6), c = tp.slice(i + 6, i + 9); if ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) <= 0) down++; }
+    check(down === 0, `顶面朝上（${down} 个朝下）`);
+    check(alone.loops.length === 1 && alone.loops[0].closed, '封口的路外沿自己连成一个环');
+    // 前后各接一块路面：两头都不封口，路面的边开口，外沿连成一个大环
+    const joined = solve({ nextId: 4, elems: { 1: road(), 2: box(2, -10, 10), 3: box(3, 30, 10) } });
+    const closedTris = top(alone, 1, 'FloorTopBorder'), joinedTris = top(joined, 1, 'FloorTopBorder');
+    check(joinedTris !== closedTris, '接上路面后两头不再是封口的花纹');
+    check(joined.loops.length === 1 && joined.loops[0].closed, `接上后外沿连成一个环（${joined.loops.length} 个）`);
+    const looseBox = solve({ nextId: 4, elems: { 2: box(2, -10, 10), 3: box(3, 30, 10) } });
+    check(top(joined, 2, 'FloorTopBorder') < top(looseBox, 2, 'FloorTopBorder') || top(joined, 2, 'FloorTopBorderless') !== top(looseBox, 2, 'FloorTopBorderless'), '路面贴着曲线路面的那条边开口');
+    // 样式不一样：不算接上
+    const diff = solve({ nextId: 3, elems: { 1: road(), 2: box(2, -10, 10, { style: 'sink' }) } });
+    check(top(diff, 1, 'FloorTopBorder') === closedTris, '样式不同不自动接');
+    // 手动封口：贴着路面也封
+    const forced = solve({ nextId: 4, elems: { 1: road({ road: { style: 'normal', depth: 5, ends: ['closed', 'closed'] } }), 2: box(2, -10, 10), 3: box(3, 30, 10) } });
+    check(top(forced, 1, 'FloorTopBorder') === closedTris, '手动封口优先');
+    // 两条曲线路面头尾相接
+    const twin = solve({ nextId: 3, elems: { 1: road(), 2: road({ id: 2, x: 30 }) } });
+    check(top(twin, 1, 'FloorTopBorder') !== closedTris && top(twin, 2, 'FloorTopBorder') !== closedTris, '曲线路面互相接上');
+    // 拐弯进路面的端头不正对坐标轴：不开口
+    const skew: SplineCurve = { pts: [{ p: [0, 0, 0], out: [7, 7, 0] }, { p: [30, 0, 0], in: [-10, 0, 0] }] };
+    const sk = solve({ nextId: 3, elems: { 1: road({ curve: skew }), 2: box(2, -10, 10) } });
+    check(top(sk, 2, 'FloorTopBorder') === top(solve({ nextId: 3, elems: { 2: box(2, -10, 10) } }), 2, 'FloorTopBorder'), '端头歪着的不让路面开口');
+    // 导出：路面物体，不是钢轨
+    const desc = exportBoxScene({ nextId: 2, elems: { 1: road() } });
+    check(desc.meshes.some((m) => m.kind === 'floor') && !desc.meshes.some((m) => m.kind === 'rail'), '导出成路面');
+    // 厚度超过 5：上 5 带边框
+    const deep = solve({ nextId: 2, elems: { 1: road({ road: { style: 'normal', depth: 8 } }) } });
+    check(top(deep, 1, 'LightingFloorTopBorder') > 0 && top(deep, 1, 'LightingFloorTopBorderless') > 0, '厚度超过 5 分两种贴图');
+    check(feats(road()).verts.length === 8 && feats(road()).mids.length === 2, '吸附点：两头各 4 个角和中点');
+  });
+
+  scenario('样条线：采样、平行传递、放样', () => {
+    const c: SplineCurve = { pts: [{ p: [0, 0, 0], out: [10, 0, 0] }, { p: [30, 15, 4], in: [-10, 0, 0], out: [10, 0, 0] }, { p: [60, 0, 0], in: [-10, 0, 0] }] };
+    const sm = sampleSpline(c);
+    check(near(sm[0].p[0], 0) && near(sm.at(-1)!.p[0], 60) && near(sm.at(-1)!.p[2], 0), '采样从第一个点到最后一个点');
+    check(sm.some((x) => near(x.p[0], 30) && near(x.p[1], 15) && near(x.p[2], 4)), '每个控制点上都有一圈');
+    check(sm.every((x, i) => i === 0 || x.s > sm[i - 1].s), '弧长单调增加');
+    const fr = parallelFrames(sm);
+    check(fr.every((f, i) => near(f.L[0] * sm[i].t[0] + f.L[1] * sm[i].t[1] + f.L[2] * sm[i].t[2], 0, 1e-6) && near(f.U[0] * sm[i].t[0] + f.U[1] * sm[i].t[1] + f.U[2] * sm[i].t[2], 0, 1e-6)), '截面垂直于切线');
+    check(fr.every((f, i) => i === 0 || f.U[0] * fr[i - 1].U[0] + f.U[1] * fr[i - 1].U[1] + f.U[2] * fr[i - 1].U[2] > 0.9), '相邻截面不突然打转');
+    // 翻圈：切线转一整圈，截面也不翻转、不退化
+    const loop: SplineCurve = { frame: 'parallel', pts: [{ p: [0, 0, 0], out: [10, 0, 0] }, { p: [20, 0, 20], in: [11, 0, -11], out: [-11, 0, 11] }, { p: [0, 3, 40], in: [11, 0, 0], out: [-11, 0, 0] }, { p: [-20, 3, 20], in: [-11, 0, 11], out: [11, 0, -11] }, { p: [0, 6, 0], in: [-10, 0, 0] }] };
+    const ls = sampleSpline(loop), lf = parallelFrames(ls);
+    check(ls.some((x) => Math.abs(x.t[2]) > 0.99), '翻圈里有竖直的地方');
+    check(lf.every((f) => Number.isFinite(f.U[0]) && near(Math.hypot(...f.U), 1, 1e-6) && near(Math.hypot(...f.L), 1, 1e-6)), '竖直的地方截面也不退化');
+    // 侧倾：控制点上 90° 时左方向转到原来的上方向
+    const flat: SplineCurve = { pts: [{ p: [0, 0, 0], out: [5, 0, 0], bank: 90 }, { p: [20, 0, 0], in: [-5, 0, 0], bank: 90 }] };
+    const bf = parallelFrames(sampleSpline(flat))[0];
+    check(near(bf.L[2], 1, 1e-6) && near(bf.U[1], -1, 1e-6), '侧倾 90°：左侧转到上面');
+    // 放样：竖直和平行传递都生成三角形，绕序朝外
+    const rail = (frame?: 'parallel'): RailElem => ({ ...railElem([line(1)]), x: 5, y: 6, z: 1, heading: 90, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: { ...c, ...(frame ? { frame } : {}) } });
+    for (const r of [rail(), rail('parallel')]) {
+      const m = buildRail(r);
+      check(m.pos.length > 0 && m.caps.length === 4, '双轨两根管子、四个封盖');
+      let bad = 0;
+      for (let i = 0; i + 8 < m.pos.length; i += 9) {
+        const [a, b, d] = [0, 3, 6].map((k) => [m.pos[i + k], m.pos[i + k + 1], m.pos[i + k + 2]]);
+        const e1 = b.map((v, k) => v - a[k]), e2 = d.map((v, k) => v - a[k]);
+        const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        const nv = [m.nrm[i] + m.nrm[i + 3] + m.nrm[i + 6], m.nrm[i + 1] + m.nrm[i + 4] + m.nrm[i + 7], m.nrm[i + 2] + m.nrm[i + 5] + m.nrm[i + 8]];
+        if (n[0] * nv[0] + n[1] * nv[1] + n[2] * nv[2] < -1e-9) bad++;
+      }
+      check(bad === 0, `绕序和法线一致（${r.curve!.frame ?? '竖直'}）`);
+    }
+    // 朝向 90°：曲线跟着转，起点在原点上
+    const st = sampleRail(rail());
+    check(near(st[0].x, 5) && near(st[0].y, 6) && near(st[0].heading, 90) && near(st.at(-1)!.y, 6 + 60), '朝向和原点算进去了');
+    check(feats(rail()).verts.length === 6, '吸附点：两头各 3 个');
+    // 加点：形状不变
+    const before = sampleSpline(c), d: SplineCurve = JSON.parse(JSON.stringify(c));
+    const at = insertAfter(d, 0);
+    const after = sampleSpline(d);
+    check(at === 1 && d.pts.length === 4 && near(after.at(-1)!.s, before.at(-1)!.s, 0.05), '在中间加点不改变曲线的长度');
+    check(insertAfter(d, 3) === 4 && d.pts.length === 5, '最后一个点后面接一段');
+    check(removePoint(d, 1) && d.pts.length === 4 && !d.pts[0].in && !d.pts.at(-1)!.out, '删点');
+  });
+
   scenario('钢轨路径：直线 / 左弯 / 右弯 / 半段', () => {
     const l = advance(start, line(10, 2));
     check(near(l.x, 10) && near(l.y, 0) && near(l.z, 7) && near(l.heading, 0), `直线：${JSON.stringify(l)}`);

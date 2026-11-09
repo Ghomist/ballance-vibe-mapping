@@ -3,6 +3,8 @@
 //   按住 V 拖动：抓住顶点或边中点，吸附到别的元素的顶点、边中点或边上
 //   格栅（G）：位置和尺寸吸附到步长 1；对齐（S）：边、中线、顶面靠近时对齐并画出辅助面
 import * as THREE from 'three';
+import { defaultCurve, insertAfter, removePoint } from '../model/spline';
+import { buildCurveRoad, minRadius, roadRings } from '../geom/curve-road';
 import { KEY_DEFS, actionFor, assignKey, comboOf, flyActionFor, holdModeOf, isBareModifier, keyDef, keyName, keyOf, keyText, keysOf, loadKeys, resetKeys, savedKeys, setKey, tokens } from './keymap';
 import { CURSOR_TINT, installCursors, toolCursor, type CursorBase } from './cursors';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -30,6 +32,7 @@ import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { AXIS_COLORS, GRID_THEMES, createGrid, setGridAxes, themeGrid } from '../view/grid';
 import { type P3, feats as featsRaw } from './snap';
+import { curveSamples } from '../model/rail';
 import { solve, solveStats } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
@@ -549,7 +552,7 @@ function rebuildInner() {
   }
   // 钢轨
   for (const e of Object.values(doc.elems)) {
-    if (e.kind !== 'rail') continue;
+    if (e.kind !== 'rail' || e.road) continue; // 曲线路面的网格在 solve 里出
     const rm = buildRail(e, mapSettings().guardPostDepth);
     if (!rm.pos.length) continue;
     const geo = new THREE.BufferGeometry();
@@ -640,7 +643,7 @@ function currentHints(): Hint[] {
     if (drag?.t === 'grab' && !drag.gz) return [H(['单指拖'], '移动'), H(['轻点'], '放下'), H(['双指'], '平移 / 缩放')];
     if (drag?.t === 'rotate' && !drag.gz) return [H(['轻点'], '确定')];
     if (t && t !== 'click') {
-      const what = t === 'grab' || t === 'vsnap' ? '移动' : t === 'rotate' ? '旋转' : t === 'thick' ? '改厚度' : t === 'tilt' || t === 'railTilt' ? '拉坡' : '改尺寸';
+      const what = t === 'splinePt' ? '调曲线' : t === 'grab' || t === 'vsnap' ? '移动' : t === 'rotate' ? '旋转' : t === 'thick' ? '改厚度' : t === 'tilt' || t === 'railTilt' ? '拉坡' : '改尺寸';
       return [H(['拖动'], what), H(['松手'], '完成')];
     }
     if (guardMode) return [H(['轻点路边'], '放整条直边'), H(['沿路边拖'], '放一段'), H(['拖把手'], '改长度'), H(['护栏按钮'], '退出')];
@@ -842,7 +845,7 @@ const ALIGN_PX = 5;
  * 拉坡的钢轨和拉坡的路面一样，方块跟着坡度错切：用网格拟合一个斜面 z = a·x + b·y，整圈以上的螺旋没有整体坡度，不错切
  */
 function railCorners(e: RailElem): P3[] {
-  const { pos } = buildRail(e, mapSettings().guardPostDepth);
+  const pos = e.road ? Object.values(buildCurveRoad(e, ['closed', 'closed'])).flatMap((p) => p!.pos) : buildRail(e, mapSettings().guardPostDepth).pos;
   if (!pos.length) return [];
   const M = mul(e.q ? fromQuat(e.q) : I3, rotZ(e.heading));
   const ps: P3[] = [];
@@ -921,6 +924,8 @@ function anchorBoxes(o: Elem): THREE.Object3D {
 let hoverId: number | null = null;
 /** 鼠标正停在模式手柄（箭头、圆环、抓点）上 */
 let handleHot = false;
+/** 样条线正在编辑的控制点（手柄和属性面板跟着它） */
+let splineNode = 0;
 /** 鼠标正停在选中路面的侧面下半截（Ctrl / 拉伸模式下拖它是改厚度） */
 let thickHover = false;
 /** 鼠标不在抓点上时，现在按下去拖会操作的那个抓点（和抓点悬停一样高亮） */
@@ -947,6 +952,7 @@ let AXIS_COLOR = axisLineColors(prefs.coordSys !== 'math');
 /**
  * 叠加层的淡入淡出：每次重画时，叠加层里的东西按「键」（这是什么提示：哪个物体的选中框、哪种辅助线……）对上号，
  * 新出现的从透明淡入，消失的留在 fadeLayer 里淡出后再释放，一直都在的直接换成新的（不闪）。
+ * 键只能写「这是哪个东西」，不能带位置、悬停、状态：带了的话，一动就成了旧的淡出、新的淡入，拖动时会拖出一串残影。
  */
 const FADE_MS = 120;
 const fadeLayer = new THREE.Group();
@@ -999,7 +1005,9 @@ function drawOverlay() {
   const prev = overlayKeys;
   const old: THREE.Object3D[] = [];
   for (const layer of [overlay, selLayer]) { old.push(...layer.children); layer.clear(); }
+  const drawStart = performance.now();
   drawOverlayInner();
+  overlayDraws++; overlayMs += performance.now() - drawStart;
   const now = performance.now();
   const next = new Map<string, THREE.Object3D>();
   for (const layer of [overlay, selLayer]) for (const o of layer.children) {
@@ -1025,6 +1033,7 @@ function drawOverlay() {
   }
   overlayKeys = next;
 }
+let overlayDraws = 0, overlayMs = 0;
 function drawOverlayInner() {
   const hoverGroup = hoverId !== null ? expandGroups(doc, [hoverId]) : new Set<number>();
   for (const id of hoverGroup) if (!sel.has(id) && doc.elems[id]) put(overlay, `hover:${id}`, outlineOf(doc.elems[id], 0x9fc2ff, 0.45));
@@ -1049,8 +1058,8 @@ function drawOverlayInner() {
     put(overlay, `v:${id}`, marks(f.verts, 'dot', 0xffd34c, 11), marks(f.mids, 'diamond', 0xffd34c, 10, 0.85));
   }
   if (snapGrab) put(overlay, 'grab', marks([snapGrab], 'dot', 0xff8a4c, 13));
-  if (snapTarget) put(overlay, `snap:${snapTarget.p.map((v) => v.toFixed(3)).join(',')}`, marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
-  for (const gd of guides) put(overlay, `guide:${gd.axis}:${gd.value.toFixed(3)}`, guideLines(gd));
+  if (snapTarget) put(overlay, 'snap', marks([snapTarget.p], snapTarget.kind === 'v' ? 'dot' : snapTarget.kind === 'm' ? 'diamond' : 'ring', 0x4cff8a, 18));
+  guides.forEach((gd, i) => put(overlay, `guide:${i}`, guideLines(gd)));
   if (axisLine) {
     const d = new THREE.Vector3(...[0, 1, 2].map((i) => (i === axisLine!.axis ? 1 : 0)));
     const geo = new THREE.BufferGeometry().setFromPoints([axisLine.p.clone().addScaledVector(d, -500), axisLine.p.clone().addScaledVector(d, 500)]);
@@ -1084,22 +1093,42 @@ function drawOverlayInner() {
     }
   }
   // 拉伸 / 坡面模式的抓点：拉伸是蓝色方块（底边上橙色的是厚度），坡面是黄色圆圈；悬停的变白、变大
-  if (!drag && !guardMode && !splitMode) for (const hd of modeHandles()) {
-    const hot = handleHover === `${hd.kind}:${hd.p.join()}` || handleAim === `${hd.kind}:${hd.p.join()}`;
-    const size = (hot ? 19 : 15) * (touchUI ? 1.4 : 1);
-    put(overlay, `hd:${hd.kind}:${hd.p.join()}:${hot}`, marks([hd.p], hd.kind === 'tilt' ? 'ring' : 'diamond', hot ? 0xffffff : hd.kind === 'size' ? 0x5b8def : hd.kind === 'thick' ? 0xff9a3c : 0xffd34c, size));
+  if ((!drag || drag.t === 'splinePt') && !guardMode && !splitMode) {
+    const hs = modeHandles();
+    const nth = new Map<string, number>(); // 同一种抓点的第几个：键里不能带位置，见 put 上面的说明
+    for (const hd of hs) {
+      const ord = nth.get(hd.kind) ?? 0;
+      nth.set(hd.kind, ord + 1);
+      const hot = handleHover === `${hd.kind}:${hd.p.join()}` || handleAim === `${hd.kind}:${hd.p.join()}`;
+      const size = (hot ? 19 : 15) * (touchUI ? 1.4 : 1);
+      const spline = hd.node !== undefined;
+      const shape = hd.kind === 'tilt' || hd.kind === 'cz' ? 'ring' : hd.kind === 'cp' ? 'dot' : 'diamond';
+      const col = hot ? 0xffffff : hd.kind === 'size' || hd.kind === 'cin' || hd.kind === 'cout' ? 0x5b8def : hd.kind === 'thick' || hd.kind === 'cz' ? 0xff9a3c : hd.kind === 'cp' ? (hd.node === Math.min(splineNode, hs.filter((x) => x.kind === 'cp').length - 1) ? 0xffd34c : 0x7aa3f5) : 0xffd34c;
+      put(overlay, `hd:${hd.id}:${hd.kind}:${ord}`, marks([hd.p], shape, col, spline && hd.kind !== 'cp' ? size * 0.85 : size));
+    }
+    // 控制点到方向手柄、高度抓点的连线
+    const spl = selectedSpline();
+    if (spl) put(overlay, `splinePath:${spl.id}`, ...splinePathMarks(spl));
+    const cp = spl && hs.find((x) => x.kind === 'cp' && x.node === Math.min(splineNode, spl.curve!.pts.length - 1));
+    if (cp) {
+      const seg: THREE.Vector3[] = [];
+      for (const x of hs) if (x.kind === 'cin' || x.kind === 'cout' || x.kind === 'cz') seg.push(new THREE.Vector3(...cp.p), new THREE.Vector3(...x.p));
+      const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: 0x7aa3f5, depthTest: false, transparent: true, opacity: 0.9 }));
+      l.renderOrder = 9;
+      put(overlay, `splineLines:${spl!.id}`, l);
+    }
   }
   // 选中一个带挡块的机关时：每块挡块顶上一个开关（实心绿点：生成；灰色圆环：不生成），关掉的挡块画成红色虚影
   if (!drag && !guardMode && !splitMode) for (const t of stopToggles()) {
     const hov = t.id === stopHover?.id && t.part === stopHover.part;
-    put(overlay, `stop:${t.id}:${t.part}:${t.on}:${hov}`, marks([t.p], t.on ? 'dot' : 'ring', t.on ? 0x4cff8a : hov ? 0xffffff : 0xc4ccda, hov ? 16 : 13));
+    put(overlay, `stop:${t.id}:${t.part}`, marks([t.p], t.on ? 'dot' : 'ring', t.on ? 0x4cff8a : hov ? 0xffffff : 0xc4ccda, hov ? 16 : 13));
     if (!t.on) put(overlay, `stopghost:${t.id}:${t.part}`, stopGhost(t.id, t.part));
   }
   // 选中一块路面时：四条边的中点显示开口开关（实心点：封口；绿色圆环：开口），点一下切换
   if (!drag && !guardMode && !splitMode) for (const t of openToggles()) {
     const hov = t.id === openHover?.id && t.side === openHover.side;
     // 自动：灰点；开口：绿色圆环；封口：橙色菱形
-    put(overlay, `open:${t.id}:${t.side}:${t.mode}`, marks([t.p], t.mode === 'open' ? 'ring' : t.mode === 'closed' ? 'diamond' : 'dot', t.mode === 'open' ? 0x4cff8a : t.mode === 'closed' ? 0xffa64c : hov ? 0xffffff : 0x9aa6bd, hov ? 16 : 12));
+    put(overlay, `open:${t.id}:${t.side}`, marks([t.p], t.mode === 'open' ? 'ring' : t.mode === 'closed' ? 'diamond' : 'dot', t.mode === 'open' ? 0x4cff8a : t.mode === 'closed' ? 0xffa64c : hov ? 0xffffff : 0x9aa6bd, hov ? 16 : 12));
   }
   // 护栏工具里：每条护栏两头的把手（拖它改长度），鼠标靠近的那个放大变绿
   if (guardMode) {
@@ -1342,7 +1371,9 @@ type Drag =
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
   | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
-  | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean };
+  | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean }
+  /** 样条线：拖控制点、方向手柄或高度抓点 */
+  | { t: 'splinePt'; id: number; orig: Map<number, string>; node: number; part: 'cp' | 'cin' | 'cout' | 'cz'; plane: THREE.Plane; start: THREE.Vector3; y0: number; k: number };
 let drag: Drag | null = null;
 
 const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
@@ -1506,8 +1537,10 @@ el.addEventListener('pointerdown', (e) => {
     if (rax !== null) { startRingDrag(e, rax); return; }
   }
   // 拉伸 / 坡面的抓点：临时模式是按着 Ctrl / Alt 进来的，所以修饰键不挡它
+  const hd0 = handleAt(e);
+  if (hd0?.node !== undefined) { startSplineDrag(e, hd0); return; } // 按住 V 拖控制点是吸附
   if (!vHeld) {
-    const hd = handleAt(e);
+    const hd = hd0;
     if (hd) {
       el.setPointerCapture(e.pointerId); pauseControls();
       // 抓点就是一个现成的落点：拉伸、厚度 = Ctrl 拖（厚度的抓点在底边，落在下半截），坡面 = Alt 拖，从这个点开始
@@ -1593,7 +1626,7 @@ function modDrag(e: PointerEvent, h: { id: number; p: THREE.Vector3 }, ctrl: boo
   const hb = doc.elems[h.id];
   const camN = () => camera.getWorldDirection(new THREE.Vector3()).setZ(0).normalize();
   if ((alt || ctrl) && hb.kind === 'rail' && hb.q) { flash('倾斜的钢轨请在属性面板里改长度和高差', true); return true; }
-  if (alt && !ctrl && hb.kind === 'rail' && hb.pieces.length === 1 && hb.pieces[0].angle === 0) {
+  if (alt && !ctrl && hb.kind === 'rail' && !hb.curve && hb.pieces.length === 1 && hb.pieces[0].angle === 0) {
     snapshot();
     sel = new Set([h.id]);
     drag = { t: 'railTilt', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane().setFromNormalAndCoplanarPoint(camN(), h.p), start: h.p, end: railEndAt(hb, h.p) };
@@ -1632,7 +1665,7 @@ function modDrag(e: PointerEvent, h: { id: number; p: THREE.Vector3 }, ctrl: boo
     const a = elem.pts[0], b = elem.pts[elem.pts.length - 1];
     const end: 0 | 1 = Math.hypot(h.p.x - a[0], h.p.y - a[1]) <= Math.hypot(h.p.x - b[0], h.p.y - b[1]) ? 0 : 1;
     if (!startGuardLen(h.id, end)) { undo.pop(); return true; }
-  } else if (ctrl && !alt && elem.kind === 'rail' && elem.pieces.length === 1 && elem.pieces[0].angle === 0) {
+  } else if (ctrl && !alt && elem.kind === 'rail' && !elem.curve && elem.pieces.length === 1 && elem.pieces[0].angle === 0) {
     snapshot();
     sel = new Set([h.id]);
     drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p, end: railEndAt(elem, h.p) };
@@ -1894,7 +1927,7 @@ window.addEventListener('pointermove', (e) => {
     if (splitMode) { splitHover(e); return; }
     // 悬停在模式手柄上：高亮，鼠标变成手形
     const free = !stretchMod(e) && !slopeMod(e) && !vHeld;
-    const gh = free ? gizmoAt(e) : null, rh = free && gh === null ? rotGizmoAt(e) : null, hh = !vHeld && gh === null && rh === null ? handleAt(e) : null;
+    const gh = free ? gizmoAt(e) : null, rh = free && gh === null ? rotGizmoAt(e) : null, hh0 = gh === null && rh === null ? handleAt(e) : null, hh = hh0 && (!vHeld || hh0.node !== undefined) ? hh0 : null; // 按住 V 时只有样条线的控制点还能抓（V 是吸附）
     const hk = hh ? `${hh.kind}:${hh.p.join()}` : null;
     const ch1 = moveGizmo.setHot(gh), ch2 = rotGizmo.setHot(rh), ch3 = hk !== handleHover;
     if (ch1 || ch2 || ch3) {
@@ -1953,6 +1986,7 @@ window.addEventListener('pointermove', (e) => {
     dragInfo = tg ? `吸附到${tg.kind === 'v' ? '顶点' : tg.kind === 'm' ? '边中点' : '边上'}` : '';
     return;
   }
+  if (drag.t === 'splinePt') { splineDragTo(drag, e); return; }
   if (drag.t === 'thick' && drag.steep) { thickTo(drag, drag.start.clone().setZ(drag.start.z - (e.clientY - drag.steep.y) * drag.steep.k)); return; }
   const p = planeHit(e, drag.plane);
   if (!p) return;
@@ -2340,6 +2374,8 @@ function newElems(type: string): Elem[] {
   if (type.startsWith('asset:')) return [{ id, kind: 'asset', name: type.slice(6), x: 0, y: 0, z: 0, rot: 0 }];
   if (type === 'zone') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 10, sy: 10, depth: 5 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
+  if (type === 'road-spline') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: defaultCurve(), road: { style: 'normal', depth: 5 } }];
+  if (type === 'rail-spline') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: defaultCurve() }];
   if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
   if (type === 'side-rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 20, radius: 0, angle: 0, dz: 0 }], side: { dir: -1, ends: [false, false] } }];
   if (type === 'side-spiral') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'mono', len: 0, radius: SPIRAL_RADIUS, angle: 720, dz: 2 * SIDE_SPIRAL_SCREW }], sideSpiral: true }];
@@ -2523,6 +2559,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
     id: 'road', label: '路面', items: [
       { type: 'normal', label: '平路', hint: 'Ctrl 拖改尺寸，拖侧面下半截改厚度，Alt 拖一头做坡', icon: slab(ROAD_TOP, '<path d="M14 30 L32 21 L50 30 L32 39 Z" fill="#d8c8a2"/>') },
       { type: 'sink', label: '凹路', hint: '凹槽路面', icon: slab(ROAD_TOP, `<path d="M16 30 L32 22 L48 30 L32 38 Z" fill="${SINK}"/>`) },
+      { type: 'road-spline', label: '曲线路面', hint: '选中后拖控制点和手柄改形状，端头吸到路面边上自动接上', icon: svgThumb(`<path d="M10 50 C26 50 22 18 54 14" stroke="${ROAD_TOP}" stroke-width="14" fill="none" stroke-linecap="butt"/><path d="M10 50 C26 50 22 18 54 14" stroke="#8a7558" stroke-width="1.5" fill="none"/>`) },
       { type: 'ribbon', label: '细边框凹路', hint: '细边框凹槽平台', icon: slab(ROAD_TOP, '<path d="M12 30 L32 20 L52 30 L32 40 Z" fill="#b29d79"/>') },
       { type: 'transition', label: '平凹转换', hint: '长 5，一头平路一头凹路', icon: slab(ROAD_TOP, `<path d="M20 36 L44 24 L50 27 L26 39 Z" fill="${SINK}"/>`) },
       { type: 'transition-narrow', label: '窄转换', hint: '长 2.5，凹路接细边框平台', icon: slab(ROAD_TOP, `<path d="M26 33 L44 24 L48 26 L30 35 Z" fill="${SINK}"/>`) },
@@ -2534,6 +2571,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
       { type: 'rail', label: '直轨', hint: 'Ctrl 拖改长度，Alt 拖做坡', icon: svgThumb(`<path d="M8 40 L48 20 M16 44 L56 24" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
       { type: 'rail-curve', label: '弯轨', hint: '属性里调半径、角度', icon: svgThumb(`<path d="M10 46 Q10 18 40 14 M18 50 Q18 26 46 22" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       { type: 'rail-spiral', label: '螺旋', hint: '属性里调圈数、半径', icon: svgThumb(`<path d="M32 52 C10 50 10 36 32 36 C54 36 54 22 32 22 C14 22 14 12 32 10" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
+      { type: 'rail-spline', label: '曲线钢轨', hint: '选中后拖控制点和手柄改形状', icon: svgThumb(`<path d="M8 48 C24 48 20 16 36 16 S48 30 56 18" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/><circle cx="8" cy="48" r="4" fill="#5b8def"/><circle cx="56" cy="18" r="4" fill="#5b8def"/>`) },
       { type: 'side-rail', label: '侧轨', hint: '两根成角度的钢轨，拖到路面上会贴住最近的路边；属性里可以让上轨两头弯下去固定在路边', icon: svgThumb(`<path d="M8 46 L48 26" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/><path d="M14 30 L54 10" stroke="${RAIL}" stroke-width="4" stroke-linecap="round"/>`) },
       { type: 'side-spiral', label: '螺旋侧轨', hint: '单轨螺旋，层间距固定 3.6', icon: svgThumb(`<path d="M32 50 C12 48 12 38 32 38 C52 38 52 28 32 28 C14 28 14 18 32 16" stroke="${RAIL}" stroke-width="4" fill="none" stroke-linecap="round"/>`) },
       ...assetItems('rail'),
@@ -3169,6 +3207,28 @@ function syncProps() {
   } else if (one.kind === 'zone') {
     h += `<div class="title">死亡区<small>球碰到包围盒就死；导出时隐藏</small></div>`;
     h += pos() + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '高', one.depth) + orient();
+  } else if (one.kind === 'rail' && one.curve) {
+    const c = one.curve, nI = Math.min(splineNode, c.pts.length - 1), nd = c.pts[nI], w = splineToWorld(one, nd.p);
+    h += `<div class="title">${one.road ? '曲线路面' : '曲线钢轨'}</div>`;
+    h += num('x', '原点 x', one.x) + (game ? num('z', '原点 y', one.z) + num('y', '原点 z', one.y) : num('y', '原点 y', one.y) + num('z', '原点 z', one.z));
+    h += one.q ? orient() : num('heading', '朝向 °', one.heading, 15);
+    if (one.road) {
+      h += `<label>样式</label><select data-road="style">${([['normal', '平路'], ['sink', '凹路'], ['ribbon', '细边框凹路']] as [string, string][]).map(([v, n]) => `<option value="${v}"${v === one.road!.style ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+      h += `<label>厚度</label><input data-road="depth" type="number" step="0.5" min="0.1" value="${+one.road.depth.toFixed(3)}">`;
+      const endOpts = [['auto', '自动'], ['open', '开口'], ['closed', '封口']] as [string, string][];
+      h += `<label>起点</label>${seg('road-end-0', endOpts, one.road.ends?.[0] ?? 'auto')}<label>终点</label>${seg('road-end-1', endOpts, one.road.ends?.[1] ?? 'auto')}`;
+      if (minRadius(roadRings(one)) < 2.5) h += `<div class="row warn-note">弯得太急，内侧的路面会叠在一起</div>`;
+    } else {
+      h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨']].map(([v, n]) => `<option value="${v}"${v === one.pieces[0].kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+      const closure = [['flat', '平直'], ['round', '球形']] as [string, string][];
+      h += `<label>起点闭合</label>${seg('tip-0', closure, one.tips?.[0] ? 'round' : 'flat')}<label>终点闭合</label>${seg('tip-1', closure, one.tips?.[1] ? 'round' : 'flat')}`;
+    }
+    h += `<label>截面</label>${seg('curve-frame', [['vertical', '竖直'], ['parallel', '平行传递']], c.frame === 'parallel' ? 'parallel' : 'vertical')}`;
+    h += `<div class="title">控制点 ${nI + 1} / ${c.pts.length}</div>`;
+    const sp = (f: string, label: string, v: number, step = 0.5) => `<label>${label}</label><input data-sp="${f}" type="number" step="${step}" value="${+v.toFixed(3)}">`;
+    h += sp('x', 'x', w[0]) + (game ? sp('z', 'y', w[2]) + sp('y', 'z', w[1]) : sp('y', 'y', w[1]) + sp('z', 'z', w[2]));
+    if (c.frame === 'parallel') h += sp('bank', '侧倾 °', nd.bank ?? 0, 5);
+    h += `<div class="curve-btns"><button type="button" data-spn="ins">后面加一个点</button><button type="button" data-spn="del"${c.pts.length <= 2 ? ' disabled' : ''}>删除这个点</button></div>`;
   } else if (one.kind === 'rail') {
     const pc = one.pieces[0];
     const shape = one.side ? '侧轨' : one.sideSpiral ? '螺旋侧轨' : pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
@@ -3228,6 +3288,27 @@ props.addEventListener('change', (ev) => {
   const e = sel.size === 1 ? doc.elems[[...sel][0]] : null;
   if (!e) return;
   if (!numDrag) snapshot();
+  const rdf = t.dataset.road;
+  if (rdf && e.kind === 'rail' && e.road) {
+    if (rdf === 'style') e.road.style = t.value as 'normal' | 'sink' | 'ribbon';
+    else e.road.depth = Math.max(0.1, +t.value || 0.1);
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
+  const spf = t.dataset.sp;
+  if (spf && e.kind === 'rail' && e.curve) {
+    const nd = e.curve.pts[Math.min(splineNode, e.curve.pts.length - 1)];
+    if (spf === 'bank') { if (+t.value) nd.bank = +t.value; else delete nd.bank; }
+    else {
+      const w = splineToWorld(e, nd.p);
+      w[{ x: 0, y: 1, z: 2 }[spf as 'x' | 'y' | 'z']] = +t.value;
+      nd.p = worldToSpline(e, w).map(r3) as P3;
+    }
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
   const k = t.dataset.k;
   if ((k === 'x' || k === 'y' || k === 'z') && e.kind !== 'guard') {
     // 位置按世界坐标改：算出位移再平移（转过的元素也对）
@@ -3400,6 +3481,27 @@ props.addEventListener('click', (ev) => {
   const segBtn = t.closest<HTMLButtonElement>('.seg-toggle button');
   const chipBtn = t.closest<HTMLButtonElement>('button.chip');
   const tip = /^tip-(\d)$/.exec(segBtn?.parentElement!.dataset.seg ?? '');
+  const roadEnd = /^road-end-(\d)$/.exec(segBtn?.parentElement!.dataset.seg ?? '');
+  if (e.kind === 'rail' && e.road && roadEnd) {
+    const k = +roadEnd[1], v = segBtn!.dataset.v as 'auto' | 'open' | 'closed';
+    if ((e.road.ends?.[k] ?? 'auto') === v) return;
+    snapshot();
+    const ends = [...(e.road.ends ?? ['auto', 'auto'])];
+    ends[k] = v;
+    if (ends.every((x) => x === 'auto')) delete e.road.ends; else e.road.ends = ends;
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
+  if (e.kind === 'rail' && e.curve && segBtn?.parentElement!.dataset.seg === 'curve-frame') {
+    const parallel = segBtn.dataset.v === 'parallel';
+    if ((e.curve.frame === 'parallel') === parallel) return;
+    snapshot();
+    if (parallel) e.curve.frame = 'parallel'; else delete e.curve.frame;
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
   if (e.kind === 'rail' && tip) {
     const k = +tip[1], round = segBtn!.dataset.v === 'round';
     if (!!e.tips?.[k] === round) return;
@@ -3449,6 +3551,19 @@ props.addEventListener('click', (ev) => {
   uprightElem(e);
   props.dataset.id = '';
   flash('已摆正');
+  rebuild();
+});
+
+// 样条线：加点 / 删点（按钮）
+props.addEventListener('click', (ev) => {
+  const t = (ev.target as Element).closest<HTMLButtonElement>('[data-spn]');
+  const e = sel.size === 1 ? doc.elems[[...sel][0]] : null;
+  if (!t || t.disabled || e?.kind !== 'rail' || !e.curve) return;
+  snapshot();
+  const i = Math.min(splineNode, e.curve.pts.length - 1);
+  if (t.dataset.spn === 'ins') splineNode = insertAfter(e.curve, i);
+  else if (removePoint(e.curve, i)) splineNode = Math.min(i, e.curve.pts.length - 1);
+  props.dataset.id = '';
   rebuild();
 });
 
@@ -4242,6 +4357,10 @@ renderer.setAnimationLoop(() => {
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),
   get sel() { return [...sel]; },
   get handleAim() { return handleAim; },
+  /** 覆盖层重画了多少次、一共花了多少毫秒（性能排查用） */
+  get overlayStats() { return { draws: overlayDraws, ms: Math.round(overlayMs * 10) / 10 }; },
+  /** 正在淡出的叠加层物体数（残影检查用） */
+  get fadingOut() { return fading.filter((f) => f.to === 0).length; },
   get rebuilds() { return rebuildCount; },
   get renders() { return renderCount; },
   camDist: () => +camera.position.distanceTo(controls.target).toFixed(2),
@@ -4658,10 +4777,153 @@ function startRingDrag(e: PointerEvent, axis: 0 | 1 | 2) {
 }
 
 // 拉伸 / 坡面模式的抓点（只对选中的一个东西）
-type Handle = { kind: 'size' | 'thick' | 'tilt'; id: number; p: P3; side?: number };
-const HANDLE_INFO: Record<Handle['kind'], string> = { size: '拖动：改尺寸', thick: '拖动：改厚度', tilt: '拖动：上下拉成坡' };
+type SplinePart = 'cp' | 'cin' | 'cout' | 'cz';
+type Handle = { kind: 'size' | 'thick' | 'tilt' | SplinePart; id: number; p: P3; side?: number; node?: number };
+const HANDLE_INFO: Record<Handle['kind'], string> = { size: '拖动：改尺寸', thick: '拖动：改厚度', tilt: '拖动：上下拉成坡', cp: '拖动：移动控制点（水平）', cin: '拖动：调曲线方向', cout: '拖动：调曲线方向', cz: '拖动：改控制点高度' };
+/** 选中曲线时画出它的走向：一条线把控制点连起来，线上的箭头指向「后面」（按需渲染，不用一直动的流动线） */
+function splinePathMarks(e: RailElem): THREE.Object3D[] {
+  const sm = curveSamples(e);
+  if (sm.length < 2) return [];
+  const W = (p: number[]) => new THREE.Vector3(...toWorld(e, [p[0], p[1], p[2]]));
+  const line: THREE.Vector3[] = [];
+  for (let i = 0; i + 1 < sm.length; i++) line.push(W(sm[i].p), W(sm[i + 1].p));
+  const arrows: THREE.Vector3[] = [];
+  const total = sm[sm.length - 1].s, n = Math.max(1, Math.floor(total / 7));
+  let j = 0;
+  for (let k = 1; k <= n; k++) {
+    const s = (total * k) / (n + 1);
+    while (j < sm.length - 2 && sm[j + 1].s < s) j++;
+    const a = sm[j], b = sm[j + 1], f = (s - a.s) / ((b.s - a.s) || 1);
+    const p = W(a.p.map((v, i) => v + (b.p[i] - v) * f));
+    const q = W(b.p.map((v, i) => v));
+    const t = q.clone().sub(W(a.p)).normalize();
+    const side = new THREE.Vector3().crossVectors(Math.abs(t.z) > 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1), t).normalize();
+    const tip = p.clone().addScaledVector(t, 0.9), back = p.clone().addScaledVector(t, -0.5);
+    arrows.push(tip, back.clone().addScaledVector(side, 1), tip, back.clone().addScaledVector(side, -1));
+  }
+  const mk = (pts: THREE.Vector3[], color: number) => {
+    const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+    l.renderOrder = 8;
+    return l;
+  };
+  return [mk(line, 0x7aa3f5), mk(arrows, 0xffd34c)];
+}
+/** 样条线控制点：本地坐标 → 世界坐标 */
+function splineToWorld(e: RailElem, p: number[]): P3 {
+  const h = (e.heading * Math.PI) / 180, c = Math.cos(h), s = Math.sin(h);
+  return toWorld(e, [e.x + p[0] * c - p[1] * s, e.y + p[0] * s + p[1] * c, e.z + p[2]]);
+}
+/** 世界坐标 → 样条线的本地坐标 */
+function worldToSpline(e: RailElem, w: number[]): P3 {
+  const l = toLocal(e, [w[0], w[1], w[2]]), h = (e.heading * Math.PI) / 180, c = Math.cos(h), s = Math.sin(h);
+  const dx = l[0] - e.x, dy = l[1] - e.y;
+  return [dx * c + dy * s, -dx * s + dy * c, l[2] - e.z];
+}
+const r3 = (v: number) => +v.toFixed(3);
+function selectedSpline(): RailElem | null {
+  if (sel.size !== 1) return null;
+  const e = doc.elems[[...sel][0]];
+  return e?.kind === 'rail' && e.curve ? e : null;
+}
+/** 样条线的抓点：每个控制点一个，正在编辑的点再加两个方向手柄和一个改高度的抓点 */
+function splineHandles(e: RailElem): Handle[] {
+  const pts = e.curve!.pts, active = Math.min(splineNode, pts.length - 1);
+  const out: Handle[] = pts.map((n, i) => ({ kind: 'cp', id: e.id, p: splineToWorld(e, n.p), node: i }));
+  const nd = pts[active];
+  const add = (a: number[], b: number[]) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  if (nd.in) out.push({ kind: 'cin', id: e.id, p: splineToWorld(e, add(nd.p, nd.in)), node: active });
+  if (nd.out) out.push({ kind: 'cout', id: e.id, p: splineToWorld(e, add(nd.p, nd.out)), node: active });
+  // 改高度的抓点放在控制点屏幕上方；快俯视时竖直方向在屏幕上没有长度，挪到旁边
+  const w = splineToWorld(e, nd.p), s0 = toScreen(w), need = hitPx(12) * 2 + 6;
+  const perZ = s0.distanceTo(toScreen([w[0], w[1], w[2] + 1]));
+  if (perZ >= 6) out.push({ kind: 'cz', id: e.id, p: [w[0], w[1], w[2] + need / perZ], node: active });
+  else {
+    const r = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()), camera.up).normalize();
+    const perR = s0.distanceTo(toScreen([w[0] + r.x, w[1] + r.y, w[2] + r.z])) || 1;
+    out.push({ kind: 'cz', id: e.id, p: [w[0] + (r.x * need) / perR, w[1] + (r.y * need) / perR, w[2] + (r.z * need) / perR], node: active });
+  }
+  return out;
+}
+function startSplineDrag(e: PointerEvent, hd: Handle) {
+  const r = doc.elems[hd.id] as RailElem;
+  splineNode = hd.node!;
+  props.dataset.id = ''; syncProps();
+  snapshot();
+  el.setPointerCapture(e.pointerId); pauseControls();
+  const base = new THREE.Vector3(...hd.p);
+  const up = new THREE.Vector3(0, 0, 1);
+  const w = new THREE.Vector3(...splineToWorld(r, r.curve!.pts[hd.node!].p));
+  const perZ = toScreen(w.toArray() as P3).distanceTo(toScreen([w.x, w.y, w.z + 1]));
+  drag = { t: 'splinePt', id: hd.id, orig: origOf([hd.id]), node: hd.node!, part: hd.kind as SplinePart, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(up, base), start: base, y0: e.clientY, k: perZ >= 6 ? 1 / perZ : worldPerPx(w) };
+  drawOverlay(); updateStatus();
+}
+/** 曲线路面的端头吸到平路面的边上：端头的方向转成垂直于那条边，这样路面能接上（解算只认正对着的端头） */
+function alignRoadEnd(r: RailElem, node: number, w: number[]) {
+  const pts = r.curve!.pts, nd = pts[node];
+  const key = node === 0 ? 'out' : node === pts.length - 1 ? 'in' : null;
+  if (!key) return;
+  for (const b of Object.values(doc.elems)) {
+    if (b.kind !== 'box' || b.q || b.slope || Math.abs(b.z - w[2]) > 0.05) continue;
+    const [x, y] = toLocal(b, [w[0], w[1], w[2]]), f = footprint(b), eps = 0.02;
+    const n: [number, number] | null = Math.abs(x - f.x1) < eps && y >= f.y0 - eps && y <= f.y1 + eps ? [1, 0]
+      : Math.abs(x - f.x0) < eps && y >= f.y0 - eps && y <= f.y1 + eps ? [-1, 0]
+        : Math.abs(y - f.y1) < eps && x >= f.x0 - eps && x <= f.x1 + eps ? [0, 1]
+          : Math.abs(y - f.y0) < eps && x >= f.x0 - eps && x <= f.x1 + eps ? [0, -1] : null;
+    if (!n) continue;
+    // 路面从边上朝外走：两头的手柄都朝着边的外面（终点的手柄是往回指的，正好也是这个方向）
+    const a = ((b.ang ?? 0) * Math.PI) / 180, wx = n[0] * Math.cos(a) - n[1] * Math.sin(a), wy = n[0] * Math.sin(a) + n[1] * Math.cos(a);
+    const h = (r.heading * Math.PI) / 180, lx = wx * Math.cos(h) + wy * Math.sin(h), ly = -wx * Math.sin(h) + wy * Math.cos(h);
+    const v = nd[key], l = v ? Math.hypot(v[0], v[1], v[2]) || 8 : 8;
+    nd[key] = [r3(lx * l), r3(ly * l), 0];
+    return;
+  }
+}
+function splineDragTo(d: Extract<Drag, { t: 'splinePt' }>, e: PointerEvent) {
+  const r = doc.elems[d.id] as RailElem;
+  const o = JSON.parse(d.orig.get(d.id)!) as RailElem;
+  r.curve = o.curve;
+  const nd = r.curve!.pts[d.node];
+  const g = (v: number) => (gridOn ? snapG(v) : r3(v));
+  snapTarget = null;
+  dragInfo = '';
+  if (d.part === 'cz') {
+    nd.p[2] = g(nd.p[2] - (e.clientY - d.y0) * d.k);
+    dragInfo = `高度 ${fmt(splineToWorld(r, nd.p)[2])}`;
+  } else {
+    const hit = planeHit(e, d.plane);
+    if (!hit) return;
+    const w0 = splineToWorld(o, nd.p);
+    if (d.part === 'cp') {
+      const delta = hit.clone().sub(d.start);
+      let w: number[] = [w0[0] + delta.x, w0[1] + delta.y, w0[2]];
+      let snapped = false;
+      if (vHeld || e.pointerType === 'touch') {
+        const tg = findTarget(e.clientX, e.clientY, new Set([d.id]));
+        if (tg) { w = tg.p; snapTarget = tg; snapped = true; dragInfo = `吸附到${tg.kind === 'v' ? '顶点' : tg.kind === 'm' ? '边中点' : '边上'}`; }
+      }
+      const l = worldToSpline(r, w);
+      nd.p = snapped ? [r3(l[0]), r3(l[1]), r3(l[2])] : [g(l[0]), g(l[1]), nd.p[2]];
+      if (snapped && r.road) alignRoadEnd(r, d.node, w);
+    } else {
+      // 方向手柄：另一边的手柄跟着对齐（长度不变），曲线在这个点上保持平滑
+      const key = d.part === 'cin' ? 'in' : 'out', other = d.part === 'cin' ? 'out' : 'in';
+      const tgt = o.curve!.pts[d.node][key]!;
+      const delta = hit.clone().sub(d.start);
+      const wt = splineToWorld(o, [nd.p[0] + tgt[0], nd.p[1] + tgt[1], nd.p[2] + tgt[2]]);
+      const l = worldToSpline(r, [wt[0] + delta.x, wt[1] + delta.y, wt[2]]);
+      const v: P3 = [r3(l[0] - nd.p[0]), r3(l[1] - nd.p[1]), r3(l[2] - nd.p[2])];
+      nd[key] = v;
+      const ot = nd[other];
+      const vl = Math.hypot(v[0], v[1], v[2]);
+      if (ot && vl > 1e-6) { const ol = Math.hypot(ot[0], ot[1], ot[2]); nd[other] = [r3((-v[0] / vl) * ol), r3((-v[1] / vl) * ol), r3((-v[2] / vl) * ol)]; }
+    }
+  }
+  liveUpdate();
+}
 function modeHandles(): Handle[] {
   const m = mode();
+  const spl = selectedSpline();
+  if (spl) { if (m === null || m === 'stretch') return splineHandles(spl); }
   if ((m !== 'stretch' && m !== 'slope') || sel.size !== 1 || !gizmoOn()) return [];
   const e = doc.elems[[...sel][0]];
   if (!e) return [];
@@ -4691,7 +4953,7 @@ function modeHandles(): Handle[] {
       const sides = e.slope ? (e.slope.axis === 0 ? [0, 2] : [1, 3]) : [0, 1, 2, 3];
       for (const sd of sides) { const [x, y] = mids[sd]; out.push({ kind: 'tilt', id: e.id, p: toWorld(e, [x, y, top(x, y)]), side: sd }); }
     }
-  } else if (e.kind === 'rail' && !e.q && e.pieces.length === 1 && e.pieces[0].angle === 0) {
+  } else if (e.kind === 'rail' && !e.curve && !e.q && e.pieces.length === 1 && e.pieces[0].angle === 0) {
     // 直轨：两头（拉伸改长度，坡面改高差）
     const ps = railPath(e);
     for (const q of [ps[0], ps[ps.length - 1]]) out.push({ kind: m === 'stretch' ? 'size' : 'tilt', id: e.id, p: [q.x, q.y, q.z] });
@@ -4709,7 +4971,7 @@ function updateAim(e: { clientX: number; clientY: number }, mod: boolean) {
   const m = mode();
   const h = sel.size === 1 && !vHeld && (m === 'stretch' || m === 'slope' || mod) ? (mod ? modHit(e) : pick(e)) : null;
   const it = h && sel.has(h.id) ? doc.elems[h.id] : null;
-  if (!h || !it) { setHandleAim(null); return; }
+  if (!h || !it || (it.kind === 'rail' && it.curve)) { setHandleAim(null); return; }
   const flat = it.kind === 'box' || it.kind === 'zone' ? it : null;
   thickHover = !!flat && !flat.q && onLowerHalf(flat, h.p);
   const hs = modeHandles();
@@ -4729,14 +4991,41 @@ function updateAim(e: { clientX: number; clientY: number }, mod: boolean) {
 /** 厚度抓点跟着相机换边：相机动了要重画 */
 let handlesKey = '';
 function syncHandles() {
-  const k = !drag && mode() === 'stretch' ? modeHandles().map((h) => h.p.join()).join('|') : '';
-  if (k === handlesKey) return;
+  const hs = !drag && (mode() === 'stretch' || selectedSpline()) ? modeHandles() : null;
+  const k = hs ? hs.map((h) => `${h.id}:${h.kind}:${h.node ?? ''}`).join('|') : '';
+  if (k === handlesKey) { if (hs) moveHandleMarks(hs); return; }
   handlesKey = k;
   if (k) {
     drawOverlay(); invalidate();
     // 按住 Ctrl / Alt 进模式时鼠标可能没动，这里也算一次
     if (!lastPointerTouch && document.elementFromPoint(lastMouse.clientX, lastMouse.clientY) === el) updateAim(lastMouse, modKeys.ctrl || modKeys.alt);
   }
+}
+/** 相机动了、抓点还是那些：只挪标记的位置。整层重画太贵（选中框要重新生成钢轨网格），转视角时每帧都画会掉帧 */
+function moveHandleMarks(hs: Handle[]) {
+  const place = (o: THREE.Object3D | undefined, i: number, p: number[]) => {
+    const g = (o as THREE.Points | undefined)?.geometry;
+    if (!g) return;
+    const a = g.getAttribute('position');
+    if (a.getX(i) === Math.fround(p[0]) && a.getY(i) === Math.fround(p[1]) && a.getZ(i) === Math.fround(p[2])) return;
+    a.setXYZ(i, p[0], p[1], p[2]);
+    a.needsUpdate = true;
+    g.computeBoundingSphere();
+    invalidate();
+  };
+  const nth = new Map<string, number>();
+  for (const hd of hs) {
+    const ord = nth.get(hd.kind) ?? 0;
+    nth.set(hd.kind, ord + 1);
+    place(overlayKeys.get(`hd:${hd.id}:${hd.kind}:${ord}`)?.children[0], 0, hd.p);
+  }
+  // 控制点到方向手柄、高度抓点的连线：顺序和 drawOverlayInner 里画的时候一样
+  const spl = selectedSpline();
+  const cp = spl && hs.find((x) => x.kind === 'cp' && x.node === Math.min(splineNode, spl.curve!.pts.length - 1));
+  if (!spl || !cp) return;
+  const line = overlayKeys.get(`splineLines:${spl.id}`)?.children[0];
+  let i = 0;
+  for (const x of hs) if (x.kind === 'cin' || x.kind === 'cout' || x.kind === 'cz') { place(line, i++, cp.p); place(line, i++, x.p); }
 }
 function handleAt(e: { clientX: number; clientY: number }): Handle | null {
   if (drag) return null;

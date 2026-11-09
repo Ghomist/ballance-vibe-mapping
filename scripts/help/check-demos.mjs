@@ -1,11 +1,12 @@
 // 帮助教程的实时演示检查：无头 Edge 把每段演示（src/box/demos.ts）完整跑一轮，报告有没有出错、一轮多长，顺便截一张中途的画面。
 // 改了交互方式、界面之后跑一下，看哪段演示坏了。
 //
-// 用法：node scripts/help/check-demos.mjs [只查这些名字…] [--url http://127.0.0.1:5173/] [--shots 目录] [--jobs 4]
+// 用法：node scripts/help/check-demos.mjs [只查这些名字…] [--url http://127.0.0.1:5173/] [--shots 目录] [--jobs 2]
+// 默认只开 2 个 Edge，并把自己和 Edge 都调成较低优先级，跑的时候不抢别的程序的 CPU；赶时间可以加 --jobs。
 // 依赖：Edge（EDGE 环境变量可以指定路径）；先 npm run dev 开着开发服务器。
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, setPriority, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +15,9 @@ const args = process.argv.slice(2);
 const opt = (k) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : undefined; };
 const URL_ = opt('url') ?? 'http://127.0.0.1:5173/';
 const SHOTS = opt('shots');
-const JOBS = Number(opt('jobs') ?? 4);
+const JOBS = Number(opt('jobs') ?? 2);
+const lowPriority = (pid) => { try { setPriority(pid, constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* 调不了就算了 */ } };
+lowPriority(0);
 const EDGE = process.env.EDGE ?? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const W = 800, H = 450;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -30,6 +33,7 @@ async function worker(list) {
   const prof = mkdtempSync(join(tmpdir(), 'bvm-demo-prof-'));
   const port = 9800 + Math.floor(Math.random() * 150);
   const proc = spawn(EDGE, ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, `--window-size=${W},${H}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: 'ignore' });
+  lowPriority(proc.pid);
   let ws;
   for (let i = 0; i < 100 && !ws; i++) {
     try { const p = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === 'page'); if (p) ws = new WebSocket(p.webSocketDebuggerUrl); } catch { /* 还没起来 */ }
