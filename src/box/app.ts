@@ -27,7 +27,7 @@ import { ASSET_INFO, assetInfo } from './asset-info';
 import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
-import { GRID_THEMES, createGrid, themeGrid } from '../view/grid';
+import { AXIS_COLORS, GRID_THEMES, createGrid, setGridAxes, themeGrid } from '../view/grid';
 import { type P3, feats as featsRaw } from './snap';
 import { solve, solveStats } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
@@ -118,6 +118,8 @@ interface Prefs {
   guardInset: number;
   /** 自动追踪：点选时视图中心移到点中的东西上（只拉远不拉近），默认关；换过键名，之前存下的 follow / autoFollow 不沿用 */
   followPick: boolean;
+  /** 坐标系（只影响显示和 X / Y / Z 按键，内部数据一直是 Z 朝上）：game = 游戏坐标系，Y 朝上；math = 数学坐标系，Z 朝上 */
+  coordSys: 'game' | 'math';
   /** 素材库的宽度（在两边时）、高度（在底部时） */
   libW: number; libH: number;
   /** 显示死亡区（换了键名：之前默认隐藏时存下的 zones 不再沿用，默认显示） */
@@ -126,7 +128,7 @@ interface Prefs {
   gridShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
+  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 /**
@@ -927,7 +929,9 @@ const measureLabel = document.createElement('div');
 measureLabel.className = 'measure-label';
 measureLabel.classList.add('fade');
 document.body.appendChild(measureLabel);
-const AXIS_COLOR = [0xff5a5a, 0x5adc7a, 0x5a9cff];
+/** 按内部的轴（0、1 水平，2 竖直）取颜色：跟着显示的轴名走，X 红、Y 绿、Z 蓝 */
+const axisLineColors = (game: boolean) => (game ? [0xff5a5a, 0x5a9cff, 0x5adc7a] : [0xff5a5a, 0x5adc7a, 0x5a9cff]);
+let AXIS_COLOR = axisLineColors(prefs.coordSys !== 'math');
 
 /**
  * 叠加层的淡入淡出：每次重画时，叠加层里的东西按「键」（这是什么提示：哪个物体的选中框、哪种辅助线……）对上号，
@@ -1337,7 +1341,8 @@ function moveWithSnap(orig: Map<number, string>, dRaw: V3, dSnap: V3) {
   const on = dSnap.some((v, i) => Math.abs(v - dRaw[i]) > 1e-6);
   drive(dRaw, on ? dSnap : null, (v) => moveSel(orig, v as V3), [0, 0, 0], { ids: new Set(orig.keys()) });
   const f = on ? dSnap : dRaw;
-  dragInfo = `移动 ${fmt(f[0])}, ${fmt(f[1])}, ${fmt(f[2])}${on ? '（对齐）' : ''}`;
+  const shown = prefs.coordSys !== 'math' ? [f[0], f[2], f[1]] : f; // 按显示的坐标系排：x、y、z
+  dragInfo = `移动 ${fmt(shown[0])}, ${fmt(shown[1])}, ${fmt(shown[2])}${on ? '（对齐）' : ''}`;
 }
 
 function moveSel(orig: Map<number, string>, d: V3) {
@@ -1681,7 +1686,9 @@ function nearestSelPoint(at: THREE.Vector2): P3 | null {
 
 // ---------------- G 移动 / R 旋转（Blender 式） ----------------
 
-const AXIS_NAME = ['X', 'Y', 'Z'];
+/** 内部的轴（0、1 水平，2 竖直）显示成什么名字；游戏坐标系里竖直的是 Y */
+const axisNames = (game: boolean) => (game ? ['X', 'Z', 'Y'] : ['X', 'Y', 'Z']);
+let AXIS_NAME = axisNames(prefs.coordSys !== 'math');
 /** G：进入移动模式。dup：刚复制出来的（取消就删掉；复制时已经记过撤销） */
 function startGrab(mouse: { clientX: number; clientY: number }, dup = false) {
   if (!sel.size || drag) return;
@@ -1824,13 +1831,13 @@ function transformKey(e: KeyboardEvent): boolean {
   if (k === 'enter') { finishDrag(); return true; }
   if (k === 'control') { rotCtrl = true; if (d.t === 'rotate') rotateMove(lastMouse); updateStatus(); return true; }
   if (k === 'x' || k === 'y' || k === 'z') {
-    const a = ({ x: 0, y: 1, z: 2 } as const)[k];
+    const a = AXIS_NAME.indexOf(k.toUpperCase()) as 0 | 1 | 2; // 按的是显示的轴名
     if (d.t === 'grab') {
       if (e.shiftKey) { d.excl = d.excl === a ? null : a; d.axis = null; }
       else { d.axis = d.axis === a ? null : a; d.excl = null; }
       grabMove(lastMouse);
     } else {
-      if (a !== 2 && [...d.orig.keys()].some((id) => !canTilt(doc.elems[id]))) { flash('护栏、盘点只能绕 Z 转', true); return true; }
+      if (a !== 2 && [...d.orig.keys()].some((id) => !canTilt(doc.elems[id]))) { flash('护栏、盘点只能绕竖直轴转', true); return true; }
       d.axis = a; d.acc = 0; d.prev = screenAngle(d.pivot, lastMouse);
       rotateMove(lastMouse);
     }
@@ -3128,16 +3135,18 @@ function syncProps() {
   /** 开 / 关的小药丸 */
   const chip = (flag: string, label: string, on: boolean) => `<button type="button" class="chip${on ? ' on' : ''}" data-flag="${flag}">${label}</button>`;
   const [px, py, pz] = propPos(one);
-  const pos = (zLabel: string) => num('x', 'x', px) + num('y', 'y', py) + num('z', zLabel, pz);
+  // 字段的 data-k 一直是内部的轴；游戏坐标系里按 x、y（高度）、z 的顺序排
+  const game = prefs.coordSys !== 'math';
+  const pos = () => (game ? num('x', 'x', px) + num('z', 'y', pz) + num('y', 'z', py) : num('x', 'x', px) + num('y', 'y', py) + num('z', 'z', pz));
   // 朝向：只绕 Z 转过的填角度（R 键可以自由旋转）；倾斜的显示「摆正」按钮
   const yaw = yawOfElem(one);
   const orient = () => ((isOriented(one) || one.kind === 'rail') && one.q
-    ? '<label>朝向</label><div class="inline"><span class="muted">已倾斜</span><button data-act="upright" title="去掉绕 X / Y 的旋转，只保留绕 Z 的朝向（中心不动）">摆正</button></div>'
+    ? '<label>朝向</label><div class="inline"><span class="muted">已倾斜</span><button data-act="upright" title="去掉绕水平轴的旋转，只保留朝向（中心不动）">摆正</button></div>'
     : yaw !== null ? num('yaw', '朝向 °', yaw, 15) : '');
   let h = '';
   if (one.kind === 'box') {
     h += `<div class="title">路面${one.group !== undefined ? '（已绑定）' : ''}${one.q ? '<small>倾斜：不参与花纹解算</small>' : ''}</div>`;
-    h += pos('顶面') + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '厚度', one.depth) + orient();
+    h += pos() + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '厚度', one.depth) + orient();
     h += `<label>样式</label><select data-k="style">${(['normal', 'sink', 'ribbon'] as Style[]).map((s) => `<option value="${s}"${s === one.style ? ' selected' : ''}>${{ normal: '平路', sink: '凹路', ribbon: '细边框凹路' }[s]}</option>`).join('')}</select>`;
     h += `<label>倾斜</label><select data-k="axis"><option value="-1">不倾斜</option><option value="0"${one.slope?.axis === 0 ? ' selected' : ''}>沿长</option><option value="1"${one.slope?.axis === 1 ? ' selected' : ''}>沿宽</option></select>`;
     if (one.slope) h += num('dz', '高差', one.slope.dz);
@@ -3145,12 +3154,12 @@ function syncProps() {
     h += (['+长', '+宽', '-长', '-宽'] as const).map((n, i) => `<label>${n}</label>${seg(`side-${i}`, [['auto', '自动'], ['open', '开口'], ['closed', '封口']], sideMode(one, i as Dir))}`).join('');
   } else if (one.kind === 'zone') {
     h += `<div class="title">死亡区<small>球碰到包围盒就死；导出时隐藏</small></div>`;
-    h += pos('顶面') + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '高', one.depth) + orient();
+    h += pos() + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '高', one.depth) + orient();
   } else if (one.kind === 'rail') {
     const pc = one.pieces[0];
     const shape = one.side ? '侧轨' : one.sideSpiral ? '螺旋侧轨' : pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
     h += `<div class="title">${shape}</div>`;
-    h += num('x', '起点 x', one.x) + num('y', '起点 y', one.y) + num('z', '起点高', one.z);
+    h += num('x', '起点 x', one.x) + (game ? num('z', '起点 y', one.z) + num('y', '起点 z', one.y) : num('y', '起点 y', one.y) + num('z', '起点 z', one.z));
     h += one.q ? orient() : num('heading', '朝向 °', one.heading, 15);
     if (one.side) {
       h += `<label>类型</label>${seg('side-type', [['normal', '普通'], ['stone', '石球']], one.side.stone ? 'stone' : 'normal')}`;
@@ -3174,20 +3183,20 @@ function syncProps() {
   } else if (one.kind === 'piece' && isCheckpoint(one)) {
     const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
     h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
-    h += pos('顶面') + num('yaw', '路口朝向 °', yawDeg(one), 15);
+    h += pos() + num('yaw', '路口朝向 °', yawDeg(one), 15);
     const ARROW = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
     const base = one.ang ?? 0;
     h += `<label>重生朝向</label><select data-k="spawn"><option value=""${one.spawn === undefined ? ' selected' : ''}>和路口一致</option>${ARROW.map((n, i) => `<option value="${i * 45}"${one.spawn !== undefined && Math.abs(((one.spawn + base) % 360) - i * 45) < 1e-6 ? ' selected' : ''}>${n}（${i * 45}°）</option>`).join('')}</select>`;
   } else if (one.kind === 'piece') {
     h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
-    h += pos('顶面') + orient();
+    h += pos() + orient();
   } else if (one.kind === 'asset') {
     h += `<div class="title">${assetInfo(one.name)?.label ?? one.name}</div>`;
-    h += pos('z') + orient();
+    h += pos() + orient();
   } else {
     const t = objType(one.type);
     h += `<div class="title">${t?.label ?? one.type}${one.q ? '<small>倾斜：没有专属路块和挡块</small>' : ''}</div>`;
-    h += pos('z') + orient();
+    h += pos() + orient();
     const extra: string[] = [];
     if (baseSpec(one.type)) extra.push(chip('noBase', '专属路块', !one.noBase));
     if (t?.cat === 'module' && one.type !== 'PE_Balloon') h += `<label>小节</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
@@ -3643,6 +3652,7 @@ function renderSettings() {
     + `<label><span>格栅步长<small>打开格栅时位置和尺寸的步长（默认 1）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${prefs.gridStep}"></label>`
     + `<label><span>护栏端头内缩<small>点路边放整条直边时，两头各往里缩（默认 1.5）</small></span><input type="number" id="guard-inset" step="0.25" min="0" value="${prefs.guardInset}"></label>`
     + `<label class="stack"><span>自动追踪<small>点选时视角移到它上面：不拉近，太近时按 F 的距离拉远</small></span>${seg('follow', [['off', '关'], ['on', '开']], prefs.followPick ? 'on' : 'off')}</label>`
+    + `<label class="stack"><span>坐标系<small>游戏坐标系 Y 朝上，数字和 Ballance 里一致；数学坐标系 Z 朝上</small></span>${seg('coord', [['game', '游戏坐标系'], ['math', '数学坐标系']], prefs.coordSys === 'math' ? 'math' : 'game')}</label>`
     + '<h3 class="sub">界面</h3>'
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
     + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
@@ -3667,6 +3677,7 @@ function renderSettings() {
   segClick('module-view', (v) => { modelView = v === 'model'; prefs.modelView = modelView; savePrefs(); renderLib(); rebuild(); });
   segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
   segClick('follow', (v) => { prefs.followPick = v === 'on'; savePrefs(); });
+  segClick('coord', (v) => { prefs.coordSys = v === 'math' ? 'math' : 'game'; savePrefs(); applyCoordSys(); });
   settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; prefs.guardInset = 1.5; savePrefs(); rebuild(); renderSettings(); });
   settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => showEl(settingsPanel, false));
 }
@@ -3793,14 +3804,23 @@ function axisLabel(text: string, color: string) {
   return s;
 }
 const O = new THREE.Vector3(-0.75, -0.75, -0.75);
-([['X', '#ff6b6b', new THREE.Vector3(1, 0, 0)], ['Y', '#6bdc87', new THREE.Vector3(0, 1, 0)], ['Z', '#6ba4ff', new THREE.Vector3(0, 0, 1)]] as const).forEach(([t, col, d]) => {
-  const end = O.clone().addScaledVector(d, 1.95);
-  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([O, end]), new THREE.LineBasicMaterial({ color: col, depthTest: false }));
-  l.renderOrder = 1;
-  const s = axisLabel(t, col);
-  s.position.copy(end).addScaledVector(d, 0.18);
-  cubeScene.add(l, s);
-});
+const cubeAxes = new THREE.Group();
+cubeScene.add(cubeAxes);
+/** 立方体旁边的三根轴：方向不变，名字和颜色跟着坐标系 */
+function syncCubeAxes() {
+  cubeAxes.clear();
+  const COL: Record<string, string> = { X: '#ff6b6b', Y: '#6bdc87', Z: '#6ba4ff' };
+  ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const).forEach(([x, y, z], i) => {
+    const d = new THREE.Vector3(x, y, z), t = AXIS_NAME[i], col = COL[t];
+    const end = O.clone().addScaledVector(d, 1.95);
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([O, end]), new THREE.LineBasicMaterial({ color: col, depthTest: false }));
+    l.renderOrder = 1;
+    const s = axisLabel(t, col);
+    s.position.copy(end).addScaledVector(d, 0.18);
+    cubeAxes.add(l, s);
+  });
+}
+syncCubeAxes();
 let cubeHover = -1;
 const cubeRay = new THREE.Raycaster();
 function cubePick(e: MouseEvent): number {
@@ -4465,12 +4485,26 @@ function applyMode() {
   dragInfo = '';
   drawOverlay(); updateStatus(); invalidate();
 }
+/** 坐标系：轴名、颜色、按键、属性面板跟着换；场景、存档和导出都不受影响 */
+function applyCoordSys() {
+  const game = prefs.coordSys !== 'math';
+  AXIS_NAME = axisNames(game);
+  AXIS_COLOR = axisLineColors(game);
+  const cs = game ? [AXIS_COLORS.x, AXIS_COLORS.z, AXIS_COLORS.y] : [AXIS_COLORS.x, AXIS_COLORS.y, AXIS_COLORS.z];
+  moveGizmo.setColors(cs); rotGizmo.setColors(cs);
+  setGridAxes(gridGroup, game);
+  themeGrid(gridGroup, GRID_THEMES[prefs.theme]);
+  syncCubeAxes();
+  props.dataset.id = '';
+  syncProps(); updateStatus(); drawOverlay(); invalidate();
+}
 /** 手柄拖动期间暂停环视（手指按在手柄上，OrbitControls 也会开始转），拖完自动恢复（syncGizmo） */
 function pauseControls() { controls.enabled = false; gizmoPausedControls = true; }
 
 // 旋转模式的圆环
 const rotGizmo = new RotateGizmo();
 scene.add(rotGizmo.group);
+applyCoordSys();
 /** 旋转的轴心：选中整体的中心（和 R 旋转一样） */
 function rotPivot(): THREE.Vector3 | null {
   if (!sel.size) return null;

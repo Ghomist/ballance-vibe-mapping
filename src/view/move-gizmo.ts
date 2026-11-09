@@ -46,6 +46,9 @@ export class MoveGizmo {
   }
 
   /** 高亮一根箭头（悬停或正在拖），别的变淡 */
+  /** 三根轴的颜色（换坐标系时 Y、Z 对调） */
+  setColors(cs: number[]) { this.arrows.forEach((a, i) => { for (const m of a.mats) m.color.set(cs[i]); }); }
+
   setHot(axis: 0 | 1 | 2 | null) {
     if (axis === this.hot) return false;
     this.hot = axis;
@@ -101,6 +104,9 @@ export class RotateGizmo {
     this.shown = axes;
     this.rings.forEach((r, i) => { r.mesh.visible = axes[i]; });
   }
+
+  /** 三个圆环的颜色（换坐标系时 Y、Z 对调） */
+  setColors(cs: number[]) { this.rings.forEach((r, i) => r.mat.color.set(cs[i])); }
 
   setHot(axis: 0 | 1 | 2 | null) {
     if (axis === this.hot) return false;

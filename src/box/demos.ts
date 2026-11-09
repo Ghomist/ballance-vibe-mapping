@@ -206,7 +206,7 @@ export const DEMOS: Demo[] = [
     async setup(a) { await a.setDoc([box(0, 0, 30, 5), box(12.5, 8, 5, 12)]); await a.view([15, -16, 22], [15, 8, 0]); await a.center([15, 6, 0]); await a.select([2]); },
     async act(a) {
       await a.at([15, 12, 0], 500); await a.wait(200);
-      await a.press('g'); await a.press('y');
+      await a.press('g'); await a.press('z');
       await a.glide(a.P([15, 8.5, 0]), 900); await a.wait(300);
       await a.press('-', [], { ms: 1200 }); await a.press('3', [], { ms: 1000 }); await a.wait(300);
       await a.press('Enter'); await a.wait(900);
@@ -322,7 +322,7 @@ export const DEMOS: Demo[] = [
     },
     async act(a) {
       await a.at([17.5, 10, 0], 500); await a.keysShow(['左键'], 500); await a.click(); await a.wait(400);
-      await a.press('g'); await a.press('y'); await a.glide(a.P([17.5, 6, 0]), 600);
+      await a.press('g'); await a.press('z'); await a.glide(a.P([17.5, 6, 0]), 600);
       for (const k of ['-', '7', '.', '5']) await a.press(k, [], { ms: 900 });
       await a.press('Enter'); await a.wait(1200);
     },
@@ -387,7 +387,7 @@ export const DEMOS: Demo[] = [
       await a.at([20, 0, 0], 600); await a.keysShow(['左键'], 500); await a.click(); await a.select([2]); await a.wait(500);
       const c = a.P([20, 0, 0]);
       await a.glide({ x: c.x + 100, y: c.y }, 400);
-      await a.press('r'); await a.press('y'); await a.wait(200);
+      await a.press('r'); await a.press('z'); await a.wait(200);
       await a.press('9', [], { ms: 900 }); await a.press('0', [], { ms: 900 }); await a.press('Enter'); await a.wait(1000);
     },
   },
@@ -402,7 +402,7 @@ export const DEMOS: Demo[] = [
     async act(a) {
       // 用 G + Y 输入距离：沿 Y 移 -14，两个对准方块正好嵌进两段路的端头
       const p = a.P([-5, 14, 0]);
-      await a.glide(p, 500); await a.press('g'); await a.press('y'); await a.wait(200);
+      await a.glide(p, 500); await a.press('g'); await a.press('z'); await a.wait(200);
       await a.glide({ x: p.x, y: p.y + 60 }, 600);
       for (const k of ['-', '1', '4']) await a.press(k, [], { ms: 900 });
       await a.press('Enter'); await a.wait(1400);
@@ -422,7 +422,7 @@ export const DEMOS: Demo[] = [
       await a.keysShow(['左键'], 500); await a.click(); await a.wait(500);
       await a.fly([22, -22, 18], [33, 4, 0], 700);
       await a.at([33.5, 12, 0], 400); await a.keysShow(['左键'], 400); await a.click(); await a.wait(200);
-      await a.press('g'); await a.press('y'); await a.glide(a.P([33.5, 6, 0]), 500);
+      await a.press('g'); await a.press('z'); await a.glide(a.P([33.5, 6, 0]), 500);
       for (const k of ['-', '1', '2']) await a.press(k, [], { ms: 900 });
       await a.press('Enter'); await a.wait(1100);
     },
