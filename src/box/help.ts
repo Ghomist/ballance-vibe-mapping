@@ -59,7 +59,7 @@ function renderBlock(lines: string[]): string {
   return out.join('\n');
 }
 
-/** 一页：一个小节（## 1.1 …）；没有小节的章（# 4. 快捷键速查）整章一页 */
+/** 一页：一个小节（## 1.1 …）；没有小节的章（# 4. 常见问题）整章一页 */
 interface Page { id: string; chapter: string; title: string; html: string }
 interface Chapter { id: string; title: string; pages: Page[] }
 const numOf = (title: string) => /^([\d.]+?)\.?\s/.exec(title)?.[1] ?? title;

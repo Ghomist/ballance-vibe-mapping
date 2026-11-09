@@ -145,6 +145,7 @@ npm run dev
 | X / Delete / Backspace | 删除 |
 | Ctrl+Z / Ctrl+Y | 撤销 / 重做 |
 | S / Shift+Tab | 开关自动对齐 / 格栅（默认步长 1，设置里可改） |
+| 设置 → 快捷键 | 这里列的都是默认按键，大部分可以改绑（Esc、Enter、方向键、F1 和移动时的 X / Y / Z 固定） |
 
 ## 路面规则
 

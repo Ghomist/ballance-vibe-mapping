@@ -54,34 +54,34 @@
       <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是导出 NMO 的文件名" />
       <div class="sep"></div>
       <div class="group">
-        <button id="undo" data-help="4" class="icon" title="撤销（Ctrl+Z）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
-        <button id="redo" data-help="4" class="icon" title="重做（Ctrl+Y）"><svg viewBox="0 0 16 16"><path d="M11 4l3 3-3 3M14 7H6.5a4 4 0 0 0 0 8H9" /></svg></button>
+        <button id="undo" class="icon" title="撤销（{undo}）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
+        <button id="redo" class="icon" title="重做（{redo}）"><svg viewBox="0 0 16 16"><path d="M11 4l3 3-3 3M14 7H6.5a4 4 0 0 0 0 8H9" /></svg></button>
       </div>
     </div>
 
     <div class="tb-center">
       <!-- 编辑模式：点按钮或按 1～6 永久切换（蓝色，再点一次取消），按住字母 / 修饰键临时切换（橙色）；什么都不选是选择模式 -->
       <div class="seg" id="tools">
-        <button data-mode="move" data-help="1.3" title="移动：拖东西或箭头移动（1）&#10;按住 G 临时切换；轻按 G 是自由移动">
+        <button data-mode="move" data-help="1.3" title="移动：拖东西或箭头移动（{mode.move}）&#10;按住 {hold.move} 临时切换；轻按 {hold.move} 是自由移动">
           <svg viewBox="0 0 16 16"><path d="M8 1.8v12.4M1.8 8h12.4M8 1.8L6.3 3.5M8 1.8l1.7 1.7M8 14.2l-1.7-1.7M8 14.2l1.7-1.7M1.8 8l1.7-1.7M1.8 8l1.7 1.7M14.2 8l-1.7-1.7M14.2 8l-1.7 1.7" /></svg>移动<kbd>1</kbd>
         </button>
-        <button data-mode="stretch" data-help="1.4" title="拉伸：拖蓝色方块或路面的边改尺寸，拖橙色方块或侧面下半截改厚度（2）&#10;按住 Ctrl 临时切换">
+        <button data-mode="stretch" data-help="1.4" title="拉伸：拖蓝色方块或路面的边改尺寸，拖橙色方块或侧面下半截改厚度（{mode.stretch}）&#10;按住 {hold.stretch} 临时切换">
           <svg viewBox="0 0 16 16"><path d="M5 5h6v6H5z M1.5 8H5M11 8h3.5M1.5 8l1.5-1.5M1.5 8L3 9.5M14.5 8L13 6.5M14.5 8L13 9.5" /></svg>拉伸<kbd>2</kbd>
         </button>
-        <button data-mode="slope" data-help="1.4" title="坡面：拖边上的圆圈上下拉成坡（3）&#10;按住 Alt 临时切换">
+        <button data-mode="slope" data-help="1.4" title="坡面：拖边上的圆圈上下拉成坡（{mode.slope}）&#10;按住 {hold.slope} 临时切换">
           <svg viewBox="0 0 16 16"><path d="M1.5 13.5h13V5z M11 2.5v4M11 2.5L9.8 3.7M11 2.5l1.2 1.2" /></svg>坡面<kbd>3</kbd>
         </button>
-        <button data-mode="rotate" data-help="1.3" title="旋转：拖圆环绕那根轴转，拖东西绕竖直轴转（4）&#10;按住 R 临时切换；轻按 R 是自由旋转">
+        <button data-mode="rotate" data-help="1.3" title="旋转：拖圆环绕那根轴转，拖东西绕竖直轴转（{mode.rotate}）&#10;按住 {hold.rotate} 临时切换；轻按 {hold.rotate} 是自由旋转">
           <svg viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6" ry="2.6" /><path d="M8 2v12" /><circle cx="8" cy="8" r="0.9" /><path d="M11.8 4.2l2 .9-1.4 1.6" /></svg>旋转<kbd>4</kbd>
         </button>
-        <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，Tab 换方向，右键退出（5）&#10;按住 K 临时切换">
+        <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，{split.dir} 换方向，右键退出（{mode.split}）&#10;按住 {hold.split} 临时切换">
           <svg viewBox="0 0 16 16"><circle cx="4.5" cy="11.5" r="2" /><circle cx="11.5" cy="11.5" r="2" /><path d="M6 10L12.5 2.5M10 10L3.5 2.5" /></svg>切分<kbd>5</kbd>
         </button>
-        <button data-mode="pattern" data-help="1.4" title="花纹：点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（6）&#10;按住 P 临时切换">
+        <button data-mode="pattern" data-help="1.4" title="花纹：点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（{mode.pattern}）&#10;按住 {hold.pattern} 临时切换">
           <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg>花纹<kbd>6</kbd>
         </button>
       </div>
-      <button id="guard-btn" data-tool="guard" data-help="2.4" class="ghost toggle" title="护栏：点路边放整条直边，沿路边拖放一段（H）">
+      <button id="guard-btn" data-tool="guard" data-help="2.4" class="ghost toggle" title="护栏：点路边放整条直边，沿路边拖放一段（{guard}）">
         <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg>护栏
       </button>
       <!-- 触摸屏：单指拖默认是环视，长按再拖是框选一次；打开它之后单指拖都是框选、轻点是加选减选 -->
@@ -90,24 +90,24 @@
       </button>
       <div class="sep"></div>
       <div class="group">
-        <button id="merge" data-help="1.5" class="ghost op" title="把选中的几块路面合成一块（同样式、同高度、拼起来是矩形）（Ctrl+J）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg>合并</button>
-        <button id="group" data-help="1.6" class="ghost op" title="把选中的东西绑定成一个整体（Ctrl+G）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg>绑定</button>
-        <button id="ungroup" data-help="1.6" class="ghost op" title="解除绑定（Ctrl+Shift+G）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg>解绑</button>
-        <button id="dup" data-help="1.3" class="ghost op" title="复制：复制后直接进入移动模式，左键放下、右键取消（Ctrl+D / Shift+D）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg>复制</button>
+        <button id="merge" data-help="1.5" class="ghost op" title="把选中的几块路面合成一块（同样式、同高度、拼起来是矩形）（{merge}）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg>合并</button>
+        <button id="group" data-help="1.6" class="ghost op" title="把选中的东西绑定成一个整体（{group}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg>绑定</button>
+        <button id="ungroup" data-help="1.6" class="ghost op" title="解除绑定（{ungroup}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg>解绑</button>
+        <button id="dup" data-help="1.3" class="ghost op" title="复制：复制后直接进入移动模式，左键放下、右键取消（{dup}）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg>复制</button>
         <button id="rot" data-help="1.3" class="ghost op" title="旋转 90°：绕竖直轴转 90°
 按 R 旋转：X / Y / Z 换轴；开着对齐时每 15° 吸附，按住 Ctrl 临时切换"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3" /></svg>旋转</button>
-        <button id="del" data-help="1.3" class="ghost op" title="删除（X / Delete）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg>删除</button>
+        <button id="del" data-help="1.3" class="ghost op" title="删除（{delete} / Delete）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg>删除</button>
       </div>
       <div class="sep"></div>
       <div class="group">
-        <button id="grid" data-help="1.7" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（Shift+Tab）
+        <button id="grid" data-help="1.7" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（{grid}）
 默认步长 1，设置里可改">
           <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg>格栅
         </button>
         <button id="gizmo" data-help="1.3" class="toggle" title="手柄：移动、旋转、拉伸、坡面模式里，选中的东西上显示对应的手柄（箭头、圆环、抓点），按住拖动">
           <svg viewBox="0 0 16 16"><path d="M5 11h8.5M12 9.5l1.5 1.5-1.5 1.5 M5 11V2.5M3.5 4L5 2.5 6.5 4 M5 11l-3 3M2 12.2V14h1.8" /></svg>手柄
         </button>
-        <button id="align" data-help="1.7" class="toggle active" title="自动对齐：边、中线、顶面靠近别的物体时对齐（S）&#10;旋转（R）时每次吸附 15°">
+        <button id="align" data-help="1.7" class="toggle active" title="自动对齐：边、中线、顶面靠近别的物体时对齐（{align}）&#10;旋转（{hold.rotate}）时每次吸附 15°">
           <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg>对齐
         </button>
       </div>
@@ -157,13 +157,8 @@
           <button data-more="merge"><span>合并路面</span></button>
           <button data-more="group"><span>绑定</span></button>
           <button data-more="ungroup"><span>解绑</span></button>
-          <div class="menu-sep"></div>
-          <button data-more="about"><span>关于</span></button>
         </div>
       </span>
-      <button id="about" class="ghost" title="关于">
-        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 7.2v3.6M8 5v.4" /></svg>关于
-      </button>
     </div>
   </header>
   <main id="work">
@@ -171,9 +166,8 @@
   <div id="viewport">
     <div id="props" hidden></div>
     <div id="marquee" class="marquee"></div>
-    <div id="settings-panel" class="settings-panel" hidden></div>
-    <div id="about-panel" class="settings-panel about-panel" hidden>
-      <h3>关于 BVM</h3>
+    <template id="about-tpl">
+      <h1>关于 BVM</h1>
       <p class="about-lead">Ballance 制图器，三大主旨：</p>
       <ul class="about-aims">
         <li>降低门槛</li>
@@ -189,7 +183,7 @@
       <a class="about-row qq" data-qq="702613602" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=702613602&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 702613602"><svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>平衡球社区交流群 702613602</a>
       <a class="about-row qq" data-qq="1005399899" href="mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=1005399899&amp;card_type=group&amp;source=qrcode" title="加入 QQ 群 1005399899 反馈意见"><svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>平衡球制图交流群 1005399899</a>
       <a class="about-row" href="https://github.com/ghomist/ballance-vibe-mapping" target="_blank" rel="noopener" title="GitHub 仓库"><svg viewBox="0 0 16 16" class="gh"><path d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.15.46-.33v-1.2c-1.9.41-2.3-.8-2.3-.8-.31-.79-.76-1-.76-1-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.61 1.04 1.6.74 1.99.57.06-.44.24-.74.43-.91-1.51-.17-3.1-.76-3.1-3.37 0-.75.27-1.36.7-1.83-.07-.17-.3-.86.07-1.8 0 0 .57-.18 1.87.7a6.5 6.5 0 0 1 3.4 0c1.3-.88 1.87-.7 1.87-.7.37.94.14 1.63.07 1.8.44.47.7 1.08.7 1.83 0 2.62-1.6 3.2-3.11 3.37.24.21.46.62.46 1.25v1.85c0 .18.12.4.47.33A6.8 6.8 0 0 0 8 1.2z" /></svg>GitHub 仓库</a>
-    </div>
+    </template>
   </div>
   </main>
   <footer id="statusbar">

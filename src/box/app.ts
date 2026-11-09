@@ -3,6 +3,7 @@
 //   按住 V 拖动：抓住顶点或边中点，吸附到别的元素的顶点、边中点或边上
 //   格栅（G）：位置和尺寸吸附到步长 1；对齐（S）：边、中线、顶面靠近时对齐并画出辅助面
 import * as THREE from 'three';
+import { KEY_DEFS, actionFor, assignKey, comboOf, flyActionFor, holdModeOf, isBareModifier, keyDef, keyName, keyOf, keyText, keysOf, loadKeys, resetKeys, savedKeys, setKey, tokens } from './keymap';
 import { CURSOR_TINT, installCursors, toolCursor, type CursorBase } from './cursors';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { MatName } from '../geom/floor';
@@ -118,6 +119,10 @@ interface Prefs {
   guardInset: number;
   /** 自动追踪：点选时视图中心移到点中的东西上（只拉远不拉近），默认关；换过键名，之前存下的 follow / autoFollow 不沿用 */
   followPick: boolean;
+  /** 改过的快捷键（只存和默认不同的） */
+  keys: Record<string, string>;
+  /** 设置弹窗上次看的那一页 */
+  settingsPage: string;
   /** 坐标系（只影响显示和 X / Y / Z 按键，内部数据一直是 Z 朝上）：game = 游戏坐标系，Y 朝上；math = 数学坐标系，Z 朝上 */
   coordSys: 'game' | 'math';
   /** 素材库的宽度（在两边时）、高度（在底部时） */
@@ -128,9 +133,10 @@ interface Prefs {
   gridShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
+  const d: Prefs = { keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
+loadKeys(prefs.keys);
 /**
  * 触摸屏界面：手机尺寸（横屏时高度、竖屏时宽度不超过 600）的触摸设备，平板和电脑不算。
  * 网址加 ?touch 可以在电脑上强制打开，方便调试。打开时 body 有 touch-ui 类（布局见 app.css）
@@ -152,6 +158,10 @@ let touchTap: { fn: () => void } | null = null;
 let grabTouchId: number | null = null;
 /** 鼠标立刻执行；手指等抬起（双指时第一根手指碰到开关不算数） */
 const tapOr = (e: PointerEvent, fn: () => void) => { if (e.pointerType === 'touch') touchTap = { fn }; else fn(); };
+/** 拉伸 / 坡面的按住键是 Ctrl、Alt 时，按着它直接拖（改绑成别的键后，Ctrl、Alt 不再有这个作用） */
+const modBound = (id: string, e: { ctrlKey: boolean; altKey: boolean }) => { const k = keyOf(id); return (k === 'control' && e.ctrlKey) || (k === 'alt' && e.altKey); };
+const stretchMod = (e: { ctrlKey: boolean; altKey: boolean }) => modBound('hold.stretch', e);
+const slopeMod = (e: { ctrlKey: boolean; altKey: boolean }) => modBound('hold.slope', e);
 /** 这次点选是加选：按着 Shift，或者手机上开着多选 */
 const addPick = (e: PointerEvent) => e.shiftKey || (touchMarquee && e.pointerType === 'touch');
 /**
@@ -621,6 +631,7 @@ const keyHtml = (k: string) => (k in MOUSE ? mouseIcon(k) : `<kbd>${k}</kbd>`);
 /** 当前情况下的按键提示（Blender 式） */
 function currentHints(): Hint[] {
   const H = (keys: string[], label: string): Hint => ({ keys, label });
+  const K = keysOf;
   if (touchUI) {
     // 手机：只提示手势，没有键盘和鼠标
     const t = drag?.t;
@@ -637,30 +648,30 @@ function currentHints(): Hint[] {
     const m = mode();
     return [H(['单指拖'], touchMarquee ? '框选' : '环视'), ...(touchMarquee ? [] : [H(['长按再拖'], '框选')]), H(['双指'], '平移 / 缩放'), H(['轻点'], touchMarquee ? '加选 / 减选' : '选中'), ...(m ? [H([MODE_NAME[m]], modeHint(m))] : [])];
   }
-  if (drag?.t === 'place') return [H(['LMB'], '松开放下'), H(['R'], '旋转'), H(['RMB'], '取消')];
+  if (drag?.t === 'place') return [H(['LMB'], '松开放下'), H(K('hold.rotate'), '旋转'), H(['RMB'], '取消')];
   if (drag?.t === 'grab') {
     const d = drag;
     const lock = d.axis !== null ? `沿 ${AXIS_NAME[d.axis]}` : d.excl !== null ? `排除 ${AXIS_NAME[d.excl]}` : '水平';
-    return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `限制轴向（${lock}）`), H(['Shift', 'X'], '排除轴'), H(['V'], '吸附顶点'), H(['0'], d.num ? `输入 ${d.num}` : '输入距离'), H(['S'], alignOn ? '对齐：开' : '对齐：关')];
+    return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `限制轴向（${lock}）`), H(['Shift', 'X'], '排除轴'), H(K('vsnap'), '吸附顶点'), H(['0'], d.num ? `输入 ${d.num}` : '输入距离'), H(K('align'), alignOn ? '对齐：开' : '对齐：关')];
   }
   if (drag?.t === 'rotate') {
     const d = drag;
-    return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `换轴（绕 ${AXIS_NAME[d.axis]}）`), H(['Ctrl'], alignOn ? '按住自由旋转' : '按住每 15° 吸附'), H(['S'], alignOn ? '对齐：开（每 15°）' : '对齐：关'), H(['0'], d.num ? `输入 ${d.num}°` : '输入角度')];
+    return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `换轴（绕 ${AXIS_NAME[d.axis]}）`), H(['Ctrl'], alignOn ? '按住自由旋转' : '按住每 15° 吸附'), H(K('align'), alignOn ? '对齐：开（每 15°）' : '对齐：关'), H(['0'], d.num ? `输入 ${d.num}°` : '输入角度')];
   }
-  if (fly) return [H(['W', 'A', 'S', 'D'], '移动'), H(['Space'], '上升'), H(['Shift'], '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), H(['RMB'], '松开退出漫游')];
-  if (drag) return [H(['LMB'], '松开完成'), H(['Shift', 'Tab'], gridOn ? '格栅：开' : '格栅：关'), H(['S'], alignOn ? '对齐：开' : '对齐：关')];
+  if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), H(['RMB'], '松开退出漫游')];
+  if (drag) return [H(['LMB'], '松开完成'), H(K('grid'), gridOn ? '格栅：开' : '格栅：关'), H(K('align'), alignOn ? '对齐：开' : '对齐：关')];
   if (guardMode) return [H(['LMB'], '点路边：放整条直边'), H(['LMB'], '沿路边拖：放一段'), H(['LMB'], '拖把手：改长度'), H(['Esc'], '退出')];
-  if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(['Tab'], '换方向'), H(['RMB'], '退出'), H(['Esc'], '退出')];
-  if (vHeld) return [H(['V', 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
+  if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(K('split.dir'), '换方向'), H(['RMB'], '退出'), H(['Esc'], '退出')];
+  if (vHeld) return [H([...K('vsnap'), 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
   const hs = [H(['MMB'], '环视'), H(['Shift', 'MMB'], '平移'), H(['RMB'], '漫游'), H(['Wheel'], '缩放')];
   const m = mode();
-  if (m) return [...hs, H(['LMB'], MODE_HINT[m])];
-  if (sel.size) hs.push(H(['F'], '聚焦'), H(['Shift', 'D'], '复制'), H(['X'], '删除'));
-  else hs.push(H(['LMB'], '点选 / 框选'), H(['Shift', 'LMB'], '加选'), H(['F'], '看全部'));
+  if (m) return [...hs, H(['LMB'], modeHint(m))];
+  if (sel.size) hs.push(H(K('focus'), '聚焦'), H(K('dup'), '复制'), H(K('delete'), '删除'));
+  else hs.push(H(['LMB'], '点选 / 框选'), H(['Shift', 'LMB'], '加选'), H(K('focus'), '看全部'));
   return hs;
 }
 /** 手机上切分没有 Tab 和右键，提示换成手势 */
-const modeHint = (m: Mode) => (touchUI && m === 'split' ? '点路面切开，再点一次按钮退出' : MODE_HINT[m]);
+const modeHint = (m: Mode) => (touchUI && m === 'split' ? '点路面切开，再点一次按钮退出' : MODE_HINT[m].replace('Tab', keyText('split.dir')));
 /** 每个编辑模式在状态栏上的一句话 */
 const MODE_HINT: Record<Mode, string> = {
   move: '拖东西或箭头：移动',
@@ -1387,19 +1398,20 @@ flyHud.innerHTML = `
   <div class="panel">
     <div class="title">漫游</div>
     <div class="keys">
-      <span></span><kbd data-k="KeyW">W</kbd><span></span><kbd data-k="KeyE">E</kbd>
-      <kbd data-k="KeyA">A</kbd><kbd data-k="KeyS">S</kbd><kbd data-k="KeyD">D</kbd><kbd data-k="KeyQ">Q</kbd>
+      <span></span><kbd data-a="fly.forward"></kbd><span></span><kbd data-a="fly.up" data-alias>E</kbd>
+      <kbd data-a="fly.left"></kbd><kbd data-a="fly.back"></kbd><kbd data-a="fly.right"></kbd><kbd data-a="fly.down" data-alias>Q</kbd>
     </div>
-    <div class="ud"><kbd data-k="Space">空格 上升</kbd><kbd data-k="ShiftLeft">Shift 下降</kbd></div>
+    <div class="ud"><kbd data-a="fly.up" data-suffix=" 上升"></kbd><kbd data-a="fly.down" data-suffix=" 下降"></kbd></div>
     <div class="speed"><span>速度</span><div class="bar"><i></i></div><b></b></div>
     <div class="tip">滚轮调速度 · 松开右键退出</div>
   </div>`;
 host.appendChild(flyHud);
 function syncFlyHud() {
   if (!fly) return;
-  flyHud.querySelectorAll<HTMLElement>('kbd[data-k]').forEach((k) => {
-    const c = k.dataset.k!;
-    k.classList.toggle('on', fly!.keys.has(c) || (c === 'ShiftLeft' && fly!.keys.has('ShiftRight')));
+  flyHud.querySelectorAll<HTMLElement>('kbd[data-a]').forEach((k) => {
+    const a = k.dataset.a!;
+    if (!('alias' in k.dataset)) k.textContent = `${keyOf(a) === 'space' ? '空格' : keyText(a)}${k.dataset.suffix ?? ''}`;
+    k.classList.toggle('on', fly!.keys.has(a));
   });
   // 速度条按对数刻度（2～400）
   const f = Math.log(fly.speed / 2) / Math.log(200);
@@ -1432,11 +1444,11 @@ window.addEventListener('pointermove', (e) => {
 // 漫游时键盘只管移动（不触发别的快捷键）
 window.addEventListener('keydown', (e) => {
   if (!fly) return;
-  const k = e.code;
-  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ', 'KeyE'].includes(k)) { fly.keys.add(k); syncFlyHud(); }
+  const a = flyActionFor(keyName(e));
+  if (a) { fly.keys.add(a); syncFlyHud(); }
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
-window.addEventListener('keyup', (e) => { if (fly) { fly.keys.delete(e.code); syncFlyHud(); e.stopImmediatePropagation(); } }, true);
+window.addEventListener('keyup', (e) => { if (fly) { const a = flyActionFor(keyName(e)); if (a) fly.keys.delete(a); syncFlyHud(); e.stopImmediatePropagation(); } }, true);
 renderer.domElement.addEventListener('wheel', (e) => {
   if (!fly) return;
   // 漫游时滚轮调速度
@@ -1463,12 +1475,12 @@ function tickFly(dt: number) {
   const r = new THREE.Vector3().crossVectors(f, camera.up).normalize();
   const m = new THREE.Vector3();
   const k = fly.keys;
-  if (k.has('KeyW')) m.add(f);
-  if (k.has('KeyS')) m.sub(f);
-  if (k.has('KeyD')) m.add(r);
-  if (k.has('KeyA')) m.sub(r);
-  if (k.has('Space') || k.has('KeyE')) m.z += 1;
-  if (k.has('ShiftLeft') || k.has('ShiftRight') || k.has('KeyQ')) m.z -= 1;
+  if (k.has('fly.forward')) m.add(f);
+  if (k.has('fly.back')) m.sub(f);
+  if (k.has('fly.right')) m.add(r);
+  if (k.has('fly.left')) m.sub(r);
+  if (k.has('fly.up')) m.z += 1;
+  if (k.has('fly.down')) m.z -= 1;
   // 移动：速度带缓动地追目标速度（约 100 ms 起步 / 停下）
   const goal = m.lengthSq() ? m.normalize().multiplyScalar(fly.speed) : m;
   fly.vel.lerp(goal, 1 - Math.exp(-dt / 0.1));
@@ -1487,7 +1499,7 @@ el.addEventListener('pointerdown', (e) => {
   if (splitMode) { tapOr(e, () => doSplit(e)); return; }
   if (guardMode) { guardDown(e); return; }
   // 模式的手柄：移动的箭头、旋转的圆环、拉伸 / 坡面的抓点（按着 Ctrl / Alt / V 时是别的拖法）
-  if (!e.ctrlKey && !e.altKey && !vHeld) {
+  if (!stretchMod(e) && !slopeMod(e) && !vHeld) {
     const gax = gizmoAt(e);
     if (gax !== null) { startGizmoDrag(e, gax); return; }
     const rax = rotGizmoAt(e);
@@ -1504,7 +1516,7 @@ el.addEventListener('pointerdown', (e) => {
     }
   }
   // 点机关挡块上的开关：这块挡块生成 / 不生成
-  const stog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? stopToggleAt(e) : null;
+  const stog = !stretchMod(e) && !slopeMod(e) && !e.shiftKey && !vHeld ? stopToggleAt(e) : null;
   if (stog) {
     tapOr(e, () => {
       snapshot();
@@ -1514,7 +1526,7 @@ el.addEventListener('pointerdown', (e) => {
     return;
   }
   // 点路面边上的开口开关：切换这一侧开口 / 封口
-  const tog = !e.ctrlKey && !e.altKey && !e.shiftKey && !vHeld ? openToggleAt(e) : null;
+  const tog = !stretchMod(e) && !slopeMod(e) && !e.shiftKey && !vHeld ? openToggleAt(e) : null;
   if (tog) {
     tapOr(e, () => {
       snapshot();
@@ -1548,7 +1560,7 @@ el.addEventListener('pointerdown', (e) => {
   let h = pick(e);
   const m = mode();
   // 移动 / 旋转模式：按在东西上直接拖（没选中的先选上），松手确定
-  if (h && (m === 'move' || m === 'rotate') && !e.ctrlKey && !e.altKey && !vHeld) {
+  if (h && (m === 'move' || m === 'rotate') && !stretchMod(e) && !slopeMod(e) && !vHeld) {
     const group = expandGroups(doc, [h.id]);
     if (!sel.has(h.id)) sel = e.shiftKey ? new Set([...sel, ...group]) : group;
     el.setPointerCapture(e.pointerId); pauseControls();
@@ -1558,11 +1570,11 @@ el.addEventListener('pointerdown', (e) => {
     return;
   }
   // 拉伸模式 = 一直按着 Ctrl，坡面模式 = 一直按着 Alt
-  const ctrlV = e.ctrlKey || m === 'stretch', altV = e.altKey || m === 'slope';
+  const ctrlV = stretchMod(e) || m === 'stretch', altV = slopeMod(e) || m === 'slope';
   // 模式里按在没选中的东西上：先选中它（不是拉它）
-  if (h && (ctrlV || altV) && !(e.ctrlKey || e.altKey) && !sel.has(h.id)) { drag = { t: 'click', id: h.id, sx: e.clientX, sy: e.clientY, add: addPick(e) }; return; }
+  if (h && (ctrlV || altV) && !(stretchMod(e) || slopeMod(e)) && !sel.has(h.id)) { drag = { t: 'click', id: h.id, sx: e.clientX, sy: e.clientY, add: addPick(e) }; return; }
   // 按住 Ctrl / Alt 时只操作已经选中的东西：鼠标下面就算是别的路面也不会选到它
-  if ((e.ctrlKey || e.altKey) && sel.size) h = modHit(e);
+  if ((stretchMod(e) || slopeMod(e)) && sel.size) h = modHit(e);
   el.setPointerCapture(e.pointerId);
   // 不带修饰键（或者鼠标下什么都没有）：只负责点选 / 框选；移动用 G，旋转用 R
   if (!h || !(ctrlV || altV || vHeld)) { drag = { t: 'click', id: h?.id ?? null, sx: e.clientX, sy: e.clientY, add: addPick(e) }; return; }
@@ -1853,8 +1865,9 @@ function transformKey(e: KeyboardEvent): boolean {
     updateStatus();
     return true;
   }
-  // 模式里还能用：S（对齐开关）、V（吸附）、Shift+Tab（格栅）
-  return !(k === 's' || k === 'v' || k === 'tab' || k === 'shift');
+  // 模式里还能用：对齐开关、顶点吸附、格栅开关（按当前的快捷键）
+  const pass = actionFor(comboOf(e));
+  return !(pass === 'align' || pass === 'grid' || keyName(e) === keyOf('vsnap') || k === 'tab' || k === 'shift');
 }
 function cancelTransform() {
   const d = drag;
@@ -1880,7 +1893,7 @@ window.addEventListener('pointermove', (e) => {
     if (e.target !== el) { setHandleAim(null); return; }
     if (splitMode) { splitHover(e); return; }
     // 悬停在模式手柄上：高亮，鼠标变成手形
-    const free = !e.ctrlKey && !e.altKey && !vHeld;
+    const free = !stretchMod(e) && !slopeMod(e) && !vHeld;
     const gh = free ? gizmoAt(e) : null, rh = free && gh === null ? rotGizmoAt(e) : null, hh = !vHeld && gh === null && rh === null ? handleAt(e) : null;
     const hk = hh ? `${hh.kind}:${hh.p.join()}` : null;
     const ch1 = moveGizmo.setHot(gh), ch2 = rotGizmo.setHot(rh), ch3 = hk !== handleHover;
@@ -1894,7 +1907,7 @@ window.addEventListener('pointermove', (e) => {
     thickHover = false;
     if (gh !== null || rh !== null || hh) { setHandleAim(null); return; }
     if (guardMode) { guardHover(e); return; }
-    updateAim(e, e.ctrlKey || e.altKey);
+    updateAim(e, stretchMod(e) || slopeMod(e));
     // 按住 Ctrl / Alt 时不提示别的路面（这时只会操作已经选中的东西）
     const sg = stopToggleAt(e);
     const sh = sg ? { id: sg.id, part: sg.part } : null;
@@ -1905,7 +1918,7 @@ window.addEventListener('pointermove', (e) => {
       dragInfo = sh ? '点击切换这块挡块：生成 / 不生成' : th ? '点击切换这一侧：自动 → 开口 → 封口' : '';
       drawOverlay(); updateStatus();
     }
-    const id = (e.ctrlKey || e.altKey) && sel.size ? null : pick(e)?.id ?? null;
+    const id = (stretchMod(e) || slopeMod(e)) && sel.size ? null : pick(e)?.id ?? null;
     if (id !== hoverId) { hoverId = id; drawOverlay(); }
     return;
   }
@@ -2564,13 +2577,15 @@ palette.innerHTML = `
 const libGrid = palette.querySelector<HTMLElement>('.lib-grid')!;
 const libEmpty = palette.querySelector<HTMLElement>('.lib-empty')!;
 const libSearch = palette.querySelector<HTMLInputElement>('.lib-search input')!;
+/** 卡片说明里写的 Ctrl、Alt 换成现在的按键 */
+const keyHint = (t: string) => t.replace(/\bCtrl\b/g, keyText('hold.stretch')).replace(/\bAlt\b/g, keyText('hold.slope'));
 function renderLib() {
   const q = libSearch.value.trim().toLowerCase();
   // 搜索时跨所有标签找；不搜索时只显示当前标签
   const items = q ? LIB.flatMap((g) => g.items).filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q)) : (LIB.find((g) => g.id === prefs.tab) ?? LIB[0]).items;
   palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => b.classList.toggle('on', !q && b.dataset.tab === prefs.tab));
   libGrid.innerHTML = items.map((it) => `<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
-${it.hint}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></div>`).join('');
+${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></div>`).join('');
   libEmpty.hidden = items.length > 0;
   fillThumbs();
 }
@@ -3056,47 +3071,45 @@ document.getElementById('redo')!.addEventListener('click', () => redoOnce());
 window.addEventListener('keydown', (e) => {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('.confirm-mask')) return;
-  const k = e.key.toLowerCase();
-  if (k === 'v' && !vHeld) { vHeld = true; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); }
+  const k = e.key.toLowerCase(), name = keyName(e);
+  const act = actionFor(comboOf(e));
+  if (name === keyOf('vsnap') && !vHeld) { vHeld = true; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); }
   // 移动 / 旋转模式里：轴向、打字输入、确定、取消
   if (transformKey(e)) { e.preventDefault(); return; }
   if (k === 'escape') { clearModes(); exitGuard(); closeMenus(); }
-  // 按住 G / Ctrl / Alt / R / K / P：过一会儿（HOLD_MS）还按着就临时切到对应模式；松开时再看是轻按还是按住（见 keyup）
-  if (!e.repeat && HOLD_KEYS[k] && !held && !drag && !guardMode) {
-    const key = k;
-    held = { key, temp: false, timer: window.setTimeout(() => { if (held?.key === key && !drag) { held.temp = true; tempMode = HOLD_KEYS[key]; applyMode(); } }, HOLD_MS) };
+  // 按住模式键：过一会儿（HOLD_MS）还按着就临时切到对应模式；松开时再看是轻按还是按住（见 keyup）。组合键占用的不算
+  const holdMode = act === null || act.startsWith('hold.') ? holdModeOf(name) as Mode | null : null;
+  if (!e.repeat && holdMode && !held && !drag && !guardMode) {
+    held = { key: name, temp: false, timer: window.setTimeout(() => { if (held?.key === name && !drag) { held.temp = true; tempMode = holdMode; applyMode(); } }, HOLD_MS) };
   }
-  if (k === 'tab' && e.shiftKey) { e.preventDefault(); toggleGrid(); return; }
-  if (k === 'tab' && splitMode) { e.preventDefault(); splitAxis = splitAxis === null ? 1 : ((1 - splitAxis) as 0 | 1); splitHover(lastMouse); }
-  if (e.ctrlKey) {
-    if (k === 'z') undoOnce();
-    else if (k === 'y') redoOnce();
-    else if (k === 'j') { e.preventDefault(); doMerge(); }
-    else if (k === 'g') { e.preventDefault(); if (e.shiftKey) doUngroup(); else doGroup(); }
-    else if (k === 'd') { e.preventDefault(); doDuplicate(lastMouse); }
-    else if (k === 's') { e.preventDefault(); void flushMap(); flash('地图会自动存到历史里'); }
-    else if (k === 'o') { e.preventDefault(); void openHistory(); }
-    else if (k === 'a') { e.preventDefault(); sel = new Set(Object.keys(doc.elems).map(Number)); drawOverlay(); syncProps(); updateStatus(); }
-    return;
-  }
-  if (k === 'd' && e.shiftKey) { doDuplicate(lastMouse); return; }
-  if (k === 's') toggleAlign();
-  // 数字键 1～6：永久切换编辑模式（再按一次取消）；H：护栏工具
-  const n = Number(k);
-  if (Number.isInteger(n) && n >= 1 && n <= MODES.length) setPermMode(MODES[n - 1]);
-  if (k === 'h') (guardMode ? exitGuard() : enterGuard());
-  // 拖着素材卡片时 R 转向（G、R 的其它用法看 keyup）
-  if (k === 'r' && drag?.t === 'place') { drag.rotOff++; placeMove(lastMouse as PointerEvent); }
-  if (!drag && (k === 'delete' || k === 'backspace' || k === 'x')) doDelete();
-  if (k === 'f') frameSelection();
+  if (act && (e.ctrlKey || e.altKey || name === 'tab')) e.preventDefault();
+  if (act === 'grid') { toggleGrid(); return; }
+  if (act === 'split.dir' && splitMode) { splitAxis = splitAxis === null ? 1 : ((1 - splitAxis) as 0 | 1); splitHover(lastMouse); }
+  if (act === 'undo') undoOnce();
+  else if (act === 'redo') redoOnce();
+  else if (act === 'merge') doMerge();
+  else if (act === 'group') doGroup();
+  else if (act === 'ungroup') doUngroup();
+  else if (act === 'dup') doDuplicate(lastMouse);
+  else if (act === 'save') { void flushMap(); flash('地图会自动存到历史里'); }
+  else if (act === 'history') void openHistory();
+  else if (act === 'selectAll') { sel = new Set(Object.keys(doc.elems).map(Number)); drawOverlay(); syncProps(); updateStatus(); }
+  else if (act === 'align') toggleAlign();
+  else if (act === 'guard') (guardMode ? exitGuard() : enterGuard());
+  else if (act === 'focus') frameSelection();
+  else if (act === 'delete' && !drag) doDelete();
+  else if (act?.startsWith('mode.')) setPermMode(act.slice(5) as Mode);
+  if (e.ctrlKey) return;
+  // 拖着素材卡片时按旋转键转向（其它用法看 keyup）
+  if (name === keyOf('hold.rotate') && drag?.t === 'place') { drag.rotOff++; placeMove(lastMouse as PointerEvent); }
   const step = e.shiftKey ? 0.1 : 1;
   const arrows: Record<string, V3> = { arrowleft: [-step, 0, 0], arrowright: [step, 0, 0], arrowup: [0, step, 0], arrowdown: [0, -step, 0], pageup: [0, 0, step], pagedown: [0, 0, -step] };
   if (arrows[k] && !drag) { e.preventDefault(); nudge(arrows[k]); }
 });
-window.addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'v') { vHeld = false; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); } updateStatus(); });
-// 松开按住的模式键：按住过就回到原来的模式；只是轻按的话，G / R 是自由移动 / 旋转，K / P 是永久切换切分 / 花纹
+window.addEventListener('keyup', (e) => { if (keyName(e) === keyOf('vsnap')) { vHeld = false; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); } updateStatus(); });
+// 松开按住的模式键：按住过就回到原来的模式；只是轻按的话，移动 / 旋转键是自由移动 / 旋转，切分 / 花纹键是永久切换
 window.addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
+  const k = keyName(e);
   if (!held || held.key !== k) return;
   clearTimeout(held.timer);
   const wasTemp = held.temp;
@@ -3104,10 +3117,11 @@ window.addEventListener('keyup', (e) => {
   if (wasTemp) { tempMode = null; applyMode(); return; }
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || drag || guardMode) return;
-  if (k === 'g' && !splitMode) { if (sel.size) startGrab(lastMouse); else flash('先选中要移动的东西', true); }
-  else if (k === 'r' && !splitMode) { if (sel.size) startRotate(lastMouse); else flash('先选中要旋转的东西', true); }
-  else if (k === 'k') setPermMode('split');
-  else if (k === 'p') setPermMode('pattern');
+  const tapped = holdModeOf(k);
+  if (tapped === 'move' && !splitMode) { if (sel.size) startGrab(lastMouse); else flash('先选中要移动的东西', true); }
+  else if (tapped === 'rotate' && !splitMode) { if (sel.size) startRotate(lastMouse); else flash('先选中要旋转的东西', true); }
+  else if (tapped === 'split') setPermMode('split');
+  else if (tapped === 'pattern') setPermMode('pattern');
 });
 window.addEventListener('blur', () => { if (held) { clearTimeout(held.timer); held = null; } if (tempMode) { tempMode = null; applyMode(); } });
 // 修饰键变化时刷新按键提示
@@ -3634,8 +3648,136 @@ function applyTheme(t: 'dark' | 'light') {
 applyTheme(prefs.theme);
 document.getElementById('theme')!.addEventListener('click', (e) => { applyTheme(prefs.theme === 'dark' ? 'light' : 'dark'); (e.currentTarget as HTMLButtonElement).blur(); });
 
-const settingsPanel = document.getElementById('settings-panel')!;
-settingsPanel.classList.add('fade');
+// 设置：和帮助一样占满页面的半透明弹窗，左边分页，右边内容。点弹窗外面、右上角、Esc 关闭，记住上次看的那一页
+const SET_PAGES: [string, string][] = [['map', '全图设置'], ['edit', '编辑'], ['ui', '界面'], ['keys', '快捷键'], ['about', '关于']];
+/** 手机没有键盘，不显示快捷键这一页 */
+const setPages = () => (touchUI ? SET_PAGES.filter(([id]) => id !== 'keys') : SET_PAGES);
+const settingsModal = document.createElement('div');
+settingsModal.id = 'settings-modal';
+settingsModal.hidden = true;
+settingsModal.innerHTML = `
+  <div class="help-win" role="dialog" aria-label="设置">
+    <nav class="help-nav"></nav>
+    <article class="help-body"><div id="settings-panel" class="settings-panel help-doc"></div></article>
+    <button class="help-close" title="关闭（Esc）"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg></button>
+  </div>`;
+document.body.appendChild(settingsModal);
+const settingsPanel = settingsModal.querySelector<HTMLElement>('#settings-panel')!;
+const settingsNav = settingsModal.querySelector<HTMLElement>('.help-nav')!;
+const settingsBody = settingsModal.querySelector<HTMLElement>('.help-body')!;
+const aboutHtml = (document.getElementById('about-tpl') as HTMLTemplateElement).innerHTML;
+const settingsOpen = () => !settingsModal.hidden;
+/** 切到某一页：往后从右边滑进来，往前从左边（0 是不要动效，重新渲染时用） */
+function showSetPage(id: string, dir: number | null = 0) {
+  const pages = setPages().map(([p]) => p);
+  const page = pages.includes(id) ? id : pages[0];
+  if (prefs.settingsPage !== page) { prefs.settingsPage = page; savePrefs(); }
+  settingsPanel.querySelectorAll<HTMLElement>('section[data-page]').forEach((p) => { p.hidden = p.dataset.page !== page; });
+  settingsNav.querySelectorAll<HTMLElement>('a').forEach((a) => a.classList.toggle('on', a.dataset.set === page));
+  if (dir === null) return;
+  settingsBody.scrollTop = 0;
+  settingsPanel.classList.remove('enter-next', 'enter-prev', 'enter');
+  void settingsPanel.offsetWidth; // 重新触发动画
+  settingsPanel.classList.add(dir > 0 ? 'enter-next' : dir < 0 ? 'enter-prev' : 'enter');
+}
+function openSettings() {
+  settingsNav.innerHTML = `<div class="help-brand"><span class="logo"></span>设置</div>${setPages().map(([id, n]) => `<a href="#" data-set="${id}">${n}</a>`).join('')}`;
+  renderSettings();
+  settingsModal.hidden = false;
+  requestAnimationFrame(() => settingsModal.classList.add('shown'));
+  showSetPage(prefs.settingsPage);
+}
+function closeSettings() {
+  if (!settingsOpen()) return;
+  keyCapture = null; pendingBare = null;
+  settingsModal.classList.remove('shown');
+  setTimeout(() => { if (!settingsModal.classList.contains('shown')) settingsModal.hidden = true; }, 180);
+}
+settingsModal.addEventListener('click', (e) => {
+  const t = e.target as Element;
+  const go = t.closest<HTMLElement>('[data-set]');
+  if (go) {
+    e.preventDefault();
+    const ids = setPages().map(([p]) => p);
+    showSetPage(go.dataset.set!, Math.sign(ids.indexOf(go.dataset.set!) - ids.indexOf(prefs.settingsPage)));
+    return;
+  }
+  if (t === settingsModal || t.closest('.help-close')) closeSettings();
+});
+
+// 快捷键这一页：点按键进入等待，按下新的键就改绑；被占用的动作变成未设置
+let keyCapture: { id: string } | null = null;
+/** 等待中按下了单独的修饰键：松开时还没按别的键，才算绑定这个修饰键 */
+let pendingBare: string | null = null;
+function keysHtml() {
+  const row = (d: (typeof KEY_DEFS)[number]) => {
+    const k = keyOf(d.id), caps = tokens(k).map((c) => `<kbd>${c}</kbd>`).join('');
+    const also = d.alias?.length ? `也可以按 ${d.alias.map((a) => tokens(a).join('+')).join(' / ')}` : '';
+    const note = [d.note, also].filter(Boolean).join('，');
+    return `<div class="key-row" data-key-id="${d.id}"><span>${d.label}${note ? `<small>${note}</small>` : ''}</span><span class="key-acts">`
+      + `${k !== d.def ? '<button class="key-reset" title="恢复默认">↺</button>' : ''}${k ? '<button class="key-clear" title="清除">×</button>' : ''}`
+      + `<button class="key-bind${k ? '' : ' none'}">${caps || '未设置'}</button></span></div>`;
+  };
+  return `<section data-page="keys"><h1>快捷键</h1><p class="set-note">点右边的按键，再按新的键，Esc 取消。按键被别的动作占用时，那个动作会变成未设置。</p>`
+    + [...new Set(KEY_DEFS.map((d) => d.group))].map((g) => `<h3 class="sub">${g}</h3>${KEY_DEFS.filter((d) => d.group === g).map(row).join('')}`).join('')
+    + '<h3 class="sub">固定的按键</h3><p class="set-note"><kbd>Esc</kbd> 取消、退出模式，<kbd>Enter</kbd> 确定，移动和旋转时 <kbd>X</kbd> <kbd>Y</kbd> <kbd>Z</kbd> 限轴、数字键输入距离和角度，方向键和 <kbd>PageUp</kbd> <kbd>PageDown</kbd> 微调位置，<kbd>F1</kbd> 帮助。</p>'
+    + '<div class="row"><button id="keys-reset">全部恢复默认</button></div></section>';
+}
+function keysChanged() { prefs.keys = savedKeys(); savePrefs(); syncKeyLabels(); }
+function endKeyCapture() { keyCapture = null; pendingBare = null; renderSettings(); }
+function commitKey(combo: string) {
+  const id = keyCapture!.id;
+  const taken = assignKey(id, combo);
+  keysChanged();
+  endKeyCapture();
+  if (taken.length) flash(`已从「${taken.map((d) => d.label).join('、')}」上移走这个按键，它现在未设置`, true);
+}
+/** 等待改绑时按下的键。按住类和漫游只能是单个键；单独的修饰键松开时才算 */
+function captureKey(e: KeyboardEvent) {
+  e.preventDefault();
+  if (e.repeat) return;
+  const name = keyName(e), d = keyDef(keyCapture!.id);
+  if (name === 'escape') { endKeyCapture(); return; }
+  if (name === 'f1') { flash('F1 固定是帮助，不能改绑', true); return; }
+  if (isBareModifier(name)) {
+    if (d.single && name !== 'meta' && (d.fly || name !== 'shift')) pendingBare = name;
+    return;
+  }
+  pendingBare = null;
+  if (d.single && (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey)) { flash('这一项只能用单个键', true); return; }
+  commitKey(d.single ? name : comboOf(e));
+}
+settingsModal.addEventListener('pointerdown', (e) => {
+  if (keyCapture && !(e.target as Element).closest('.key-bind')) endKeyCapture();
+}, true);
+settingsPanel.addEventListener('click', (e) => {
+  const t = e.target as Element;
+  const id = t.closest<HTMLElement>('[data-key-id]')?.dataset.keyId;
+  if (id && t.closest('.key-bind')) {
+    if (keyCapture) renderSettings();
+    keyCapture = { id };
+    const b = settingsPanel.querySelector(`[data-key-id="${id}"] .key-bind`)!;
+    b.classList.add('wait');
+    b.textContent = '按下新按键…';
+  } else if (id && t.closest('.key-reset')) { assignKey(id, keyDef(id).def); keysChanged(); renderSettings(); }
+  else if (id && t.closest('.key-clear')) { setKey(id, ''); keysChanged(); renderSettings(); }
+  else if (t.closest('#keys-reset')) { resetKeys(); keysChanged(); renderSettings(); }
+  // 意见与反馈：点击时顺便复制群号
+  const qq = t.closest<HTMLElement>('a.qq');
+  if (qq) void navigator.clipboard.writeText(qq.dataset.qq!).then(() => flash(`已复制群号 ${qq.dataset.qq}`), () => flash(`QQ 群号：${qq.dataset.qq}`));
+});
+// 开着设置时键盘只给弹窗：Esc 关闭，别的键不传给编辑器（数字框照常输入）
+window.addEventListener('keydown', (e) => {
+  if (!settingsOpen()) return;
+  e.stopImmediatePropagation();
+  if (keyCapture) captureKey(e);
+  else if (e.key === 'Escape') { e.preventDefault(); closeSettings(); }
+}, true);
+window.addEventListener('keyup', (e) => {
+  if (!settingsOpen()) return;
+  e.stopImmediatePropagation();
+  if (keyCapture && pendingBare === keyName(e)) commitKey(pendingBare);
+}, true);
 const SETTING_FIELDS: { key: keyof MapSettings; label: string; hint: string; step: number }[] = [
   { key: 'guardTop', label: '护栏顶部高度', hint: '横杆顶部离路面（默认 2.6）', step: 0.05 },
   { key: 'guardPostDepth', label: '护栏立柱深度', hint: '立柱伸到路面以下（默认 2）', step: 0.05 },
@@ -3646,17 +3788,18 @@ const SETTING_FIELDS: { key: keyof MapSettings; label: string; hint: string; ste
 function renderSettings() {
   const st = mapSettings();
   const seg = (id: string, opts: [string, string][], cur: string) => `<span class="seg-toggle" id="${id}">${opts.map(([v, n]) => `<button data-v="${v}" class="${v === cur ? 'on' : ''}">${n}</button>`).join('')}</span>`;
-  settingsPanel.innerHTML = '<h3>全图设置</h3>'
+  const scrolled = settingsBody.scrollTop;
+  settingsPanel.innerHTML = '<section data-page="map"><h1>全图设置</h1>'
     + SETTING_FIELDS.map((f) => `<label><span>${f.label}<small>${f.hint}</small></span><input type="number" data-key="${f.key}" step="${f.step}" value="${st[f.key]}"></label>`).join('')
-    + '<h3 class="sub">编辑</h3>'
+    + '<div class="row"><button id="settings-reset-map">恢复默认</button></div></section><section data-page="edit"><h1>编辑</h1>'
     + `<label><span>格栅步长<small>打开格栅时位置和尺寸的步长（默认 1）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${prefs.gridStep}"></label>`
     + `<label><span>护栏端头内缩<small>点路边放整条直边时，两头各往里缩（默认 1.5）</small></span><input type="number" id="guard-inset" step="0.25" min="0" value="${prefs.guardInset}"></label>`
     + `<label class="stack"><span>自动追踪<small>点选时视角移到它上面：不拉近，太近时按 F 的距离拉远</small></span>${seg('follow', [['off', '关'], ['on', '开']], prefs.followPick ? 'on' : 'off')}</label>`
     + `<label class="stack"><span>坐标系<small>游戏坐标系 Y 朝上，数字和 Ballance 里一致；数学坐标系 Z 朝上</small></span>${seg('coord', [['game', '游戏坐标系'], ['math', '数学坐标系']], prefs.coordSys === 'math' ? 'math' : 'game')}</label>`
-    + '<h3 class="sub">界面</h3>'
+    + '<div class="row"><button id="settings-reset-edit">恢复默认</button></div></section><section data-page="ui"><h1>界面</h1>'
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
     + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
-    + '<div class="row"><button id="settings-reset">恢复默认</button><button id="settings-close">关闭</button></div>';
+    + `</section>${keysHtml()}<section data-page="about" class="about-panel">${aboutHtml}</section>`;
   enhanceFields(settingsPanel);
   settingsPanel.querySelectorAll<HTMLInputElement>('input[data-key]').forEach((inp) => inp.addEventListener('change', () => {
     const v = Number(inp.value);
@@ -3678,49 +3821,15 @@ function renderSettings() {
   segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
   segClick('follow', (v) => { prefs.followPick = v === 'on'; savePrefs(); });
   segClick('coord', (v) => { prefs.coordSys = v === 'math' ? 'math' : 'game'; savePrefs(); applyCoordSys(); });
-  settingsPanel.querySelector('#settings-reset')!.addEventListener('click', () => { snapshot(); delete doc.settings; prefs.gridStep = 1; prefs.guardInset = 1.5; savePrefs(); rebuild(); renderSettings(); });
-  settingsPanel.querySelector('#settings-close')!.addEventListener('click', () => showEl(settingsPanel, false));
+  settingsPanel.querySelector('#settings-reset-map')!.addEventListener('click', () => { snapshot(); delete doc.settings; rebuild(); renderSettings(); });
+  settingsPanel.querySelector('#settings-reset-edit')!.addEventListener('click', () => { prefs.gridStep = 1; prefs.guardInset = 1.5; savePrefs(); renderSettings(); });
+  showSetPage(prefs.settingsPage, null);
+  settingsBody.scrollTop = scrolled;
 }
-window.addEventListener('pointerdown', (e) => {
-  const t = e.target as Element;
-  if (settingsPanel.classList.contains('shown') && !settingsPanel.contains(t) && !t.closest?.('#settings')) showEl(settingsPanel, false);
-  if (aboutPanel.classList.contains('shown') && !aboutPanel.contains(t) && !t.closest?.('#about')) showEl(aboutPanel, false);
-});
 document.getElementById('settings')!.addEventListener('click', (e) => {
-  const open = !settingsPanel.classList.contains('shown');
-  if (open) renderSettings();
-  showEl(settingsPanel, open);
   (e.currentTarget as HTMLButtonElement).blur();
+  openSettings();
 });
-
-const aboutPanel = document.getElementById('about-panel')!;
-/**
- * 设置、关于弹窗限高成可滚动的区域：按屏幕实际看得见的高度算。
- * 手机上地址栏、工具栏占着位置时，视图容器可能比可见区域还高，CSS 按容器算的 100% 会超出屏幕
- */
-function fitPanels() {
-  const vv = window.visualViewport;
-  const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-  for (const p of [settingsPanel, aboutPanel]) {
-    if (p.hidden) continue;
-    const box = (p.offsetParent ?? document.body).getBoundingClientRect();
-    p.style.maxHeight = `${Math.max(120, Math.min(bottom, box.bottom) - (box.top + p.offsetTop) - 8)}px`;
-  }
-}
-for (const p of [settingsPanel, aboutPanel]) new MutationObserver(fitPanels).observe(p, { attributes: true, attributeFilter: ['hidden'] });
-window.addEventListener('resize', fitPanels);
-window.visualViewport?.addEventListener('resize', fitPanels);
-aboutPanel.classList.add('fade');
-document.getElementById('about')!.addEventListener('click', (e) => {
-  showEl(aboutPanel, !aboutPanel.classList.contains('shown'));
-  (e.currentTarget as HTMLButtonElement).blur();
-});
-
-// 意见与反馈：点击时顺便复制群号
-aboutPanel.querySelectorAll<HTMLElement>('a.qq').forEach((a) => a.addEventListener('click', async () => {
-  const id = a.dataset.qq!;
-  try { await navigator.clipboard.writeText(id); flash(`已复制群号 ${id}`); } catch { flash(`QQ 群号：${id}`); }
-}));
 
 
 // ---------------- 视图立方体（右上角）：显示 XYZ 朝向，点一个面切到这个方向的正交视图，转视角时自动回到透视 ----------------
@@ -3906,10 +4015,10 @@ const MOD_ICON: Record<Exclude<ModMode, null>, string> = {
   slope: 'M4 21L24 9M4 21h20M24 9v12M15 6l3-3 3 3',
   thick: 'M14 4v20M14 4l-4 4M14 4l4 4M14 24l-4-4M14 24l4-4M6 4h16M6 24h16',
 };
-const MOD_LABEL: Record<Exclude<ModMode, null>, [string[], string]> = {
-  size: [['Ctrl'], '拖动改尺寸，拖侧面下半截改厚度'],
-  slope: [['Alt'], '拖动一头拉坡'],
-  thick: [['Ctrl'], '上下拖改厚度'],
+const MOD_LABEL: Record<Exclude<ModMode, null>, string> = {
+  size: '拖动改尺寸，拖侧面下半截改厚度',
+  slope: '拖动一头拉坡',
+  thick: '上下拖改厚度',
 };
 const modChip = document.createElement('div');
 modChip.id = 'mod-chip';
@@ -3928,7 +4037,7 @@ function syncMod(e?: { clientX: number; clientY: number }) {
   if (m !== modShown) {
     modShown = m;
     if (m) {
-      const [keys, label] = MOD_LABEL[m];
+      const label = MOD_LABEL[m], keys = keysOf(m === 'slope' ? 'hold.slope' : 'hold.stretch');
       modChip.innerHTML = `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${MOD_ICON[m]}"/></svg>${keys.map((k) => `<kbd>${k}</kbd>`).join('')}<span>${label}</span>`;
     }
     showEl(modChip, !!m);
@@ -3938,10 +4047,10 @@ function syncMod(e?: { clientX: number; clientY: number }) {
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Alt') e.preventDefault(); // 单按 Alt 不要激活浏览器菜单
-  if (e.key === 'Control' || e.key === 'Alt') { modKeys.ctrl = e.ctrlKey; modKeys.alt = e.altKey; syncMod(); }
+  if (e.key === 'Control' || e.key === 'Alt') { modKeys.ctrl = stretchMod(e); modKeys.alt = slopeMod(e); syncMod(); }
 });
-window.addEventListener('keyup', (e) => { if (e.key === 'Control' || e.key === 'Alt') { modKeys.ctrl = e.ctrlKey; modKeys.alt = e.altKey; syncMod(); } });
-window.addEventListener('pointermove', (e) => { modKeys.ctrl = e.ctrlKey; modKeys.alt = e.altKey; syncMod(e); });
+window.addEventListener('keyup', (e) => { if (e.key === 'Control' || e.key === 'Alt') { modKeys.ctrl = stretchMod(e); modKeys.alt = slopeMod(e); syncMod(); } });
+window.addEventListener('pointermove', (e) => { modKeys.ctrl = stretchMod(e); modKeys.alt = slopeMod(e); syncMod(e); });
 window.addEventListener('blur', () => { modKeys.ctrl = modKeys.alt = false; syncMod(); });
 
 // ---------------- 场景与视图 ----------------
@@ -4296,7 +4405,7 @@ syncNarrow();
 /** 顶栏放不下的按钮收在「更多」里：点菜单项就是点对应的按钮 */
 const moreBtn = document.getElementById('more-btn')!, moreMenu = document.getElementById('more-menu')!;
 moreMenu.querySelector<HTMLElement>('[data-more="fullscreen"]')!.hidden = !canFullscreen;
-const MORE_TARGET: Record<string, string> = { help: 'help', settings: 'settings', theme: 'theme', about: 'about', merge: 'merge', group: 'group', ungroup: 'ungroup', gizmo: 'gizmo', align: 'align', grid: 'grid' };
+const MORE_TARGET: Record<string, string> = { help: 'help', settings: 'settings', theme: 'theme', merge: 'merge', group: 'group', ungroup: 'ungroup', gizmo: 'gizmo', align: 'align', grid: 'grid' };
 moreBtn.addEventListener('click', (ev) => {
   ev.stopPropagation();
   // 合并、绑定、解绑：和顶栏按钮一样，选中的东西不能做时变灰
@@ -4396,9 +4505,18 @@ gizmoBtn.addEventListener('click', () => {
 // ---------------- 编辑模式（顶栏的模式按钮，状态在文件开头） ----------------
 const HOLD_MS = 220;
 /** 按住临时切换的键（e.key 小写） */
-const HOLD_KEYS: Record<string, Mode> = { g: 'move', control: 'stretch', alt: 'slope', r: 'rotate', k: 'split', p: 'pattern' };
 let held: { key: string; timer: number; temp: boolean } | null = null;
 const modeButtons = [...document.querySelectorAll<HTMLButtonElement>('button[data-mode]')];
+/** 按钮提示里的 {动作} 换成现在的按键（提示接管组件可能已经把 title 挪到 data-tip，两处都看） */
+const keyTitles = [...document.querySelectorAll<HTMLElement>('[title*="{"], [data-tip*="{"]')].map((b) => ({ b, tpl: b.getAttribute('title') ?? b.dataset.tip! }));
+/** 改了快捷键：按钮提示、模式按钮上的键帽、素材卡片说明、状态栏 */
+function syncKeyLabels() {
+  for (const { b, tpl } of keyTitles) b.setAttribute('title', tpl.replace(/\{([\w.]+)\}/g, (_, id: string) => keyText(id)));
+  modeButtons.forEach((b) => { b.querySelector('kbd')!.textContent = keysOf(`mode.${b.dataset.mode}`).join('+'); });
+  renderLib();
+  updateStatus();
+}
+syncKeyLabels();
 modeButtons.forEach((b) => b.addEventListener('click', () => {
   const m = b.dataset.mode as Mode;
   setPermMode(m);
