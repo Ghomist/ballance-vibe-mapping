@@ -109,8 +109,8 @@ const railPiece = record([F('kind', str), F('len', num), F('radius', num), F('an
 const bools = list<boolean>({ w: (o, v) => o.uint(v ? 1 : 0), r: (i) => i.uint() === 1 });
 const sideRail = record([F('dir', num), F('stone?', flag), F('ends?', bools)]);
 const v3 = tuple(num, 3);
-const splinePoint = record([F('p', v3), F('in?', v3), F('out?', v3), F('bank?', num)]);
-const splineCurve = record([F('pts', list(splinePoint)), F('frame?', str)]);
+const splinePoint = record([F('p', v3), F('in?', v3), F('out?', v3), F('bank?', num), F('split?', flag)]);
+const splineCurve = record([F('pts', list(splinePoint)), F('frame?', str), F('closed?', flag)]);
 const curveRoad = record([F('style', str), F('depth', num), F('ends?', list(str))]);
 
 /** 字段：'名字'（必有）、'名字?'（可以没有）。x、y、z 单独按差值存，不写在这里 */

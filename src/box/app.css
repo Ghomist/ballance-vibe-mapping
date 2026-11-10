@@ -583,6 +583,7 @@ body.touch-ui .num-field input { touch-action: pan-y; }
 /* 曲线的加点 / 删点按钮：和全局按钮一样，平分一行 */
 #props .curve-btns { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 2px; }
 #props .curve-btns button { flex: 1; justify-content: center; }
+#props .hd-swatch { display: inline-block; width: 8px; height: 8px; margin-right: 4px; transform: rotate(45deg); }
 #props .warn-note { color: #ffb35c; }
 
 /* 设置弹窗：外壳和帮助共用（help-win、help-nav），里面沿用 .settings-panel 的表单样式 */

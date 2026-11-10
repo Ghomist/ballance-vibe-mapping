@@ -1,7 +1,7 @@
 // 曲线路面：把路面的截面沿样条线放样。
 // 花纹规则和直道一样：边框带 u 从路边到中线，v 沿路每 5 个单位走 1；封口的一头占 2.5，外角的 UV 和直道一致。
 import { HALF, SINK_DEPTH } from '../model/types';
-import { type Rail, curveSamples, type RailState, sampleRail } from '../model/rail';
+import { type Rail, curveSamples, type RailState, roadClosed, sampleRail } from '../model/rail';
 import { type CurveRoadEnd, parallelFrames, type V3 } from '../model/spline';
 import { MeshBuilder, type MatName, type MeshPart, type V2 } from './floor';
 
@@ -10,8 +10,9 @@ export interface RoadRing { s: number; p: V3; t: V3; L: V3; U: V3 }
 /** 沿路的每一圈截面（x、y、z 原点和朝向算进去，倾斜 q 没算）。竖直模式 U 恒为竖直向上，L 水平朝左 */
 export function roadRings(r: Rail): RoadRing[] {
   const sm = curveSamples(r);
-  if (r.curve!.frame === 'parallel') {
-    const fr = parallelFrames(sm);
+  if (!r.curve) return sm.map((m) => ({ s: m.s, p: m.p, t: m.t, L: [-m.t[1], m.t[0], 0], U: [0, 0, 1] })); // 弧形路面
+  if (r.curve.frame === 'parallel') {
+    const fr = parallelFrames(sm, !!r.curve.closed);
     return sm.map((m, i) => ({ s: m.s, p: m.p, t: m.t, L: fr[i].L, U: fr[i].U }));
   }
   const st: RailState[] = sampleRail(r);
@@ -66,7 +67,9 @@ export function buildCurveRoad(r: Rail, ends: [CurveRoadEnd, CurveRoadEnd]): Par
   const len = rings[rings.length - 1].s;
   const { at, pt } = sampler(rings);
   const st = STYLES[road.style], sink = st.sink, d = road.depth;
-  const v = (t: number) => t / 5;
+  // 首尾相连：花纹按整圈取整，接缝上才连续
+  const vk = roadClosed(r) ? Math.max(1, Math.round(len / 5)) / len : 1 / 5;
+  const v = (t: number) => t * vk;
   const closedA = ends[0] === 'closed', closedB = ends[1] === 'closed';
   const cap = closedA && closedB ? Math.min(HALF, len / 2) : Math.min(HALF, len);
   const t0 = closedA ? cap : 0, t1 = closedB ? len - cap : len;

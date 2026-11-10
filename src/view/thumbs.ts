@@ -46,7 +46,8 @@ export function thumbnail(type: string, view: 'model' | 'placeholder' = 'placeho
 }
 
 /** 把一组网格从斜上方渲染成预览图（dataURL）：相机按包围盒取景 */
-export function renderThumb(group: THREE.Object3D): string {
+/** high：从高处往下看（平铺的弧线、曲线从默认机位看只是一条带子） */
+export function renderThumb(group: THREE.Object3D, high = false): string {
   const scene = new THREE.Scene();
   scene.add(new THREE.AmbientLight(0xffffff, 1.4));
   const sun = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -56,7 +57,7 @@ export function renderThumb(group: THREE.Object3D): string {
   const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, size * 10);
   cam.up.set(0, 0, 1);
-  cam.position.copy(c).add(new THREE.Vector3(0.9, -1.2, 0.9).normalize().multiplyScalar(size * 1.75));
+  cam.position.copy(c).add((high ? new THREE.Vector3(0.15, -0.55, 1) : new THREE.Vector3(0.9, -1.2, 0.9)).normalize().multiplyScalar(size * (high ? 1.95 : 1.75)));
   cam.lookAt(c);
   const r = getRenderer();
   r.setClearColor(0x000000, 0);

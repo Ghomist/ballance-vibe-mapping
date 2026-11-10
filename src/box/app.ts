@@ -3,7 +3,7 @@
 //   按住 V 拖动：抓住顶点或边中点，吸附到别的元素的顶点、边中点或边上
 //   格栅（G）：位置和尺寸吸附到步长 1；对齐（S）：边、中线、顶面靠近时对齐并画出辅助面
 import * as THREE from 'three';
-import { defaultCurve, insertAfter, removePoint } from '../model/spline';
+import { breakAt, closeCurve, curvePointAt, defaultCurve, insertAfter, nearestOnCurve, openAt, removePoint } from '../model/spline';
 import { buildCurveRoad, minRadius, roadRings } from '../geom/curve-road';
 import { KEY_DEFS, actionFor, assignKey, comboOf, flyActionFor, holdModeOf, isBareModifier, keyDef, keyName, keyOf, keyText, keysOf, loadKeys, resetKeys, savedKeys, setKey, tokens } from './keymap';
 import { CURSOR_TINT, installCursors, toolCursor, type CursorBase } from './cursors';
@@ -32,7 +32,7 @@ import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { AXIS_COLORS, GRID_THEMES, createGrid, setGridAxes, themeGrid } from '../view/grid';
 import { type P3, feats as featsRaw } from './snap';
-import { curveSamples } from '../model/rail';
+import { curveSamples, roadClosed, sampleRail } from '../model/rail';
 import { solve, solveStats } from './solve';
 import { type Route, edgeAt, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
@@ -642,6 +642,10 @@ function currentHints(): Hint[] {
     if (t === 'place') return [H(['拖动'], '摆放位置'), H(['松手'], '放下')];
     if (drag?.t === 'grab' && !drag.gz) return [H(['单指拖'], '移动'), H(['轻点'], '放下'), H(['双指'], '平移 / 缩放')];
     if (drag?.t === 'rotate' && !drag.gz) return [H(['轻点'], '确定')];
+    if (drag?.t === 'splinePt' && drag.part === 'cp') {
+      const e = doc.elems[drag.id] as RailElem;
+      return [H(['拖动'], '调曲线'), H(['靠近'], curveEndAt(e, drag.node) ? splineSnapText(e) : '吸附到别的物体'), H(['松手'], '完成')];
+    }
     if (t && t !== 'click') {
       const what = t === 'splinePt' ? '调曲线' : t === 'grab' || t === 'vsnap' ? '移动' : t === 'rotate' ? '旋转' : t === 'thick' ? '改厚度' : t === 'tilt' || t === 'railTilt' ? '拉坡' : '改尺寸';
       return [H(['拖动'], what), H(['松手'], '完成')];
@@ -662,16 +666,24 @@ function currentHints(): Hint[] {
     return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `换轴（绕 ${AXIS_NAME[d.axis]}）`), H(['Ctrl'], alignOn ? '按住自由旋转' : '按住每 15° 吸附'), H(K('align'), alignOn ? '对齐：开（每 15°）' : '对齐：关'), H(['0'], d.num ? `输入 ${d.num}°` : '输入角度')];
   }
   if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), H(['RMB'], '松开退出漫游')];
+  if (drag?.t === 'splinePt') {
+    const d = drag, e = doc.elems[d.id] as RailElem, split = e.curve!.pts[d.node].split;
+    if (d.part === 'cp') return [H(['LMB'], '松开完成'), H(K('vsnap'), `按住：${curveEndAt(e, d.node) ? splineSnapText(e) : '吸附到别的物体'}`), H(K('grid'), gridOn ? '格栅：开' : '格栅：关')];
+    if (d.part !== 'cz') return [H(['LMB'], `松开完成（${split ? '分离控制柄：两边长度各调各的' : '对称控制柄：另一边镜像跟着'}）`), H(K('grid'), gridOn ? '格栅：开' : '格栅：关')];
+  }
+  if (drag?.t === 'vsnap') return [H(['LMB'], '拖到别的物体的顶点 / 边中点上，松开贴上')];
   if (drag) return [H(['LMB'], '松开完成'), H(K('grid'), gridOn ? '格栅：开' : '格栅：关'), H(K('align'), alignOn ? '对齐：开' : '对齐：关')];
   if (guardMode) return [H(['LMB'], '点路边：放整条直边'), H(['LMB'], '沿路边拖：放一段'), H(['LMB'], '拖把手：改长度'), H(['Esc'], '退出')];
-  if (splitMode) return [H(['LMB'], '在鼠标处切开'), H(K('split.dir'), '换方向'), H(['RMB'], '退出'), H(['Esc'], '退出')];
-  if (vHeld) return [H([...K('vsnap'), 'LMB'], '抓住顶点 / 边中点拖到别的物体上吸附')];
+  if (splitMode) return [H(['LMB'], '在鼠标处切开（环形的曲线从这里断开）'), H(K('split.dir'), '换方向'), H(['RMB'], '退出'), H(['Esc'], '退出')];
+  const spl = selectedSpline();
+  if (vHeld) return [H([...K('vsnap'), 'LMB'], spl ? `拖控制点吸到别的物体${spl.curve!.closed ? '' : `；端点${splineSnapText(spl)}`}` : '抓住顶点 / 边中点拖到别的物体上吸附')];
+  const vh = H(K('vsnap'), spl && !spl.curve!.closed ? `按住拖端点：${splineSnapText(spl)}` : '按住：吸附顶点');
   const hs = [H(['MMB'], '环视'), H(['Shift', 'MMB'], '平移'), H(['RMB'], '漫游'), H(['Wheel'], '缩放')];
   const m = mode();
-  if (m) return [...hs, H(['LMB'], modeHint(m))];
+  if (m) return [...hs, H(['LMB'], modeHint(m)), ...(m === 'pattern' ? [] : [vh])];
   if (sel.size) hs.push(H(K('focus'), '聚焦'), H(K('dup'), '复制'), H(K('delete'), '删除'));
   else hs.push(H(['LMB'], '点选 / 框选'), H(['Shift', 'LMB'], '加选'), H(K('focus'), '看全部'));
-  return hs;
+  return [...hs, vh];
 }
 /** 手机上切分没有 Tab 和右键，提示换成手势 */
 const modeHint = (m: Mode) => (touchUI && m === 'split' ? '点路面切开，再点一次按钮退出' : MODE_HINT[m].replace('Tab', keyText('split.dir')));
@@ -1103,7 +1115,7 @@ function drawOverlayInner() {
       const size = (hot ? 19 : 15) * (touchUI ? 1.4 : 1);
       const spline = hd.node !== undefined;
       const shape = hd.kind === 'tilt' || hd.kind === 'cz' ? 'ring' : hd.kind === 'cp' ? 'dot' : 'diamond';
-      const col = hot ? 0xffffff : hd.kind === 'size' || hd.kind === 'cin' || hd.kind === 'cout' ? 0x5b8def : hd.kind === 'thick' || hd.kind === 'cz' ? 0xff9a3c : hd.kind === 'cp' ? (hd.node === Math.min(splineNode, hs.filter((x) => x.kind === 'cp').length - 1) ? 0xffd34c : 0x7aa3f5) : 0xffd34c;
+      const col = hot ? 0xffffff : (hd.kind === 'cin' || hd.kind === 'cout') && splitAtNode(hd) ? HANDLE_SPLIT : hd.kind === 'size' || hd.kind === 'cin' || hd.kind === 'cout' ? 0x5b8def : hd.kind === 'thick' || hd.kind === 'cz' ? 0xff9a3c : hd.kind === 'cp' ? (hd.node === Math.min(splineNode, hs.filter((x) => x.kind === 'cp').length - 1) ? 0xffd34c : 0x7aa3f5) : 0xffd34c;
       put(overlay, `hd:${hd.id}:${hd.kind}:${ord}`, marks([hd.p], shape, col, spline && hd.kind !== 'cp' ? size * 0.85 : size));
     }
     // 控制点到方向手柄、高度抓点的连线
@@ -1111,9 +1123,15 @@ function drawOverlayInner() {
     if (spl) put(overlay, `splinePath:${spl.id}`, ...splinePathMarks(spl));
     const cp = spl && hs.find((x) => x.kind === 'cp' && x.node === Math.min(splineNode, spl.curve!.pts.length - 1));
     if (cp) {
-      const seg: THREE.Vector3[] = [];
-      for (const x of hs) if (x.kind === 'cin' || x.kind === 'cout' || x.kind === 'cz') seg.push(new THREE.Vector3(...cp.p), new THREE.Vector3(...x.p));
-      const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: 0x7aa3f5, depthTest: false, transparent: true, opacity: 0.9 }));
+      const seg: THREE.Vector3[] = [], tint: number[] = [];
+      for (const x of hs) if (x.kind === 'cin' || x.kind === 'cout' || x.kind === 'cz') {
+        seg.push(new THREE.Vector3(...cp.p), new THREE.Vector3(...x.p));
+        const c = new THREE.Color(x.kind !== 'cz' && splitAtNode(x) ? HANDLE_SPLIT : 0x7aa3f5);
+        tint.push(c.r, c.g, c.b, c.r, c.g, c.b);
+      }
+      const lg = new THREE.BufferGeometry().setFromPoints(seg);
+      lg.setAttribute('color', new THREE.Float32BufferAttribute(tint, 3));
+      const l = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.9 }));
       l.renderOrder = 9;
       put(overlay, `splineLines:${spl!.id}`, l);
     }
@@ -1373,7 +1391,7 @@ type Drag =
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
   | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean }
   /** 样条线：拖控制点、方向手柄或高度抓点 */
-  | { t: 'splinePt'; id: number; orig: Map<number, string>; node: number; part: 'cp' | 'cin' | 'cout' | 'cz'; plane: THREE.Plane; start: THREE.Vector3; y0: number; k: number };
+  | { t: 'splinePt'; id: number; orig: Map<number, string>; node: number; part: 'cp' | 'cin' | 'cout' | 'cz'; plane: THREE.Plane; start: THREE.Vector3; y0: number; k: number; join?: boolean };
 let drag: Drag | null = null;
 
 const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
@@ -2327,6 +2345,10 @@ function finishDrag() {
   if (anim && !anim.applied) anim.apply(anim.final);
   anim = null;
   snapping = false;
+  if (drag?.t === 'splinePt' && drag.join) {
+    const c = (doc.elems[drag.id] as RailElem).curve!;
+    if (closeCurve(c)) { splineNode = 0; props.dataset.id = ''; flash('首尾相连了'); }
+  }
   if (drag && 'orig' in drag && drag.orig && !(drag.t === 'grab' && drag.dup)) {
     if ([...drag.orig].every(([id, s]) => JSON.stringify(doc.elems[id]) === s)) undo.pop();
   }
@@ -2374,6 +2396,7 @@ function newElems(type: string): Elem[] {
   if (type.startsWith('asset:')) return [{ id, kind: 'asset', name: type.slice(6), x: 0, y: 0, z: 0, rot: 0 }];
   if (type === 'zone') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 10, sy: 10, depth: 5 }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
+  if (type === 'road-arc') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 15, angle: 90, dz: 0 }], road: { style: 'normal', depth: 5 } }];
   if (type === 'road-spline') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: defaultCurve(), road: { style: 'normal', depth: 5 } }];
   if (type === 'rail-spline') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: defaultCurve() }];
   if (type === 'rail-curve') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 5, angle: 90, dz: 0 }] }];
@@ -2559,6 +2582,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
     id: 'road', label: '路面', items: [
       { type: 'normal', label: '平路', hint: 'Ctrl 拖改尺寸，拖侧面下半截改厚度，Alt 拖一头做坡', icon: slab(ROAD_TOP, '<path d="M14 30 L32 21 L50 30 L32 39 Z" fill="#d8c8a2"/>') },
       { type: 'sink', label: '凹路', hint: '凹槽路面', icon: slab(ROAD_TOP, `<path d="M16 30 L32 22 L48 30 L32 38 Z" fill="${SINK}"/>`) },
+      { type: 'road-arc', label: '弧形路面', hint: '属性里调半径和角度，360° 是圆环', icon: svgThumb(`<path d="M12 52 A40 40 0 0 1 52 12" stroke="${ROAD_TOP}" stroke-width="14" fill="none" stroke-linecap="butt"/><path d="M12 52 A40 40 0 0 1 52 12" stroke="#8a7558" stroke-width="1.5" fill="none"/>`) },
       { type: 'road-spline', label: '曲线路面', hint: '选中后拖控制点和手柄改形状，端头吸到路面边上自动接上', icon: svgThumb(`<path d="M10 50 C26 50 22 18 54 14" stroke="${ROAD_TOP}" stroke-width="14" fill="none" stroke-linecap="butt"/><path d="M10 50 C26 50 22 18 54 14" stroke="#8a7558" stroke-width="1.5" fill="none"/>`) },
       { type: 'ribbon', label: '细边框凹路', hint: '细边框凹槽平台', icon: slab(ROAD_TOP, '<path d="M12 30 L32 20 L52 30 L32 40 Z" fill="#b29d79"/>') },
       { type: 'transition', label: '平凹转换', hint: '长 5，一头平路一头凹路', icon: slab(ROAD_TOP, `<path d="M20 36 L44 24 L50 27 L26 39 Z" fill="${SINK}"/>`) },
@@ -2631,13 +2655,21 @@ function fillThumbs() {
   for (const c of libGrid.querySelectorAll<HTMLElement>('.lib-card')) {
     const t = c.dataset.type!;
     const box = c.querySelector<HTMLElement>('.thumb')!;
-    const url = ROAD_TYPES.has(t) ? roadThumb(t) : t.startsWith('obj:') || t.startsWith('asset:') ? thumbnail(t.slice(t.indexOf(':') + 1), modelView ? 'model' : 'placeholder') : null;
+    const url = ROAD_TYPES.has(t) || RAIL_TYPES.has(t) ? roadThumb(t) : t.startsWith('obj:') || t.startsWith('asset:') ? thumbnail(t.slice(t.indexOf(':') + 1), modelView ? 'model' : 'placeholder') : null;
     // 已经是这张图就不动（改 DOM 会打断鼠标悬停的提示）
     if (url && box.dataset.img !== url) { box.dataset.img = url; box.innerHTML = ''; box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); }
   }
 }
-/** 路面类素材的预览：一块 5×5×5 的方块（窄转换长 2.5），用求解器生成网格、真实的路面贴图渲染 */
-const ROAD_TYPES = new Set(['normal', 'sink', 'ribbon', 'transition', 'transition-narrow']);
+/** 路面类素材的预览：一块 5×5×5 的方块（窄转换长 2.5），曲线和弧形是刚放下时的形状，用求解器生成网格、真实的路面贴图渲染；钢轨用真实的网格和材质 */
+const ROAD_TYPES = new Set(['normal', 'sink', 'ribbon', 'transition', 'transition-narrow', 'road-arc', 'road-spline']);
+const RAIL_TYPES = new Set(['rail', 'rail-curve', 'rail-spiral', 'rail-spline', 'side-rail', 'side-spiral']);
+/** 素材刚放下时的样子（只用来画预览，不占地图的编号） */
+function previewElem(type: string): Elem {
+  const next = doc.nextId, [e] = newElems(type);
+  doc.nextId = next;
+  e.id = 1;
+  return e;
+}
 const roadThumbCache = new Map<string, string>();
 let roadTexReady = false;
 floorTexturesReady().then(() => { roadTexReady = true; fillThumbs(); });
@@ -2645,11 +2677,18 @@ function roadThumb(type: string): string | null {
   const hit = roadThumbCache.get(type);
   if (hit) return hit;
   if (!roadTexReady) return null;
-  const e: Elem = type === 'transition' || type === 'transition-narrow'
+  const g = new THREE.Group();
+  if (RAIL_TYPES.has(type)) {
+    const rm = buildRail(previewElem(type) as RailElem, mapSettings().guardPostDepth);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(rm.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(rm.nrm, 3));
+    g.add(new THREE.Mesh(geo, getRailMaterial()));
+  }
+  const e: Elem | null = RAIL_TYPES.has(type) ? null : type.startsWith('road-') ? previewElem(type) : type === 'transition' || type === 'transition-narrow'
     ? { id: 1, kind: 'piece', type, x: 0, y: 0, z: 0, rot: 0 }
     : { id: 1, kind: 'box', x: -2.5, y: -2.5, z: 0, sx: 5, sy: 5, depth: 5, style: type as Style };
-  const g = new THREE.Group();
-  for (const m of solve({ elems: { 1: e }, nextId: 2 }).meshes.values()) {
+  if (e) for (const m of solve({ elems: { 1: e }, nextId: 2 }).meshes.values()) {
     for (const [mat, part] of Object.entries(m.parts) as [MatName, { pos: number[]; uv: number[] }][]) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(part.pos, 3));
@@ -2658,7 +2697,7 @@ function roadThumb(type: string): string | null {
       g.add(new THREE.Mesh(geo, getMaterial(mat)));
     }
   }
-  const url = renderThumb(g);
+  const url = renderThumb(g, type === 'road-arc' || type === 'road-spline' || type === 'rail-curve' || type === 'rail-spline');
   g.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
   roadThumbCache.set(type, url);
   return url;
@@ -2847,7 +2886,24 @@ function splitAt(e: { clientX: number; clientY: number }): { id: number; axis: 0
   t = gridOn && !b.ang ? snapG(t) : Math.round(t * 1000) / 1000;
   return { id: h.id, axis, t };
 }
+/** 切分工具指着首尾相连的曲线：曲线上最近的地方（从这里断开） */
+function ringAt(e: { clientX: number; clientY: number }): { r: RailElem; i: number; u: number } | null {
+  const h = pick(e), r = h && doc.elems[h.id];
+  if (!h || r?.kind !== 'rail' || !r.curve?.closed) return null;
+  return { r, ...nearestOnCurve(r.curve, worldToSpline(r, [h.p.x, h.p.y, h.p.z])) };
+}
 function splitHover(e: { clientX: number; clientY: number }) {
+  const ring = ringAt(e);
+  if (ring) {
+    const { p, t } = curvePointAt(ring.r.curve!, ring.i, ring.u), l = Math.hypot(t[0], t[1]);
+    const L: P3 = l > 1e-4 ? [(-t[1] / l) * 2.5, (t[0] / l) * 2.5, 0] : [2.5, 0, 0];
+    const at = (k: number) => { const w = splineToWorld(ring.r, [p[0] + L[0] * k, p[1] + L[1] * k, p[2]]); return [w[0], w[1], w[2] + 0.02] as P3; };
+    splitPreview = { a: at(1), b: at(-1) };
+    dragInfo = '从这里断开';
+    hoverId = ring.r.id;
+    drawOverlay(); updateStatus();
+    return;
+  }
   const s = splitAt(e);
   splitPreview = null;
   if (s) {
@@ -2862,6 +2918,16 @@ function splitHover(e: { clientX: number; clientY: number }) {
   drawOverlay(); updateStatus();
 }
 function doSplit(e: PointerEvent) {
+  const ring = ringAt(e);
+  if (ring) {
+    snapshot();
+    breakAt(ring.r.curve!, ring.i, ring.u);
+    splineNode = 0;
+    flash('断开了，选中后拖端点可以把两头分开');
+    rebuild();
+    if (e.pointerType !== 'touch') splitHover(e);
+    return;
+  }
   const s = splitAt(e);
   if (!s) return;
   snapshot();
@@ -3185,6 +3251,12 @@ function syncProps() {
   /** 分段开关（和设置面板里的一样） */
   const seg = (key: string, opts: [string, string][], cur: string) => `<span class="seg-toggle" data-seg="${key}">${opts.map(([v, n]) => `<button type="button" data-v="${v}" class="${v === cur ? 'on' : ''}">${n}</button>`).join('')}</span>`;
   /** 开 / 关的小药丸 */
+  const roadFields = (r: RailElem) => {
+    const road = r.road!, endOpts = [['auto', '自动'], ['open', '开口'], ['closed', '封口']] as [string, string][];
+    return `<label>样式</label><select data-road="style">${([['normal', '平路'], ['sink', '凹路'], ['ribbon', '细边框凹路']] as [string, string][]).map(([v, n]) => `<option value="${v}"${v === road.style ? ' selected' : ''}>${n}</option>`).join('')}</select>`
+      + `<label>厚度</label><input data-road="depth" type="number" step="0.5" min="0.1" value="${+road.depth.toFixed(3)}">`
+      + (roadClosed(r) ? '' : `<label>起点</label>${seg('road-end-0', endOpts, road.ends?.[0] ?? 'auto')}<label>终点</label>${seg('road-end-1', endOpts, road.ends?.[1] ?? 'auto')}`);
+  };
   const chip = (flag: string, label: string, on: boolean) => `<button type="button" class="chip${on ? ' on' : ''}" data-flag="${flag}">${label}</button>`;
   const [px, py, pz] = propPos(one);
   // 字段的 data-k 一直是内部的轴；游戏坐标系里按 x、y（高度）、z 的顺序排
@@ -3213,22 +3285,30 @@ function syncProps() {
     h += num('x', '原点 x', one.x) + (game ? num('z', '原点 y', one.z) + num('y', '原点 z', one.y) : num('y', '原点 y', one.y) + num('z', '原点 z', one.z));
     h += one.q ? orient() : num('heading', '朝向 °', one.heading, 15);
     if (one.road) {
-      h += `<label>样式</label><select data-road="style">${([['normal', '平路'], ['sink', '凹路'], ['ribbon', '细边框凹路']] as [string, string][]).map(([v, n]) => `<option value="${v}"${v === one.road!.style ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
-      h += `<label>厚度</label><input data-road="depth" type="number" step="0.5" min="0.1" value="${+one.road.depth.toFixed(3)}">`;
-      const endOpts = [['auto', '自动'], ['open', '开口'], ['closed', '封口']] as [string, string][];
-      h += `<label>起点</label>${seg('road-end-0', endOpts, one.road.ends?.[0] ?? 'auto')}<label>终点</label>${seg('road-end-1', endOpts, one.road.ends?.[1] ?? 'auto')}`;
+      h += roadFields(one);
       if (minRadius(roadRings(one)) < 2.5) h += `<div class="row warn-note">弯得太急，内侧的路面会叠在一起</div>`;
     } else {
       h += `<label>轨型</label><select data-rf="kind">${[['double', '双轨'], ['mono', '单轨']].map(([v, n]) => `<option value="${v}"${v === one.pieces[0].kind ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
       const closure = [['flat', '平直'], ['round', '球形']] as [string, string][];
-      h += `<label>起点闭合</label>${seg('tip-0', closure, one.tips?.[0] ? 'round' : 'flat')}<label>终点闭合</label>${seg('tip-1', closure, one.tips?.[1] ? 'round' : 'flat')}`;
+      if (!c.closed) h += `<label>起点闭合</label>${seg('tip-0', closure, one.tips?.[0] ? 'round' : 'flat')}<label>终点闭合</label>${seg('tip-1', closure, one.tips?.[1] ? 'round' : 'flat')}`;
     }
     h += `<label>截面</label>${seg('curve-frame', [['vertical', '竖直'], ['parallel', '平行传递']], c.frame === 'parallel' ? 'parallel' : 'vertical')}`;
     h += `<div class="title">控制点 ${nI + 1} / ${c.pts.length}</div>`;
     const sp = (f: string, label: string, v: number, step = 0.5) => `<label>${label}</label><input data-sp="${f}" type="number" step="${step}" value="${+v.toFixed(3)}">`;
     h += sp('x', 'x', w[0]) + (game ? sp('z', 'y', w[2]) + sp('y', 'z', w[1]) : sp('y', 'y', w[1]) + sp('z', 'z', w[2]));
     if (c.frame === 'parallel') h += sp('bank', '侧倾 °', nd.bank ?? 0, 5);
+    const swatch = (col: number) => `<i class="hd-swatch" style="background:#${col.toString(16).padStart(6, '0')}"></i>`;
+    if (nd.in && nd.out) h += `<label>控制柄</label>${seg('curve-handle', [['mirror', `${swatch(0x5b8def)}对称`], ['split', `${swatch(HANDLE_SPLIT)}分离`]], nd.split ? 'split' : 'mirror')}`;
     h += `<div class="curve-btns"><button type="button" data-spn="ins">后面加一个点</button><button type="button" data-spn="del"${c.pts.length <= 2 ? ' disabled' : ''}>删除这个点</button></div>`;
+    h += `<div class="curve-btns">${c.closed ? '<button type="button" data-spn="open">从这个点断开</button>' : `<button type="button" data-spn="close"${c.pts.length < 2 ? ' disabled' : ''}>首尾相连</button>`}</div>`;
+  } else if (one.kind === 'rail' && one.road) {
+    const pc = one.pieces[0], rnum = (f: string, label: string, v: number, step = 0.5, extra = '') => `<label>${label}</label><input data-rf="${f}" type="number" step="${step}"${extra} value="${+v.toFixed(3)}">`;
+    h += `<div class="title">弧形路面<small>长 ${fmt((Math.abs(pc.angle) * Math.PI * pc.radius) / 180)}；转满 360° 是圆环</small></div>`;
+    h += num('x', '起点 x', one.x) + (game ? num('z', '起点 y', one.z) + num('y', '起点 z', one.y) : num('y', '起点 y', one.y) + num('z', '起点 z', one.z));
+    h += one.q ? orient() : num('heading', '朝向 °', one.heading, 15);
+    h += roadFields(one);
+    h += `<label>方向</label><select data-rf="dir"><option value="1"${pc.angle > 0 ? ' selected' : ''}>左转</option><option value="-1"${pc.angle < 0 ? ' selected' : ''}>右转</option></select>`;
+    h += rnum('radius', '半径', pc.radius, 0.5, ` min="${ARC_ROAD_MIN_R}"`) + rnum('angle', '角度', Math.abs(pc.angle), 15, ' min="1" max="360"');
   } else if (one.kind === 'rail') {
     const pc = one.pieces[0];
     const shape = one.side ? '侧轨' : one.sideSpiral ? '螺旋侧轨' : pc.angle === 0 ? '直轨' : Math.abs(pc.angle) >= 360 ? '螺旋' : '弯轨';
@@ -3337,9 +3417,9 @@ props.addEventListener('change', (ev) => {
     if (f === 'kind') pc.kind = t.value as RailPiece['kind'];
     else if (f === 'len') pc.len = Math.max(0.1, v);
     else if (f === 'dz') pc.dz = v;
-    else if (f === 'radius') pc.radius = Math.max(0.5, v);
+    else if (f === 'radius') pc.radius = Math.max(e.road ? ARC_ROAD_MIN_R : 0.5, v);
     else if (f === 'dir') pc.angle = Math.abs(pc.angle) * (v > 0 ? 1 : -1);
-    else if (f === 'angle') pc.angle = Math.sign(pc.angle) * Math.min(359, Math.max(1, v));
+    else if (f === 'angle') pc.angle = Math.sign(pc.angle) * Math.min(e.road ? 360 : 359, Math.max(1, v));
     else if (f === 'turns') { const n = Math.max(1, v); pc.dz = e.sideSpiral ? SIDE_SPIRAL_SCREW * n * Math.sign(pc.dz || 1) : (pc.dz / turns) * n; pc.angle = Math.sign(pc.angle) * 360 * n; }
     else if (f === 'screw') pc.dz = v * turns;
   }
@@ -3436,7 +3516,7 @@ document.addEventListener('pointerdown', (ev) => {
   if (!inp || ev.button !== 0 || document.activeElement === inp) return;
   ev.preventDefault();
   const root = inp.closest('#props, .settings-panel')!;
-  const attr = ['data-k', 'data-rf', 'data-key', 'id'].find((a) => inp.hasAttribute(a))!;
+  const attr = ['data-k', 'data-rf', 'data-road', 'data-sp', 'data-key', 'id'].find((a) => inp.hasAttribute(a))!;
   const query = `input[${attr}="${inp.getAttribute(attr)}"]`;
   const unit = numUnit(inp);
   const sx = ev.clientX, sy = ev.clientY, v0 = +inp.value;
@@ -3489,6 +3569,16 @@ props.addEventListener('click', (ev) => {
     const ends = [...(e.road.ends ?? ['auto', 'auto'])];
     ends[k] = v;
     if (ends.every((x) => x === 'auto')) delete e.road.ends; else e.road.ends = ends;
+    props.dataset.id = '';
+    rebuild();
+    return;
+  }
+  if (e.kind === 'rail' && e.curve && segBtn?.parentElement!.dataset.seg === 'curve-handle') {
+    const nd = e.curve.pts[Math.min(splineNode, e.curve.pts.length - 1)], split = segBtn.dataset.v === 'split';
+    if (!!nd.split === split) return;
+    snapshot();
+    if (split) nd.split = true;
+    else { delete nd.split; if (nd.out) nd.in = [-nd.out[0], -nd.out[1], -nd.out[2]]; } // 切回对称：进来的手柄镜像到出去的那根
     props.dataset.id = '';
     rebuild();
     return;
@@ -3562,6 +3652,10 @@ props.addEventListener('click', (ev) => {
   snapshot();
   const i = Math.min(splineNode, e.curve.pts.length - 1);
   if (t.dataset.spn === 'ins') splineNode = insertAfter(e.curve, i);
+  else if (t.dataset.spn === 'close') {
+    if (closeCurve(e.curve)) splineNode = Math.min(i, e.curve.pts.length - 1);
+    else { undo.pop(); flash('这条曲线没法首尾相连', true); return; }
+  } else if (t.dataset.spn === 'open') { openAt(e.curve, i); splineNode = 0; flash('断开了，拖端点可以把两头分开'); }
   else if (removePoint(e.curve, i)) splineNode = Math.min(i, e.curve.pts.length - 1);
   props.dataset.id = '';
   rebuild();
@@ -4780,6 +4874,15 @@ function startRingDrag(e: PointerEvent, axis: 0 | 1 | 2) {
 type SplinePart = 'cp' | 'cin' | 'cout' | 'cz';
 type Handle = { kind: 'size' | 'thick' | 'tilt' | SplinePart; id: number; p: P3; side?: number; node?: number };
 const HANDLE_INFO: Record<Handle['kind'], string> = { size: '拖动：改尺寸', thick: '拖动：改厚度', tilt: '拖动：上下拉成坡', cp: '拖动：移动控制点（水平）', cin: '拖动：调曲线方向', cout: '拖动：调曲线方向', cz: '拖动：改控制点高度' };
+/** 弧形路面的最小半径：路宽一半是 2.5，再小内侧就叠在一起了 */
+const ARC_ROAD_MIN_R = 3;
+/** 分离控制柄的颜色（对称控制柄是蓝色） */
+const HANDLE_SPLIT = 0xe86bd8;
+const splitAtNode = (hd: Handle) => !!(doc.elems[hd.id] as RailElem).curve?.pts[hd.node!]?.split;
+/** 这个控制点是不是开放曲线的端点 */
+const curveEndAt = (r: RailElem, node: number) => !r.curve!.closed && (node === 0 || node === r.curve!.pts.length - 1);
+/** 提示栏里，曲线端点按住 V 能做的事 */
+const splineSnapText = (r: RailElem) => `吸到${r.road ? '路面' : '钢轨'}自动转向衔接${r.curve!.pts.length >= 3 ? '，吸到另一头首尾相连' : ''}`;
 /** 选中曲线时画出它的走向：一条线把控制点连起来，线上的箭头指向「后面」（按需渲染，不用一直动的流动线） */
 function splinePathMarks(e: RailElem): THREE.Object3D[] {
   const sm = curveSamples(e);
@@ -4857,11 +4960,37 @@ function startSplineDrag(e: PointerEvent, hd: Handle) {
   drag = { t: 'splinePt', id: hd.id, orig: origOf([hd.id]), node: hd.node!, part: hd.kind as SplinePart, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(up, base), start: base, y0: e.clientY, k: perZ >= 6 ? 1 / perZ : worldPerPx(w) };
   drawOverlay(); updateStatus();
 }
-/** 曲线路面的端头吸到平路面的边上：端头的方向转成垂直于那条边，这样路面能接上（解算只认正对着的端头） */
-function alignRoadEnd(r: RailElem, node: number, w: number[]) {
+/** 曲线的端点吸上去之后自动转向：路面端头垂直于相接的路面边（解算只认正对着的端头），钢轨和曲线路面顺着对方的端头接下去 */
+function alignCurveEnd(r: RailElem, node: number, w: number[]) {
   const pts = r.curve!.pts, nd = pts[node];
-  const key = node === 0 ? 'out' : node === pts.length - 1 ? 'in' : null;
-  if (!key) return;
+  if (!curveEndAt(r, node)) return;
+  const key = node === 0 ? 'out' : 'in';
+  // 两头的手柄都朝着接上的东西的外面（终点的手柄是往回指的，正好也是这个方向）
+  const aim = (d: number[]) => {
+    const v = nd[key], l = v ? Math.hypot(v[0], v[1], v[2]) || 8 : 8;
+    const a = worldToSpline(r, w), b = worldToSpline(r, [w[0] + d[0] * l, w[1] + d[1] * l, w[2] + d[2] * l]);
+    nd[key] = [r3(b[0] - a[0]), r3(b[1] - a[1]), r3(b[2] - a[2])];
+  };
+  // 同类的端头：钢轨的吸附点分布在截面上，离路径中心不到 2；路面吸的就是中点
+  const reach = r.road ? 0.05 : 2;
+  for (const o of Object.values(doc.elems)) {
+    if (o.kind !== 'rail' || o.id === r.id || o.side || !!o.road !== !!r.road || o.curve?.closed || roadClosed(o)) continue;
+    const ss = sampleRail(o);
+    if (ss.length < 2) continue;
+    const cs = o.curve ? curveSamples(o) : null, n = ss.length;
+    for (const [i, sg] of [[0, -1], [n - 1, 1]]) {
+      const a = ss[i], A = toWorld(o, [a.x, a.y, a.z]);
+      if (Math.hypot(A[0] - w[0], A[1] - w[1], A[2] - w[2]) > reach) continue;
+      // 端头的精确切线（相邻采样点的弦在弯道上差好几度，接上会有折角）
+      const f0 = ss[i === 0 ? 0 : n - 2], f1 = ss[i === 0 ? 1 : n - 1], run = Math.hypot(f1.x - f0.x, f1.y - f0.y) || 1, h = (a.heading * Math.PI) / 180;
+      const t = cs ? cs[i].t : [Math.cos(h), Math.sin(h), (f1.z - f0.z) / run];
+      const B = toWorld(o, [a.x + t[0] * sg, a.y + t[1] * sg, a.z + t[2] * sg]);
+      const d = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], l = Math.hypot(d[0], d[1], d[2]) || 1;
+      aim([d[0] / l, d[1] / l, d[2] / l]);
+      return;
+    }
+  }
+  if (!r.road) return;
   for (const b of Object.values(doc.elems)) {
     if (b.kind !== 'box' || b.q || b.slope || Math.abs(b.z - w[2]) > 0.05) continue;
     const [x, y] = toLocal(b, [w[0], w[1], w[2]]), f = footprint(b), eps = 0.02;
@@ -4870,11 +4999,8 @@ function alignRoadEnd(r: RailElem, node: number, w: number[]) {
         : Math.abs(y - f.y1) < eps && x >= f.x0 - eps && x <= f.x1 + eps ? [0, 1]
           : Math.abs(y - f.y0) < eps && x >= f.x0 - eps && x <= f.x1 + eps ? [0, -1] : null;
     if (!n) continue;
-    // 路面从边上朝外走：两头的手柄都朝着边的外面（终点的手柄是往回指的，正好也是这个方向）
-    const a = ((b.ang ?? 0) * Math.PI) / 180, wx = n[0] * Math.cos(a) - n[1] * Math.sin(a), wy = n[0] * Math.sin(a) + n[1] * Math.cos(a);
-    const h = (r.heading * Math.PI) / 180, lx = wx * Math.cos(h) + wy * Math.sin(h), ly = -wx * Math.sin(h) + wy * Math.cos(h);
-    const v = nd[key], l = v ? Math.hypot(v[0], v[1], v[2]) || 8 : 8;
-    nd[key] = [r3(lx * l), r3(ly * l), 0];
+    const a = ((b.ang ?? 0) * Math.PI) / 180;
+    aim([n[0] * Math.cos(a) - n[1] * Math.sin(a), n[0] * Math.sin(a) + n[1] * Math.cos(a), 0]);
     return;
   }
 }
@@ -4886,6 +5012,7 @@ function splineDragTo(d: Extract<Drag, { t: 'splinePt' }>, e: PointerEvent) {
   const g = (v: number) => (gridOn ? snapG(v) : r3(v));
   snapTarget = null;
   dragInfo = '';
+  d.join = false;
   if (d.part === 'cz') {
     nd.p[2] = g(nd.p[2] - (e.clientY - d.y0) * d.k);
     dragInfo = `高度 ${fmt(splineToWorld(r, nd.p)[2])}`;
@@ -4898,14 +5025,20 @@ function splineDragTo(d: Extract<Drag, { t: 'splinePt' }>, e: PointerEvent) {
       let w: number[] = [w0[0] + delta.x, w0[1] + delta.y, w0[2]];
       let snapped = false;
       if (vHeld || e.pointerType === 'touch') {
-        const tg = findTarget(e.clientX, e.clientY, new Set([d.id]));
+        // 端点吸到自己的另一头：松手就首尾相连
+        const pts = r.curve!.pts;
+        if (curveEndAt(r, d.node) && pts.length >= 3) {
+          const far = splineToWorld(o, pts[d.node === 0 ? pts.length - 1 : 0].p);
+          if (toScreen(far).distanceTo(new THREE.Vector2(e.clientX, e.clientY)) < hitPx(14)) { w = far; snapTarget = { p: far, kind: 'v' }; snapped = d.join = true; dragInfo = '松手：首尾相连'; }
+        }
+        const tg = d.join ? null : findTarget(e.clientX, e.clientY, new Set([d.id]));
         if (tg) { w = tg.p; snapTarget = tg; snapped = true; dragInfo = `吸附到${tg.kind === 'v' ? '顶点' : tg.kind === 'm' ? '边中点' : '边上'}`; }
       }
       const l = worldToSpline(r, w);
       nd.p = snapped ? [r3(l[0]), r3(l[1]), r3(l[2])] : [g(l[0]), g(l[1]), nd.p[2]];
-      if (snapped && r.road) alignRoadEnd(r, d.node, w);
+      if (snapped && !d.join) alignCurveEnd(r, d.node, w);
     } else {
-      // 方向手柄：另一边的手柄跟着对齐（长度不变），曲线在这个点上保持平滑
+      // 方向手柄：对称控制柄另一边镜像跟着；分离控制柄另一边只跟着转方向（长度不变）。曲线在这个点上都保持平滑
       const key = d.part === 'cin' ? 'in' : 'out', other = d.part === 'cin' ? 'out' : 'in';
       const tgt = o.curve!.pts[d.node][key]!;
       const delta = hit.clone().sub(d.start);
@@ -4915,7 +5048,8 @@ function splineDragTo(d: Extract<Drag, { t: 'splinePt' }>, e: PointerEvent) {
       nd[key] = v;
       const ot = nd[other];
       const vl = Math.hypot(v[0], v[1], v[2]);
-      if (ot && vl > 1e-6) { const ol = Math.hypot(ot[0], ot[1], ot[2]); nd[other] = [r3((-v[0] / vl) * ol), r3((-v[1] / vl) * ol), r3((-v[2] / vl) * ol)]; }
+      if (ot && !nd.split) nd[other] = [r3(-v[0]), r3(-v[1]), r3(-v[2])];
+      else if (ot && vl > 1e-6) { const ol = Math.hypot(ot[0], ot[1], ot[2]); nd[other] = [r3((-v[0] / vl) * ol), r3((-v[1] / vl) * ol), r3((-v[2] / vl) * ol)]; }
     }
   }
   liveUpdate();

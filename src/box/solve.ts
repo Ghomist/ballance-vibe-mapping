@@ -20,6 +20,7 @@ import { objType } from '../model/objects';
 import { type M3, apply, rotZ } from './xform';
 import { buildCurveRoad, roadRings, type RoadRing } from '../geom/curve-road';
 import type { CurveRoadEnd } from '../model/spline';
+import { roadClosed } from '../model/rail';
 import { ShapeUtils, Vector2 } from 'three';
 
 export interface ElemMeshOut {
@@ -270,16 +271,17 @@ function axisDir(d: V3, ang: number): Dir | null {
 
 /** 算每条曲线路面两头的状态：自动模式下，朝外一点的地方有一样高、一样样式的平路面，或者别的曲线路面的一头正对着，就算接上了 */
 function curveRoadEnds(doc: Doc): CurveEndInfo[] {
-  const roads = Object.values(doc.elems).filter((e): e is RailElem => e.kind === 'rail' && !!e.road && !!e.curve && e.curve.pts.length >= 2);
+  const roads = Object.values(doc.elems).filter((e): e is RailElem => e.kind === 'rail' && !!e.road && (!e.curve || e.curve.pts.length >= 2));
   if (!roads.length) return [];
   const boxes = Object.values(doc.elems).filter((e): e is Box => e.kind === 'box' && !e.q && !e.slope);
   const infos = roads.map((r) => {
     const rings = roadRings(r);
     const A = rings[0], B = rings[rings.length - 1];
     const neg = (v: V3): V3 => [-v[0], -v[1], -v[2]];
-    return { r, rings, raw: [{ P: A.p, out: neg(A.t), z: A.p[2] }, { P: B.p, out: B.t, z: B.p[2] }] };
+    return { r, rings, raw: roadClosed(r) ? [] : [{ P: A.p, out: neg(A.t), z: A.p[2] }, { P: B.p, out: B.t, z: B.p[2] }] }; // 首尾相连的路没有端头
   });
   return infos.map((inf) => {
+    if (roadClosed(inf.r)) return { r: inf.r, rings: inf.rings, kinds: ['joined', 'joined'] as [CurveRoadEnd, CurveRoadEnd], ends: [] };
     const kinds: CurveRoadEnd[] = [], ends: CurveEndInfo['ends'] = [];
     inf.raw.forEach((e, n) => {
       const mode = inf.r.road!.ends?.[n] ?? 'auto';

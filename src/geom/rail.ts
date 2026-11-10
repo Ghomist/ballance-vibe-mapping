@@ -39,7 +39,7 @@ function railLocal(r: Rail, postDepth: number): RailMesh {
     // 坡度：用相邻点估计切线的竖直分量
     const offsets = span.kind === 'double' ? [-RAIL_SPAN / 2, RAIL_SPAN / 2] : [0];
     // 球形闭合只在整根钢轨的两头，单双转换的接口还是平的
-    for (const off of offsets) tube(out, pts, span.kind, off, [!!r.tips?.[0] && si === 0, !!r.tips?.[1] && si === spans.length - 1]);
+    for (const off of offsets) tube(out, pts, span.kind, off, [!!r.tips?.[0] && si === 0, !!r.tips?.[1] && si === spans.length - 1], !!r.curve?.closed);
   });
   return out;
 }
@@ -116,7 +116,8 @@ function parallelRail(r: Rail): RailMesh {
   const sm = curveSamples(r);
   if (sm.length < 2) return out;
   const kind = r.pieces[0]?.kind === 'mono' ? 'mono' : 'double';
-  const fr = parallelFrames(sm);
+  const closed = !!r.curve!.closed;
+  const fr = parallelFrames(sm, closed);
   const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
   const phase = kind === 'mono' ? 22.5 : 0;
   for (const off of kind === 'double' ? [-RAIL_SPAN / 2, RAIL_SPAN / 2] : [0]) {
@@ -132,14 +133,14 @@ function parallelRail(r: Rail): RailMesh {
       }
       return { c, v, n };
     });
-    skin(out, rings, [!!r.tips?.[0], !!r.tips?.[1]], [[...sm[0].t], [...sm[sm.length - 1].t]]);
+    skin(out, rings, [!!r.tips?.[0], !!r.tips?.[1]], [[...sm[0].t], [...sm[sm.length - 1].t]], closed);
   }
   return out;
 }
 
 type Ring = { c: number[]; v: number[][]; n: number[][] };
 
-function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number, round: [boolean, boolean]) {
+function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral: number, round: [boolean, boolean], closed = false) {
   const zOff = kind === 'double' ? DOUBLE_OFFSET : MONO_OFFSET;
   const phase = kind === 'mono' ? 22.5 : 0;
   const rings: Ring[] = [];
@@ -148,7 +149,8 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     const h = rad(p.heading);
     const L = [-Math.sin(h), Math.cos(h), 0]; // 水平左侧
     // 切线（含坡度）
-    const a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, pts.length - 1)];
+    const cnt = pts.length; // 首尾相连时接缝两边互为邻居
+    const a = closed && i === 0 ? pts[cnt - 2] : pts[Math.max(i - 1, 0)], b = closed && i === cnt - 1 ? pts[1] : pts[Math.min(i + 1, cnt - 1)];
     const horiz = Math.hypot(b.x - a.x, b.y - a.y);
     const slope = horiz > 1e-9 ? (b.z - a.z) / horiz : 0;
     const T = normalize([Math.cos(h), Math.sin(h), slope]);
@@ -165,11 +167,11 @@ function tube(out: RailMesh, pts: RailState[], kind: 'double' | 'mono', lateral:
     }
     rings.push({ c, v, n });
   }
-  skin(out, rings, round);
+  skin(out, rings, round, undefined, closed);
 }
 
 /** 一圈圈截面连成管子，两头封盖。ends：两头的切线（平行传递时端面垂直于切线）；没给就是竖直端面，封盖朝水平方向 */
-function skin(out: RailMesh, rings: Ring[], round: [boolean, boolean], ends?: [number[], number[]]) {
+function skin(out: RailMesh, rings: Ring[], round: [boolean, boolean], ends?: [number[], number[]], closed = false) {
   const tri = (p: number[][], n: number[][]) => { for (let i = 0; i < 3; i++) { out.pos.push(...p[i]); out.nrm.push(...n[i]); } };
   for (let i = 0; i + 1 < rings.length; i++) {
     const A = rings[i], B = rings[i + 1];
@@ -180,6 +182,7 @@ function skin(out: RailMesh, rings: Ring[], round: [boolean, boolean], ends?: [n
       tri([A.v[k], A.v[k2], B.v[k2]], [A.n[k], A.n[k2], B.n[k2]]);
     }
   }
+  if (closed) return; // 首尾相连：没有端头
   // 两端封盖
   const cap = (R: { c: number[]; v: number[][] }, dir: number[], flip: boolean, ball: boolean, inner: { c: number[] }) => {
     if (ball) {

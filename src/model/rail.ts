@@ -128,8 +128,24 @@ export function advance(st: RailState, p: RailPiece, frac = 1): RailState {
   return { x: cx + Math.cos(a1) * p.radius, y: cy + Math.sin(a1) * p.radius, z: st.z + p.dz * frac, heading: st.heading + p.angle * frac };
 }
 
-/** 样条线在元素坐标里的采样（x、y、z 原点和朝向已经算进去，倾斜 q 没算） */
+/** 路面是不是首尾相连：样条线看 closed，弧形路面转满 360° 就是圆环 */
+export const roadClosed = (r: Rail) => (r.curve ? !!r.curve.closed : !!r.road && Math.abs(r.pieces[0]?.angle ?? 0) >= 360 - 1e-6);
+
+/** 弧形路面的采样：切线是精确的，端头才能和路面严丝合缝 */
+function arcSamples(r: Rail): SplineSample[] {
+  const p = r.pieces[0], L = pieceLength(p), st: RailState = { x: r.x, y: r.y, z: r.z, heading: r.heading };
+  const n = Math.max(2, Math.ceil(Math.abs(p.angle) / 5), Math.ceil(L / 10));
+  const out = Array.from({ length: n + 1 }, (_, k): SplineSample => {
+    const a = advance(st, p, k / n), h = rad(a.heading);
+    return { p: [a.x, a.y, a.z], t: [Math.cos(h), Math.sin(h), 0], s: (L * k) / n, bank: 0 };
+  });
+  if (roadClosed(r)) { out[n].p = [...out[0].p]; out[n].t = [...out[0].t]; }
+  return out;
+}
+
+/** 样条线在元素坐标里的采样（x、y、z 原点和朝向已经算进去，倾斜 q 没算）；弧形路面按圆弧采样 */
 export function curveSamples(r: Rail): SplineSample[] {
+  if (!r.curve) return arcSamples(r);
   const h = rad(r.heading), c = Math.cos(h), s = Math.sin(h);
   return sampleSpline(r.curve!).map((m) => ({
     ...m,

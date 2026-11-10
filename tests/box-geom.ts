@@ -7,7 +7,7 @@ import {
   railCenters, railEnd, railTopOffset, sampleRail, sideLowerSpan, stateAt, type Rail, type RailPiece, type RailState,
 } from '../src/model/rail';
 import { buildRail } from '../src/geom/rail';
-import { insertAfter, parallelFrames, removePoint, sampleSpline, type SplineCurve } from '../src/model/spline';
+import { breakAt, closeCurve, insertAfter, openAt, parallelFrames, removePoint, sampleSpline, type SplineCurve } from '../src/model/spline';
 import { solve, type Solved } from '../src/box/solve';
 import { exportBoxScene } from '../src/box/export';
 import { sweepTube } from '../src/geom/railing';
@@ -111,6 +111,80 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     const deep = solve({ nextId: 2, elems: { 1: road({ road: { style: 'normal', depth: 8 } }) } });
     check(top(deep, 1, 'LightingFloorTopBorder') > 0 && top(deep, 1, 'LightingFloorTopBorderless') > 0, '厚度超过 5 分两种贴图');
     check(feats(road()).verts.length === 8 && feats(road()).mids.length === 2, '吸附点：两头各 4 个角和中点');
+  });
+
+  scenario('弧形路面：花纹、接路面、圆环', () => {
+    const arc = (angle: number, o: Partial<RailElem> = {}): RailElem => ({ ...railElem([line(1)]), id: 1, x: 0, y: 2.5, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 20, angle, dz: 0 }], road: { style: 'normal', depth: 5 }, ...o });
+    const box = (id: number, x: number, y: number, sx: number, sy: number): Box => ({ id, kind: 'box', x, y, z: 0, sx, sy, depth: 5, style: 'normal' });
+    const top = (m: Solved, id: number) => (m.meshes.get(id)?.parts as Record<string, { pos: number[] }>).FloorTopBorder?.pos.length ?? 0;
+    const sig = (m: Solved, id: number) => JSON.stringify((m.meshes.get(id)?.parts as Record<string, { pos: number[] }>).FloorTopBorder?.pos);
+    const alone = solve({ nextId: 2, elems: { 1: arc(90) } });
+    check(top(alone, 1) > 0 && alone.loops.length === 1 && alone.loops[0].closed, '单独一段：两头封口，外沿一个环');
+    const f = feats(arc(90));
+    check(f.mids.length === 2 && near(f.mids[1][0], 20, 1e-6) && near(f.mids[1][1], 22.5, 1e-6), '吸附点在弧的两头');
+    check(feats(arc(-90)).mids[1][1] < 0, '负角度是右转');
+    // 两头接路面：起点 -x 方向，终点（转过 90°）+y 方向
+    const joined = solve({ nextId: 4, elems: { 1: arc(90), 2: box(2, -10, 0, 10, 5), 3: box(3, 17.5, 22.5, 5, 10) } });
+    check(sig(joined, 1) !== sig(alone, 1), '接上路面后不再是封口的花纹'); // 三角形数可能碰巧一样，比内容
+    check(joined.loops.length === 1 && joined.loops[0].closed, `接上后外沿连成一个环（${joined.loops.length} 个）`);
+    // 转 45°：端头不正对坐标轴，不开口
+    const skew = solve({ nextId: 3, elems: { 1: arc(45), 2: box(2, 13, 8, 10, 10) } });
+    check(sig(skew, 1) === sig(solve({ nextId: 2, elems: { 1: arc(45) } }), 1), '端头歪着的不接');
+    // 360°：圆环
+    const ring = solve({ nextId: 2, elems: { 1: arc(360) } });
+    check(ring.loops.length === 2 && ring.loops.every((l) => l.closed), `圆环内外两圈外沿（${ring.loops.length} 个）`);
+    check(feats(arc(360)).mids.length === 1, '圆环只有接缝一组吸附点');
+    const e = exportBoxScene({ nextId: 2, elems: { 1: arc(360) } });
+    check(e.meshes.some((m) => m.kind === 'floor') && !e.meshes.some((m) => m.kind === 'rail'), '导出成路面');
+  });
+
+  scenario('样条线：首尾相连和断开', () => {
+    const ring = (): SplineCurve => ({ pts: [{ p: [0, 0, 0], out: [11, 0, 0], in: [-11, 0, 0] }, { p: [20, 20, 0], in: [0, -11, 0], out: [0, 11, 0] }, { p: [0, 40, 0], in: [11, 0, 0], out: [-11, 0, 0] }, { p: [-20, 20, 0], in: [0, 11, 0], out: [0, -11, 0] }], closed: true });
+    const c = ring(), sm = sampleSpline(c);
+    check(near(sm[0].p[0], sm.at(-1)!.p[0]) && near(sm[0].p[1], sm.at(-1)!.p[1]), '采样回到起点');
+    check(near(sm[0].t[0], sm.at(-1)!.t[0], 1e-9) && near(sm[0].t[1], sm.at(-1)!.t[1], 1e-9), '接缝两边切线一样');
+    // 高低起伏的环：平行传递回到起点要对得上
+    const wavy = ring();
+    wavy.pts[1].p[2] = 12; wavy.pts[1].in = [0, -9, -6]; wavy.pts[1].out = [0, 9, 6]; wavy.pts[3].p[2] = -8;
+    const ws = sampleSpline(wavy), wf = parallelFrames(ws, true), f0 = wf[0], fn = wf.at(-1)!;
+    check(near(f0.U[0], fn.U[0], 1e-6) && near(f0.U[1], fn.U[1], 1e-6) && near(f0.U[2], fn.U[2], 1e-6), '平行传递的接缝对得上');
+    check(wf.every((f, i) => i === 0 || f.U[0] * wf[i - 1].U[0] + f.U[1] * wf[i - 1].U[1] + f.U[2] * wf[i - 1].U[2] > 0.9), '补偿的扭转没有突变');
+    // 路面和钢轨都没有端头
+    const elem = (o: Partial<RailElem>): RailElem => ({ ...railElem([line(1)]), id: 1, x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: ring(), ...o });
+    const road = solve({ nextId: 2, elems: { 1: elem({ road: { style: 'normal', depth: 5 } }) } });
+    check(road.loops.length === 2 && road.loops.every((l) => l.closed), `环形路面内外两圈外沿（${road.loops.length} 个）`);
+    check(feats(elem({ road: { style: 'normal', depth: 5 } })).mids.length === 1, '环形路面只有接缝一组吸附点');
+    for (const o of [elem({}), elem({ curve: { ...ring(), frame: 'parallel' } })]) check(buildRail(o).caps.length === 0, '环形钢轨没有封盖');
+    // 导出的路面和分享都带着闭合
+    check(exportBoxScene({ nextId: 2, elems: { 1: elem({ road: { style: 'normal', depth: 5 } }) } }).meshes.some((m) => m.kind === 'floor'), '环形路面能导出');
+    // 任意一点断开：形状不变，两头重合
+    const b = ring(), len0 = sampleSpline(b).at(-1)!.s;
+    check(breakAt(b, 1, 0.37) && !b.closed && b.pts.length === 6, '断开后多一个切点和一个端点');
+    check(near(sampleSpline(b).at(-1)!.s, len0, 0.05), '断开不改变形状');
+    check(!b.pts[0].in && !b.pts.at(-1)!.out && near(b.pts[0].p[0], b.pts.at(-1)!.p[0]), '断开后是两个重合的端点');
+    // 从控制点断开，再顺着路往回拖开两头（别弯得太急，叠起来的路外沿本来就连不上）
+    const apart = ring();
+    openAt(apart, 1);
+    apart.pts.at(-1)!.p = [20, 12, 0];
+    const cut = solve({ nextId: 2, elems: { 1: elem({ curve: apart, road: { style: 'normal', depth: 5 } }) } });
+    check(cut.loops.length === 1 && cut.loops[0].closed, '断开后外沿连成一圈');
+    // 断开后再接回去：还是那个环
+    check(closeCurve(b) && b.closed === true && b.pts.length === 5, '重合的两头并成一个点');
+    check(near(sampleSpline(b).at(-1)!.s, len0, 0.05), '接回去形状不变');
+    // 从控制点断开
+    const o2 = ring();
+    check(openAt(o2, 2) && near(o2.pts[0].p[1], 40) && o2.pts.length === 5, '从控制点断开：这个点成为起点');
+    // 环上的加点、删点
+    const e = ring();
+    check(insertAfter(e, 3) === 4 && e.pts.length === 5 && near(sampleSpline(e).at(-1)!.s, len0, 0.05), '最后一段（回到起点）也能加点');
+    check(removePoint(e, 0) && !!e.pts[0].in && !!e.pts.at(-1)!.out, '环上删点不去掉手柄');
+    // 补一段回到起点、两个点摆成椭圆
+    const three: SplineCurve = { pts: [{ p: [0, 0, 0], out: [10, 0, 0] }, { p: [30, 0, 0], in: [-5, -5, 0], out: [5, 5, 0] }, { p: [30, 30, 0], in: [10, -10, 0] }] };
+    check(closeCurve(three) && three.pts.length === 3 && !!three.pts[0].in && !!three.pts[2].out, '三个点补一段回到起点');
+    const two: SplineCurve = { pts: [{ p: [0, 0, 0], out: [12, 0, 0] }, { p: [30, 15, 0], in: [-12, 0, 0] }] };
+    check(closeCurve(two) && near(sampleSpline(two).at(-1)!.p[0], 0), '两个点摆成椭圆');
+    const t2 = two.pts;
+    check(near(t2[0].out![0] + t2[0].in![0], 0) && near(t2[1].out![1] + t2[1].in![1], 0), '椭圆的手柄是对称的');
   });
 
   scenario('样条线：采样、平行传递、放样', () => {

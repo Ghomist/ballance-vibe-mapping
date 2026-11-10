@@ -12,12 +12,16 @@ export interface SplinePoint {
   out?: V3;
   /** 侧倾角（度，只有平行传递模式用）：正值左侧抬高 */
   bank?: number;
+  /** 分离控制柄：两边长度各调各的（方向仍然在一条线上）。没有就是对称控制柄：另一边镜像跟着 */
+  split?: boolean;
 }
 
 export interface SplineCurve {
   pts: SplinePoint[];
   /** 截面朝向，没有就是竖直 */
   frame?: 'parallel';
+  /** 首尾相连：最后一个点再接一段回到第一个点 */
+  closed?: boolean;
 }
 
 /** 曲线路面的一头：封口、和别的路接着、露出截面的开口 */
@@ -50,7 +54,7 @@ const unit = (a: V3): V3 => { const l = len(a) || 1; return [a[0] / l, a[1] / l,
 
 /** 一段贝塞尔的四个点 */
 function segment(c: SplineCurve, i: number): [V3, V3, V3, V3] {
-  const a = c.pts[i], b = c.pts[i + 1];
+  const a = c.pts[i], b = c.pts[(i + 1) % c.pts.length];
   return [a.p, add(a.p, a.out ?? [0, 0, 0]), add(b.p, b.in ?? [0, 0, 0]), b.p];
 }
 function pointAt([a, b, c, d]: [V3, V3, V3, V3], u: number): V3 {
@@ -64,6 +68,8 @@ function tangentAt([a, b, c, d]: [V3, V3, V3, V3], u: number): V3 {
   return len(t) > 1e-9 ? unit(t) : unit(sub(d, a));
 }
 
+const segCount = (c: SplineCurve) => (c.closed ? c.pts.length : c.pts.length - 1);
+
 const TURN = (7 * Math.PI) / 180; // 切线转过这么多就出一圈截面
 const MAX_STEP = 10; // 直的地方最长隔这么远出一圈
 const FINE = 48; // 每段先细分这么多份再挑点
@@ -74,12 +80,12 @@ export function sampleSpline(c: SplineCurve): SplineSample[] {
   if (c.pts.length < 2) return out;
   const seg0 = segment(c, 0);
   const bankOf = (i: number, u: number) => {
-    const a = c.pts[i].bank ?? 0, b = c.pts[i + 1].bank ?? 0;
+    const a = c.pts[i].bank ?? 0, b = c.pts[(i + 1) % c.pts.length].bank ?? 0;
     return a + (b - a) * (u * u * (3 - 2 * u));
   };
   out.push({ p: seg0[0], t: tangentAt(seg0, 0), s: 0, bank: bankOf(0, 0) });
   let s = 0, sinceEmit = 0;
-  for (let i = 0; i + 1 < c.pts.length; i++) {
+  for (let i = 0; i < segCount(c); i++) {
     const seg = segment(c, i);
     let prev = seg[0];
     for (let k = 1; k <= FINE; k++) {
@@ -95,11 +101,17 @@ export function sampleSpline(c: SplineCurve): SplineSample[] {
       }
     }
   }
+  // 首尾相连：接缝两边的截面必须完全一样
+  if (c.closed && out.length > 2) {
+    const a = out[0], b = out[out.length - 1], m = add(a.t, b.t);
+    b.p = [...a.p];
+    if (len(m) > 1e-6) a.t = b.t = unit(m);
+  }
   return out;
 }
 
-/** 平行传递：截面沿曲线走时不自己打转（双反射法），再按侧倾角转过去。L 是截面的左，U 是截面的上 */
-export function parallelFrames(samples: SplineSample[]): { L: V3; U: V3 }[] {
+/** 平行传递：截面沿曲线走时不自己打转（双反射法），再按侧倾角转过去。L 是截面的左，U 是截面的上。closed：首尾相连，转回起点时差的角度摊到整圈上，接缝才对得上 */
+export function parallelFrames(samples: SplineSample[], closed = false): { L: V3; U: V3 }[] {
   if (!samples.length) return [];
   const t0 = samples[0].t, up: V3 = [0, 0, 1];
   let u = sub(up, mul(t0, dot(up, t0)));
@@ -117,6 +129,15 @@ export function parallelFrames(samples: SplineSample[]): { L: V3; U: V3 }[] {
     r = unit(sub(r, mul(b.t, dot(r, b.t))));
     raw.push(r);
   }
+  if (closed && samples.length > 2) {
+    const n = samples.length - 1, r0 = raw[0], rn = raw[n];
+    const miss = Math.atan2(dot(cross(rn, r0), samples[n].t), dot(rn, r0)), total = samples[n].s || 1;
+    for (let i = 1; i <= n; i++) {
+      const a = (miss * samples[i].s) / total;
+      raw[i] = unit(add(mul(raw[i], Math.cos(a)), mul(cross(samples[i].t, raw[i]), Math.sin(a))));
+    }
+    raw[n] = r0;
+  }
   return samples.map((sm, i) => {
     const U0 = raw[i], L0 = unit(cross(U0, sm.t));
     const a = (sm.bank * Math.PI) / 180, co = Math.cos(a), si = Math.sin(a);
@@ -129,31 +150,113 @@ export const defaultCurve = (): SplineCurve => ({
   pts: [{ p: [0, 0, 0], out: [12, 0, 0] }, { p: [30, 15, 0], in: [-12, 0, 0] }],
 });
 
+/** 第 i 段上 u 处的点和单位切线 */
+export function curvePointAt(c: SplineCurve, i: number, u: number): { p: V3; t: V3 } {
+  const seg = segment(c, i);
+  return { p: pointAt(seg, u), t: tangentAt(seg, u) };
+}
+
+/** 曲线上离 q 最近的地方：第几段、段上的 u */
+export function nearestOnCurve(c: SplineCurve, q: V3): { i: number; u: number } {
+  let best = { i: 0, u: 0 }, bd = Infinity;
+  for (let i = 0; i < segCount(c); i++) {
+    const seg = segment(c, i);
+    for (let k = 0; k <= FINE; k++) {
+      const d = len(sub(pointAt(seg, k / FINE), q));
+      if (d < bd) { bd = d; best = { i, u: k / FINE }; }
+    }
+  }
+  return best;
+}
+
+/** 在第 i 段的 u 处切开成两段，形状不变。返回新点的下标 */
+function insertAt(c: SplineCurve, i: number, u: number): number {
+  const [p0, p1, p2, p3] = segment(c, i);
+  const at = (a: V3, b: V3) => add(mul(a, 1 - u), mul(b, u));
+  const a = at(p0, p1), b = at(p1, p2), d = at(p2, p3), e = at(a, b), f = at(b, d), m = at(e, f);
+  const A = c.pts[i], B = c.pts[(i + 1) % c.pts.length];
+  A.out = sub(a, p0);
+  B.in = sub(d, p3);
+  const bank = (A.bank ?? 0) + ((B.bank ?? 0) - (A.bank ?? 0)) * (u * u * (3 - 2 * u));
+  c.pts.splice(i + 1, 0, { p: m, in: sub(e, m), out: sub(f, m), ...(bank ? { bank } : {}) });
+  return i + 1;
+}
+
 /** 在第 i 个点后面加一个点：中间的段从正中间切开（形状不变），最后一个点后面顺着方向接一段。返回新点的下标 */
 export function insertAfter(c: SplineCurve, i: number): number {
-  if (i >= c.pts.length - 1) {
+  if (!c.closed && i >= c.pts.length - 1) {
     const last = c.pts[c.pts.length - 1];
     const dir = last.in && len(last.in) > 1e-6 ? mul(unit(last.in), -1) : unit(sub(last.p, c.pts[c.pts.length - 2].p));
-    last.out = mul(dir, 8);
+    last.out = mul(dir, last.in && !last.split && len(last.in) > 1e-6 ? len(last.in) : 8); // 对称控制柄：新手柄和进来的那根一样长
     c.pts.push({ p: add(last.p, mul(dir, 20)), in: mul(dir, -8), ...(last.bank ? { bank: last.bank } : {}) });
     return c.pts.length - 1;
   }
-  const [p0, p1, p2, p3] = segment(c, i);
-  const mid = (a: V3, b: V3) => mul(add(a, b), 0.5);
-  const a = mid(p0, p1), b = mid(p1, p2), d = mid(p2, p3), e = mid(a, b), f = mid(b, d), m = mid(e, f);
-  const A = c.pts[i], B = c.pts[i + 1];
-  A.out = sub(a, p0);
-  B.in = sub(d, p3);
-  const bank = ((A.bank ?? 0) + (B.bank ?? 0)) / 2;
-  c.pts.splice(i + 1, 0, { p: m, in: sub(e, m), out: sub(f, m), ...(bank ? { bank } : {}) });
-  return i + 1;
+  return insertAt(c, i, 0.5);
 }
 
 /** 删掉一个控制点（至少留两个）。首尾的点删掉后，新的首尾不再需要朝外的手柄 */
 export function removePoint(c: SplineCurve, i: number): boolean {
   if (c.pts.length <= 2) return false;
   c.pts.splice(i, 1);
+  if (c.closed) return true;
   delete c.pts[0].in;
   delete c.pts[c.pts.length - 1].out;
   return true;
+}
+
+/** 首尾重合算同一个点的距离 */
+const SAME = 0.05;
+const dirOr = (v: V3 | undefined, fallback: V3) => (v && len(v) > 1e-6 ? unit(v) : fallback);
+
+/**
+ * 首尾相连。两头已经重合就并成一个点（方向取两边的平均，保持平滑）；否则补一段回到起点。
+ * 只有两个点时切线没法同时顺着来回两段，摆成一个椭圆。做不了返回 false
+ */
+export function closeCurve(c: SplineCurve): boolean {
+  if (c.closed || c.pts.length < 2) return false;
+  const F = c.pts[0], E = c.pts[c.pts.length - 1], chord = sub(F.p, E.p), D = len(chord);
+  if (D < SAME) {
+    if (c.pts.length < 3) return false;
+    const fo = F.out ?? [0, 0, 0], ei = E.in ?? [0, 0, 0];
+    const dir = dirOr(add(dirOr(fo, unit(sub(c.pts[1].p, F.p))), mul(dirOr(ei, unit(sub(c.pts[c.pts.length - 2].p, E.p))), -1)), [1, 0, 0]);
+    F.out = mul(dir, len(fo));
+    F.in = mul(dir, -len(ei));
+    c.pts.pop();
+    c.closed = true;
+    return true;
+  }
+  if (c.pts.length === 2) {
+    const h = Math.hypot(chord[0], chord[1]);
+    const n: V3 = h > 1e-6 ? [chord[1] / h, -chord[0] / h, 0] : [0, 1, 0]; // 起点指向终点的左手边
+    const k = (D * 2) / 3;
+    F.out = mul(n, k); F.in = mul(n, -k);
+    E.in = mul(n, k); E.out = mul(n, -k);
+    delete F.split; delete E.split;
+    c.closed = true;
+    return true;
+  }
+  const fill = (pt: SplinePoint, other: V3 | undefined, fallback: V3): V3 => (other && !pt.split ? mul(other, -1) : mul(dirOr(other && mul(other, -1), fallback), D / 3));
+  E.out = fill(E, E.in, unit(chord));
+  F.in = fill(F, F.out, unit(chord));
+  c.closed = true;
+  return true;
+}
+
+/** 从第 i 个控制点断开：这个点变成起点，终点是它的一份拷贝（位置重合，拖开就分开了） */
+export function openAt(c: SplineCurve, i: number): boolean {
+  if (!c.closed) return false;
+  const order = [...c.pts.slice(i), ...c.pts.slice(0, i)], F = order[0];
+  const E: SplinePoint = { p: [...F.p], ...(F.in ? { in: F.in } : {}), ...(F.bank ? { bank: F.bank } : {}) };
+  delete F.in;
+  c.pts = [...order, E];
+  delete c.closed;
+  return true;
+}
+
+/** 在曲线的任意位置（第 i 段的 u 处）断开，靠近控制点的直接用那个点 */
+export function breakAt(c: SplineCurve, i: number, u: number): boolean {
+  if (!c.closed) return false;
+  if (u < 0.02) return openAt(c, i);
+  if (u > 0.98) return openAt(c, (i + 1) % c.pts.length);
+  return openAt(c, insertAt(c, i, u));
 }
