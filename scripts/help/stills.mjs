@@ -15,7 +15,7 @@ const DEFAULT = [
 ];
 
 export const STILLS = [
-  // 1.1 界面一览：五个区域加编号
+  // 1.1 界面一览：六个区域加编号
   {
     name: 'ui-overview',
     async setup({ center, setDoc, view, select, js }) {
@@ -27,11 +27,13 @@ export const STILLS = [
         const put = (n, x, y) => { const b = document.createElement('div'); b.className = 'rec-badge'; b.textContent = n; b.style.left = x + 'px'; b.style.top = y + 'px'; document.body.appendChild(b); };
         const r = (s) => document.querySelector(s).getBoundingClientRect();
         const tb = r('#toolbar'), pal = r('#palette'), pr = r('#props'), vp = r('#viewport'), sb = r('#statusbar');
-        put('①', tb.left + tb.width * 0.43, tb.bottom - 4);
+        put('①', tb.left + tb.width * 0.47, tb.bottom + 14);
         put('②', pal.left + pal.width / 2, pal.top + 26);
         put('③', pr.right - 6, pr.top + 22);
         put('④', vp.left + vp.width * 0.62, vp.top + vp.height * 0.72);
         put('⑤', sb.left + 160, sb.top + 2);
+        const bar = r('#selbar');
+        put('⑥', bar.right + 8, bar.top + 2);
         return 1;
       })()`);
     },

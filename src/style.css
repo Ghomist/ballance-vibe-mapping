@@ -96,19 +96,7 @@ button:disabled { opacity: 0.5; cursor: var(--cur-default, default); }
 }
 .tb-left, .tb-center, .tb-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .tb-left, .tb-right { flex: 1 0 auto; }
-@media (max-width: 1680px) {
-  /* 放不下全部文字：合并、绑定这些操作和暗色、设置只留图标 */
-  #toolbar .op, #theme, #settings, #about { font-size: 0; gap: 0; padding: 0 8px; }
-}
-@media (max-width: 1280px) {
-  /* 窄窗口：格栅 / 自动对齐也只留图标，工具按钮去掉快捷键 */
-  #grid, #align { font-size: 0; gap: 0; padding: 0 8px; }
-  #tools kbd { display: none; }
-}
-@media (max-width: 1000px) {
-  #tools button { font-size: 0; gap: 0; }
-  .tb-left .group button { padding: 0 6px; }
-}
+/* 顶栏随宽度分档收起的规则在 box/app.css 末尾 */
 .tb-right { justify-content: flex-end; }
 #toolbar button, #toolbar select { white-space: nowrap; flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 8px; margin-right: 6px; font-weight: 700; letter-spacing: 1.5px; color: #a9c4ff; }

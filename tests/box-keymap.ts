@@ -1,5 +1,5 @@
 // 快捷键：按键写法、默认按键不变、改绑时的冲突处理
-import { KEY_DEFS, actionFor, assignKey, comboOf, flyActionFor, holdModeOf, keyName, keyOf, keyText, loadKeys, resetKeys, savedKeys, setKey, tokens } from '../src/box/keymap';
+import { KEY_DEFS, MAX_BINDS, actionFor, assignKey, bindsOf, comboOf, flyActionFor, hasKey, holdModeOf, isDefaultKeys, keyName, keyOf, keyText, keyTextAll, loadKeys, removeKey, resetKey, resetKeys, savedKeys, setKey, tokens } from '../src/box/keymap';
 
 type Check = (cond: boolean, msg: string) => void;
 type Scenario = (name: string, fn: () => void) => void;
@@ -19,7 +19,7 @@ export function boxKeymapScenarios(check: Check, scenario: Scenario) {
 
   scenario('快捷键：默认按键', () => {
     loadKeys({});
-    const pairs: [string, string][] = [['1', 'mode.move'], ['6', 'mode.pattern'], ['g', 'hold.move'], ['control', 'hold.stretch'], ['shift+d', 'dup'], ['ctrl+d', 'dup'], ['x', 'delete'], ['delete', 'delete'], ['backspace', 'delete'], ['shift+tab', 'grid'], ['ctrl+shift+g', 'ungroup'], ['s', 'align']];
+    const pairs: [string, string][] = [['q', 'mode.select'], ['1', 'mode.move'], ['2', 'mode.rotate'], ['3', 'mode.stretch'], ['4', 'mode.slope'], ['6', 'mode.pattern'], ['7', 'guard'], ['h', 'guard'], ['g', 'hold.move'], ['control', 'hold.stretch'], ['shift+d', 'dup'], ['ctrl+d', 'dup'], ['x', 'delete'], ['delete', 'delete'], ['backspace', 'delete'], ['shift+tab', 'grid'], ['ctrl+shift+g', 'ungroup'], ['s', 'align']];
     for (const [c, id] of pairs) check(actionFor(c) === id, `${c} → ${id}`);
     check(holdModeOf('r') === 'rotate' && holdModeOf('x') === null, '按住类');
     check(flyActionFor('s') === 'fly.back' && flyActionFor('e') === 'fly.up' && flyActionFor('shift') === 'fly.down', '漫游和编辑分开');
@@ -41,11 +41,53 @@ export function boxKeymapScenarios(check: Check, scenario: Scenario) {
 
     resetKeys();
     setKey('guard', 'j');
-    setKey('guard', 'h');
+    setKey('guard', '7');
     check(!('guard' in savedKeys()), '改回默认就不存');
 
     loadKeys({ guard: 'j', 没有这个动作: 'k' });
     check(actionFor('j') === 'guard' && !('没有这个动作' in savedKeys()), '载入时丢掉不认识的动作');
+    resetKeys();
+  });
+
+  scenario('快捷键：一个动作多个按键', () => {
+    loadKeys({});
+    check(bindsOf('delete').join() === 'x,delete,backspace' && keyTextAll('delete') === 'X / Delete', '默认的别名也是按键');
+    // 改第二个、再加一个、去掉第一个
+    assignKey('dup', 'ctrl+b', 1);
+    check(bindsOf('dup').join() === 'shift+d,ctrl+b' && actionFor('ctrl+d') === null && actionFor('ctrl+b') === 'dup', '改第二个按键');
+    assignKey('dup', 'j', 2);
+    check(bindsOf('dup').length === 3 && actionFor('j') === 'dup', '再加一个');
+    assignKey('dup', 'l', 3);
+    check(bindsOf('dup').length === MAX_BINDS && actionFor('l') === null, `最多 ${MAX_BINDS} 个`);
+    removeKey('dup', 0);
+    check(keyOf('dup') === 'ctrl+b' && actionFor('shift+d') === null, '去掉主按键，下一个顶上');
+    assignKey('dup', 'j', 0);
+    check(bindsOf('dup').join() === 'j', '自己已有的键挪到这个位置，不重复');
+
+    // 别的动作的第二个按键被占：只拿掉那一个
+    resetKeys();
+    const taken = assignKey('undo', 'backspace', 1);
+    check(taken.length === 1 && taken[0].id === 'delete' && bindsOf('delete').join() === 'x,delete' && bindsOf('undo').join() === 'ctrl+z,backspace', '从别的动作上移过来');
+    // 恢复默认时把默认按键拿回来
+    const back = resetKey('delete');
+    check(back.length === 1 && back[0].id === 'undo' && isDefaultKeys('undo') && isDefaultKeys('delete') && actionFor('backspace') === 'delete', '恢复默认拿回按键');
+
+    // 按住类：任何一个按键都算
+    assignKey('vsnap', 'b', 1);
+    check(hasKey('vsnap', 'v') && hasKey('vsnap', 'b') && !hasKey('vsnap', 'n'), '按住类多个键');
+    assignKey('hold.move', 'm', 1);
+    check(holdModeOf('m') === 'move' && holdModeOf('g') === 'move', '按住切换多个键');
+
+    // 存取：新的是数组；旧版的字符串只换主按键，别名照旧，'' 是只剩别名
+    const saved = savedKeys();
+    check(Array.isArray(saved.vsnap) && saved.vsnap.join() === 'v,b', '只存改过的，存成数组');
+    loadKeys(JSON.parse(JSON.stringify(saved)));
+    check(hasKey('vsnap', 'b') && holdModeOf('m') === 'move', '数组读回来');
+    loadKeys({ delete: '', dup: 'j', guard: ['j'] });
+    check(bindsOf('delete').join() === 'delete,backspace' && bindsOf('dup').join() === 'j,ctrl+d', '旧存档：主按键 + 默认别名');
+    check(bindsOf('guard').join() === 'j' && actionFor('h') === null, '数组就是全部按键');
+    loadKeys({ align: [] });
+    check(keyOf('align') === '' && actionFor('s') === null && keyText('align') === '未设置', '空数组是未设置');
     resetKeys();
   });
 }

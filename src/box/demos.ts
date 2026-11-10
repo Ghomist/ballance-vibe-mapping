@@ -157,8 +157,8 @@ export const DEMOS: Demo[] = [
     name: 'op-rotate',
     async setup(a) { await a.setDoc([box(0, 0, 20, 5)]); await a.view([10, -20, 22], [10, 2.5, 0]); await a.center([10, 2.5, 0]); await a.select([1]); },
     async act(a) {
-      // 按 4 进入旋转模式：按住蓝色圆环（绕竖直轴）拖一圈的四分之一
-      await a.press('4', [], { ms: 1000 }); await a.wait(500);
+      // 按 2 切到旋转工具：按住蓝色圆环（绕竖直轴）拖一圈的四分之一
+      await a.press('2', [], { ms: 1000 }); await a.wait(500);
       const r = a.gizmo().rot!;
       const c = a.P(r.p), k = r.s * 0.7071;
       const s0 = a.P([r.p[0] + k, r.p[1] - k, r.p[2]]);
@@ -192,12 +192,12 @@ export const DEMOS: Demo[] = [
         await a.keysShow(['按住拖']); await a.down();
         await a.glide({ x: p.x + dx, y: p.y + dy }, 800); await a.wait(150); await a.up(); await a.keysClear(); await a.wait(350);
       };
-      // 按 2 进入拉伸模式：拖右边的蓝色方块拉长，拖底边上的橙色方块加厚
-      await a.press('2', [], { ms: 1000 }); await a.wait(400);
+      // 按 3 切到拉伸工具：拖右边的蓝色方块拉长，拖底边上的橙色方块加厚
+      await a.press('3', [], { ms: 1000 }); await a.wait(400);
       await pull('size', 120, -25);
       await pull('thick', 0, 50);
-      // 按 3 进入坡面模式：拖右边的黄色圆圈往上拉
-      await a.press('3', [], { ms: 1000 }); await a.wait(400);
+      // 按 4 切到坡面工具：拖右边的黄色圆圈往上拉
+      await a.press('4', [], { ms: 1000 }); await a.wait(400);
       await pull('tilt', 0, -55); await a.wait(400);
     },
   },

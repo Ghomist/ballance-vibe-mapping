@@ -126,9 +126,6 @@ body.num-drag, body.num-drag * { cursor: var(--cur-ew-resize, ew-resize) !import
 /* 测量线上的数字 */
 .measure-label { position: fixed; pointer-events: none; z-index: 6; font: 600 12px system-ui, "Microsoft YaHei", sans-serif; padding: 2px 8px; border-radius: 5px; transform: translate(-50%, -130%); }
 
-/* 顶栏的编辑按钮：图标 + 文字，不能用时变暗 */
-#toolbar button.op:disabled { opacity: 0.35; }
-@media (max-width: 1280px) { #toolbar button.op { font-size: 0; gap: 0; padding: 0 7px; } }
 /* 机关上的小节编号 */
 .sec-label { position: fixed; z-index: 3; pointer-events: none; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 9px; background: rgba(20, 24, 32, 0.78); border: 1px solid rgba(255, 170, 80, 0.6); color: #ffd2a0; font: 600 11px system-ui, sans-serif; }
 
@@ -440,12 +437,10 @@ select.native { display: none; }
 
 /* 悬停提示里的「F1 看教程」 */
 #tooltip .tip-help { display: flex; align-items: center; gap: 5px; margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--tip-line); color: var(--text-3); font-size: 11px; }
-@media (max-width: 1680px) { #help { font-size: 0; gap: 0; padding: 0 8px; } }
 
 /* ---------------- 触摸屏（手机）：body.touch-ui，见 app.ts 的 touchUI ---------------- */
 .touch-only { display: none !important; }
-body.touch-ui #touch-marquee.touch-only { display: inline-flex !important; }
-body.touch-ui span.touch-only { display: inline-block !important; }
+body.touch-ui button.touch-only { display: inline-flex !important; }
 #more-menu [hidden], #rotate-hint [hidden] { display: none !important; }
 body.touch-ui {
   height: 100dvh; touch-action: manipulation; overscroll-behavior: none;
@@ -456,11 +451,11 @@ body.touch-ui {
 body.touch-ui #toolbar { gap: 4px; padding: 4px 8px; min-height: 40px; }
 body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right { gap: 4px; }
 body.touch-ui .brand { font-size: 0; gap: 0; margin-right: 2px; }
-body.touch-ui #map-name, body.touch-ui #theme, body.touch-ui #settings, body.touch-ui #help,
-body.touch-ui #merge, body.touch-ui #group, body.touch-ui #ungroup { display: none !important; }
+body.touch-ui #map-name { display: none !important; }
 body.touch-ui #toolbar button:not(.dropdown-menu button) { font-size: 0; gap: 0; height: 32px; min-width: 32px; padding: 0 7px; justify-content: center; }
-body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector, body.touch-ui #toolbar #view-btn { font-size: 12.5px; gap: 3px; }
-body.touch-ui #tools kbd { display: none; }
+body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector { font-size: 12.5px; gap: 3px; }
+body.touch-ui #toolbar .seg { padding: 1px; }
+body.touch-ui #toolbar .seg button { height: 30px; }
 body.touch-ui .sep { margin: 0 1px; }
 body.touch-ui .dropdown-menu button { padding: 9px 12px; }
 /* 素材库：窄一点（两列卡片），不能拖边缘改大小，不能停靠底部 */
@@ -506,13 +501,13 @@ body.touch-ui #palette .lib-tabs button { flex: none; white-space: nowrap; }
   body.touch-ui #toolbar, body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right, body.touch-ui .group { gap: 2px; }
   body.touch-ui #toolbar { padding: 4px 6px; }
   body.touch-ui #toolbar button:not(.dropdown-menu button) { padding: 0 5px; min-width: 30px; }
-  body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector, body.touch-ui #toolbar #view-btn { font-size: 11.5px; padding: 0 6px; }
+  body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector { font-size: 11.5px; padding: 0 6px; }
   body.touch-ui .sep { display: none; }
   body.touch-ui #toolbar .caret { display: none; }
 }
 
 /* ---------------- 帮助里的实时演示（?demo=名字）：只要 3D 视图 ---------------- */
-html.demo #toolbar, html.demo #palette, html.demo #statusbar, html.demo #fps, html.demo #rotate-hint, html.demo #tooltip { display: none !important; }
+html.demo #toolbar, html.demo #selbar, html.demo #palette, html.demo #statusbar, html.demo #fps, html.demo #rotate-hint, html.demo #tooltip { display: none !important; }
 html.demo body { grid-template-rows: minmax(0, 1fr); padding: 0; }
 html.demo #work { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: minmax(0, 1fr) !important; }
 html.demo:not(.demo-props) #props { display: none !important; }
@@ -543,33 +538,77 @@ html.demo #viewcube { transform: scale(0.7); transform-origin: top right; }
 .help-doc .demo-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 13px; }
 .help-doc figure img { aspect-ratio: auto; object-fit: contain; }
 
-/* 编辑模式：永久切换是蓝色（.active，和别的工具一样），按住键临时切换是橙色 */
+/* ================ 顶栏和工具 ================
+   左：文件（文件菜单、地图名、撤销重做）　中：工具（总有一个在用）　右：吸附开关、小节、显示、主题 / 设置 / 帮助。
+   对选中的东西做的事不在顶栏，在视图下方的选择条（#selbar）里。 */
+/* 工具：在用的是蓝色（.active），按住键临时切换的是橙色；三组之间一条细线 */
 .seg button.temp, .seg button.active.temp { background: #f08c2e; color: #fff; box-shadow: 0 1px 4px rgba(200, 110, 30, 0.45); }
-#guard-btn.active { color: #cfe0ff; background: rgba(91, 141, 239, 0.18); border-color: rgba(91, 141, 239, 0.55); }
-
-/* 触摸屏：格栅、对齐、手柄这三个开关收进「⋯」菜单（菜单里开着的打勾） */
-body.touch-ui #grid, body.touch-ui #align, body.touch-ui #gizmo { display: none !important; }
-#more-menu button.check.on::after { content: ''; width: 9px; height: 5px; margin: -3px 2px 0 auto; border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); }
+#tools { align-items: center; }
+#tools .seg-sep { flex: none; width: 1px; height: 16px; margin: 0 3px; background: var(--line-2); }
+#toolbar .theme-label { display: none; }
+#sector-menu { min-width: 170px; }
+#more-menu { min-width: 180px; }
 #more-menu button.check { flex-direction: row; align-items: center; }
+#more-menu button.check.on::after { content: ''; width: 9px; height: 5px; margin: -3px 2px 0 auto; border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); }
+/* 「⋯」只在窄窗口和触摸屏出现，接住收起来的按钮；对齐、格栅只有顶栏上放不下时才出现在菜单里 */
+.more-only { display: none !important; }
+body.touch-ui .more-only { display: inline-block !important; }
+body.touch-ui .app-only { display: none !important; }
+#more-menu .snap-more { display: none; }
 
 /* 顶栏放不下时分档收（悬停提示里有名字和按键）：
-   2300 以下：编辑按钮、主题、设置、帮助、关于只留图标，模式按钮去掉数字键，格栅 / 手柄 / 对齐 / 护栏只留图标；
-   1440 以下：模式按钮也只留图标，地图名窄一些、标志只留球；1260 以下：和手机一样，次要的按钮收进「⋯」（body.narrow，见 app.ts） */
-@media (max-width: 2300px) {
-  #toolbar .op, #theme, #settings, #help { font-size: 0; gap: 0; padding: 0 8px; }
-  #tools kbd { display: none; }
-  #toolbar #grid, #toolbar #gizmo, #toolbar #align, #toolbar #guard-btn { font-size: 0; gap: 0; padding: 0 8px; }
-}
-@media (max-width: 1440px) {
-  #tools button { font-size: 0; gap: 0; padding: 0 9px; }
-  #toolbar .brand { font-size: 0; gap: 0; }
-  #map-name { width: 96px; }
+   1720 以下：工具按钮去掉键帽；1480 以下：工具、对齐、格栅、显示只留图标，地图名窄一些；
+   1100 以下：主题、设置、帮助收进「⋯」，标志只留球；960 以下：对齐、格栅也收进「⋯」，地图名不显示 */
+@media (max-width: 1720px) { #tools kbd { display: none; } }
+@media (max-width: 1480px) {
+  #tools button, #snaps button, #toolbar #view-btn { font-size: 0; gap: 0; padding: 0 9px; }
+  #map-name { width: 100px; }
   #toolbar, .tb-left, .tb-center, .tb-right { gap: 6px; }
   #toolbar .sep { margin: 0 2px; }
 }
-body.narrow span.touch-only { display: inline-block !important; }
-body.narrow #map-name, body.narrow #theme, body.narrow #settings, body.narrow #help,
-body.narrow #merge, body.narrow #group, body.narrow #ungroup, body.narrow #grid, body.narrow #align, body.narrow #gizmo { display: none !important; }
+@media (max-width: 1100px) {
+  .more-only { display: inline-block !important; }
+  .app-only { display: none !important; }
+  #toolbar .brand { font-size: 0; gap: 0; }
+}
+@media (max-width: 960px) {
+  body:not(.touch-ui) :is(#snaps, #snaps + .sep), #map-name, #map-name + .sep { display: none !important; }
+  body:not(.touch-ui) #more-menu button.snap-more { display: flex; }
+  body:not(.touch-ui) #more-menu .menu-sep.snap-more { display: block; }
+}
+@media (max-width: 700px) {
+  #tools button { padding: 0 6px; }
+  #toolbar, .tb-left, .tb-center, .tb-right { gap: 3px; }
+}
+/* 触摸屏的按钮本来就只有图标，对齐、格栅到 760 以下才收 */
+@media (max-width: 760px) {
+  body.touch-ui :is(#snaps, #snaps + .sep) { display: none !important; }
+  body.touch-ui #more-menu button.snap-more { display: flex; }
+  body.touch-ui #more-menu .menu-sep.snap-more { display: block; }
+}
+
+/* ---------------- 选择条：选中东西后出现在视图下方 ---------------- */
+#selbar {
+  position: absolute; z-index: 5; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100% - 16px); box-sizing: border-box;
+  display: flex; align-items: center; gap: 2px; padding: 4px;
+  background: var(--menu); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  animation: selbar-in 0.16s ease;
+}
+#selbar[hidden], #selbar [hidden] { display: none !important; }
+@keyframes selbar-in { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+@media (prefers-reduced-motion: reduce) { #selbar { animation: none; } }
+#sel-count { margin-right: 2px; padding: 0 10px 0 8px; border-right: 1px solid var(--line); color: var(--text-3); font-size: 12px; white-space: nowrap; }
+#selbar button { height: 30px; padding: 0 10px; background: transparent; border-color: transparent; border-radius: 8px; color: var(--text); white-space: nowrap; }
+#selbar button:hover { background: var(--hover); }
+#selbar button.danger:hover { color: #ff8080; background: rgba(255, 106, 106, 0.14); }
+[data-theme='light'] #selbar button.danger:hover { color: #d03a3a; }
+/* 触摸屏：图标在上、小字在下，按钮大一些；靠在属性面板的另一边，不挡它 */
+body.touch-ui #selbar { left: auto; right: 8px; bottom: 8px; transform: none; gap: 0; padding: 3px; }
+body.touch-ui #props.right ~ #selbar { right: auto; left: 8px; }
+body.touch-ui #props { max-height: calc(100% - 74px); } /* 底下留给选择条 */
+body.touch-ui #sel-count { display: none; }
+body.touch-ui #selbar button { flex-direction: column; justify-content: center; gap: 2px; height: 42px; min-width: 44px; padding: 0 5px; font-size: 10px; }
+body.touch-ui #selbar button svg { width: 17px; height: 17px; }
 
 /* 帮助正文可以选中复制，指针用文字的 */
 .help-body p, .help-body li, .help-body td { cursor: var(--cur-text, text); }
@@ -598,18 +637,45 @@ body.touch-ui .num-field input { touch-action: pan-y; }
 #settings-modal .about-panel { font-size: 13px; line-height: 1.7; }
 #settings-modal .about-panel p { color: var(--text-hint); }
 #settings-modal .about-aims { padding: 0; }
-/* 快捷键 */
-.key-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 3px 0; color: var(--text-hint); font-size: 13px; line-height: 1.4; }
-.key-row > span:first-child { display: flex; flex-direction: column; gap: 1px; }
-.key-acts { display: inline-flex; align-items: center; gap: 4px; }
+/* 快捷键：顶上搜索，下面按分组一张张卡片；每行左边是动作，右边是它的按键 */
+.keys-top { display: flex; align-items: center; gap: 8px; margin: 14px 0 10px; }
+#keys-search { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 14px; background: var(--field); border: 1px solid var(--line); border-radius: 16px; color: var(--text); font: inherit; font-size: 13px; }
+#keys-search:focus { outline: none; border-color: var(--accent); }
+#keys-search::placeholder { color: var(--text-3); }
+#keys-reset { height: 32px; font: inherit; font-size: 12.5px; color: var(--text-2); }
+.key-group { margin-top: 14px; overflow: hidden; background: var(--help-nav); border: 1px solid var(--help-line); border-radius: 10px; }
+.key-group[hidden], .key-row[hidden], .keys-empty[hidden] { display: none; }
+.key-group h3 { margin: 0; padding: 8px 14px 7px; border-bottom: 1px solid var(--help-line); color: var(--text-3); font-size: 12px; font-weight: 600; letter-spacing: 1px; }
+.key-group.fixed .set-note { margin: 0; padding: 10px 14px; }
+.keys-empty { padding: 24px 0; text-align: center; }
+.key-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 5px 10px 5px 14px; color: var(--text-hint); font-size: 13px; line-height: 1.4; transition: background 0.1s; }
+.key-row + .key-row { border-top: 1px solid var(--help-line); }
+.key-row:hover { background: var(--hover); }
+.key-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.key-name > span { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.key-name small { color: var(--text-3); font-size: 11.5px; }
+/* 改过的动作：名字后面一个小蓝点 */
+.key-row.changed .key-name > span::after { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.key-acts { display: inline-flex; flex: none; align-items: center; gap: 6px; }
 .key-acts button { font: inherit; }
-.key-bind { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 96px; height: 28px; padding: 0 8px; background: var(--field); border: 1px solid var(--line); border-radius: 6px; color: var(--text); }
-.key-bind:hover { border-color: var(--line-2); }
-.key-bind kbd { font-size: 11px; }
-.key-bind.none { color: #ffb35c; }
-.key-bind.wait { border-color: var(--accent); color: var(--accent-2); }
-.key-reset, .key-clear { width: 24px; height: 24px; padding: 0; background: none; border: none; border-radius: 5px; color: var(--text-3); }
-.key-reset:hover, .key-clear:hover { background: var(--hover); color: var(--text); }
+.key-chip { position: relative; display: inline-flex; }
+.key-bind { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 40px; height: 28px; padding: 0 7px; background: var(--field); border: 1px solid var(--line); border-radius: 7px; color: var(--text); }
+.key-bind:hover { border-color: var(--accent); }
+.key-bind kbd { font-size: 11px; pointer-events: none; }
+.key-bind.none { min-width: 64px; border-style: dashed; color: #ffb35c; }
+[data-theme='light'] .key-bind.none { color: #b25a10; }
+:is(.key-bind, .key-add).wait { width: auto; min-width: 88px; padding: 0 10px; border-style: solid; border-color: var(--accent); color: var(--accent-2); opacity: 1; animation: key-wait 1s ease-in-out infinite; }
+@keyframes key-wait { 50% { box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.28); } }
+@media (prefers-reduced-motion: reduce) { :is(.key-bind, .key-add).wait { animation: none; } }
+/* 去掉这个按键：悬停时出现在右上角 */
+.key-del { position: absolute; top: -7px; right: -7px; width: 16px; height: 16px; padding: 0; justify-content: center; border-radius: 50%; background: var(--menu); border: 1px solid var(--line-2); color: var(--text-2); font-size: 11px; line-height: 1; opacity: 0; transition: opacity 0.1s; }
+.key-chip:hover .key-del, .key-del:focus-visible { opacity: 1; }
+.key-del:hover { background: #d9534f; border-color: #d9534f; color: #fff; }
+.key-add { width: 28px; height: 28px; padding: 0; justify-content: center; background: transparent; border: 1px dashed var(--line-2); border-radius: 7px; color: var(--text-3); font-size: 15px; opacity: 0.55; }
+.key-row:hover .key-add, .key-add:focus-visible { opacity: 1; }
+.key-add:hover { border-color: var(--accent); color: var(--accent-2); background: transparent; }
+.key-reset { width: 24px; height: 24px; padding: 0; justify-content: center; background: none; border: none; border-radius: 5px; color: var(--text-3); }
+.key-reset:hover { background: var(--hover); color: var(--text); }
 /* 窄屏：分页改成顶上一排（帮助窄屏时目录是收起的，设置只有几页，留着） */
 @media (max-width: 760px) {
   #settings-modal .help-win { grid-template-rows: auto minmax(0, 1fr); }

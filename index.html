@@ -34,6 +34,8 @@
   <link rel="stylesheet" href="./src/box/app.css" />
 </head>
 <body>
+  <!-- 顶栏分三块：左边是文件（文件菜单、地图名、撤销重做），中间是工具（总有一个在用），右边是吸附开关、小节、显示和设置帮助。
+       对选中的东西做的事（复制、转 90°、合并、绑定、删除）不在顶栏：选中后出现在视图下方的选择条（#selbar）里 -->
   <header id="toolbar">
     <div class="tb-left">
       <div class="brand"><span class="logo"></span>BVM</div>
@@ -54,109 +56,99 @@
       <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是导出 NMO 的文件名" />
       <div class="sep"></div>
       <div class="group">
-        <button id="undo" class="icon" title="撤销（{undo}）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
-        <button id="redo" class="icon" title="重做（{redo}）"><svg viewBox="0 0 16 16"><path d="M11 4l3 3-3 3M14 7H6.5a4 4 0 0 0 0 8H9" /></svg></button>
+        <button id="undo" class="icon ghost" title="撤销（{undo}）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
+        <button id="redo" class="icon ghost" title="重做（{redo}）"><svg viewBox="0 0 16 16"><path d="M11 4l3 3-3 3M14 7H6.5a4 4 0 0 0 0 8H9" /></svg></button>
       </div>
     </div>
 
     <div class="tb-center">
-      <!-- 编辑模式：点按钮或按 1～6 永久切换（蓝色，再点一次取消），按住字母 / 修饰键临时切换（橙色）；什么都不选是选择模式 -->
+      <!-- 工具：总有一个在用（蓝色），默认是「选择」。分三组：选择 ｜ 变换选中的东西（移动、旋转、拉伸、坡面）｜ 在路面上点的工具（切分、花纹、护栏）。
+           点按钮或按数字键切换，再点一次、按 Esc 或点「选择」回到选择；按住字母 / 修饰键是临时切换（橙色），松开回到原来的工具 -->
       <div class="seg" id="tools">
+        <button id="tool-select" class="active" data-help="1.3" title="选择：点选、框选，Shift 加选；别的工具用完回到这里（{mode.select} / Esc）">
+          <svg viewBox="0 0 16 16"><path d="M3.5 2l9 5.2-4 1.1 2.4 4.3-1.6.9-2.4-4.3-3 2.9z" /></svg><span>选择</span><kbd></kbd>
+        </button>
+        <i class="seg-sep"></i>
         <button data-mode="move" data-help="1.3" title="移动：拖东西或箭头移动（{mode.move}）&#10;按住 {hold.move} 临时切换；轻按 {hold.move} 是自由移动">
-          <svg viewBox="0 0 16 16"><path d="M8 1.8v12.4M1.8 8h12.4M8 1.8L6.3 3.5M8 1.8l1.7 1.7M8 14.2l-1.7-1.7M8 14.2l1.7-1.7M1.8 8l1.7-1.7M1.8 8l1.7 1.7M14.2 8l-1.7-1.7M14.2 8l-1.7 1.7" /></svg>移动<kbd>1</kbd>
-        </button>
-        <button data-mode="stretch" data-help="1.4" title="拉伸：拖蓝色方块或路面的边改尺寸，拖橙色方块或侧面下半截改厚度（{mode.stretch}）&#10;按住 {hold.stretch} 临时切换">
-          <svg viewBox="0 0 16 16"><path d="M5 5h6v6H5z M1.5 8H5M11 8h3.5M1.5 8l1.5-1.5M1.5 8L3 9.5M14.5 8L13 6.5M14.5 8L13 9.5" /></svg>拉伸<kbd>2</kbd>
-        </button>
-        <button data-mode="slope" data-help="1.4" title="坡面：拖边上的圆圈上下拉成坡（{mode.slope}）&#10;按住 {hold.slope} 临时切换">
-          <svg viewBox="0 0 16 16"><path d="M1.5 13.5h13V5z M11 2.5v4M11 2.5L9.8 3.7M11 2.5l1.2 1.2" /></svg>坡面<kbd>3</kbd>
+          <svg viewBox="0 0 16 16"><path d="M8 1.8v12.4M1.8 8h12.4M8 1.8L6.3 3.5M8 1.8l1.7 1.7M8 14.2l-1.7-1.7M8 14.2l1.7-1.7M1.8 8l1.7-1.7M1.8 8l1.7 1.7M14.2 8l-1.7-1.7M14.2 8l-1.7 1.7" /></svg><span>移动</span><kbd></kbd>
         </button>
         <button data-mode="rotate" data-help="1.3" title="旋转：拖圆环绕那根轴转，拖东西绕竖直轴转（{mode.rotate}）&#10;按住 {hold.rotate} 临时切换；轻按 {hold.rotate} 是自由旋转">
-          <svg viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6" ry="2.6" /><path d="M8 2v12" /><circle cx="8" cy="8" r="0.9" /><path d="M11.8 4.2l2 .9-1.4 1.6" /></svg>旋转<kbd>4</kbd>
+          <svg viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6" ry="2.6" /><path d="M8 2v12" /><circle cx="8" cy="8" r="0.9" /><path d="M11.8 4.2l2 .9-1.4 1.6" /></svg><span>旋转</span><kbd></kbd>
         </button>
-        <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，{split.dir} 换方向，右键退出（{mode.split}）&#10;按住 {hold.split} 临时切换">
-          <svg viewBox="0 0 16 16"><circle cx="4.5" cy="11.5" r="2" /><circle cx="11.5" cy="11.5" r="2" /><path d="M6 10L12.5 2.5M10 10L3.5 2.5" /></svg>切分<kbd>5</kbd>
+        <button data-mode="stretch" data-help="1.4" title="拉伸：拖蓝色方块或路面的边改尺寸，拖橙色方块或侧面下半截改厚度（{mode.stretch}）&#10;按住 {hold.stretch} 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M5 5h6v6H5z M1.5 8H5M11 8h3.5M1.5 8l1.5-1.5M1.5 8L3 9.5M14.5 8L13 6.5M14.5 8L13 9.5" /></svg><span>拉伸</span><kbd></kbd>
+        </button>
+        <button data-mode="slope" data-help="1.4" title="坡面：拖边上的圆圈上下拉成坡（{mode.slope}）&#10;按住 {hold.slope} 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M1.5 13.5h13V5z M11 2.5v4M11 2.5L9.8 3.7M11 2.5l1.2 1.2" /></svg><span>坡面</span><kbd></kbd>
+        </button>
+        <i class="seg-sep"></i>
+        <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，{split.dir} 换方向（{mode.split}）&#10;按住 {hold.split} 临时切换">
+          <svg viewBox="0 0 16 16"><circle cx="4.5" cy="11.5" r="2" /><circle cx="11.5" cy="11.5" r="2" /><path d="M6 10L12.5 2.5M10 10L3.5 2.5" /></svg><span>切分</span><kbd></kbd>
         </button>
         <button data-mode="pattern" data-help="1.4" title="花纹：点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（{mode.pattern}）&#10;按住 {hold.pattern} 临时切换">
-          <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg>花纹<kbd>6</kbd>
+          <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg><span>花纹</span><kbd></kbd>
+        </button>
+        <button id="guard-btn" data-tool="guard" data-help="2.4" title="护栏：点路边放整条直边，沿路边拖放一段（{guard}）">
+          <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg><span>护栏</span><kbd></kbd>
         </button>
       </div>
-      <button id="guard-btn" data-tool="guard" data-help="2.4" class="ghost toggle" title="护栏：点路边放整条直边，沿路边拖放一段（{guard}）">
-        <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg>护栏
-      </button>
       <!-- 触摸屏：单指拖默认是环视，长按再拖是框选一次；打开它之后单指拖都是框选、轻点是加选减选 -->
-      <button id="touch-marquee" class="toggle touch-only" data-help="1.6" title="多选：打开后单指拖动是框选，轻点是加选 / 减选；不打开时长按再拖也能框选">
+      <button id="touch-marquee" class="toggle touch-only" data-help="1.8" title="多选：打开后单指拖动是框选，轻点是加选 / 减选；不打开时长按再拖也能框选">
         <svg viewBox="0 0 16 16"><path d="M2.5 2.5h3M7 2.5h2M10.5 2.5h3v3M13.5 7v2M13.5 10.5v3h-3M9 13.5H7M5.5 13.5h-3v-3M2.5 9V7M2.5 5.5" /></svg>
       </button>
-      <div class="sep"></div>
-      <div class="group">
-        <button id="merge" data-help="1.5" class="ghost op" title="把选中的几块路面合成一块（同样式、同高度、拼起来是矩形）（{merge}）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg>合并</button>
-        <button id="group" data-help="1.6" class="ghost op" title="把选中的东西绑定成一个整体（{group}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg>绑定</button>
-        <button id="ungroup" data-help="1.6" class="ghost op" title="解除绑定（{ungroup}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg>解绑</button>
-        <button id="dup" data-help="1.3" class="ghost op" title="复制：复制后直接进入移动模式，左键放下、右键取消（{dup}）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg>复制</button>
-        <button id="rot" data-help="1.3" class="ghost op" title="旋转 90°：绕竖直轴转 90°
-按 R 旋转：X / Y / Z 换轴；开着对齐时每 15° 吸附，按住 Ctrl 临时切换"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3" /></svg>旋转</button>
-        <button id="del" data-help="1.3" class="ghost op" title="删除（{delete} / Delete）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg>删除</button>
-      </div>
-      <div class="sep"></div>
-      <div class="group">
-        <button id="grid" data-help="1.7" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（{grid}）
-默认步长 1，设置里可改">
-          <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg>格栅
+    </div>
+
+    <div class="tb-right">
+      <div class="group" id="snaps">
+        <button id="align" data-help="1.7" class="toggle active" title="对齐：边、中线、顶面靠近别的物体时自动贴齐（{align}）&#10;旋转时每 15° 吸附">
+          <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg><span>对齐</span>
         </button>
-        <button id="gizmo" data-help="1.3" class="toggle" title="手柄：移动、旋转、拉伸、坡面模式里，选中的东西上显示对应的手柄（箭头、圆环、抓点），按住拖动">
-          <svg viewBox="0 0 16 16"><path d="M5 11h8.5M12 9.5l1.5 1.5-1.5 1.5 M5 11V2.5M3.5 4L5 2.5 6.5 4 M5 11l-3 3M2 12.2V14h1.8" /></svg>手柄
-        </button>
-        <button id="align" data-help="1.7" class="toggle active" title="自动对齐：边、中线、顶面靠近别的物体时对齐（{align}）&#10;旋转（{hold.rotate}）时每次吸附 15°">
-          <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg>对齐
+        <button id="grid" data-help="1.7" class="toggle" title="格栅：位置和尺寸吸附到格栅步长（{grid}）&#10;默认步长 1，设置里可改">
+          <svg viewBox="0 0 16 16"><path d="M2 5.5h12M2 10.5h12M5.5 2v12M10.5 2v12" /></svg><span>格栅</span>
         </button>
       </div>
       <div class="sep"></div>
       <div class="group">
         <span class="dropdown">
-          <button id="sector" data-help="2.3" title="新放的机关归到哪个小节（放盘点时自动切到它的小节）"><span id="sector-label">第 1 小节</span><svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
-          <div class="dropdown-menu left" id="sector-menu"></div>
+          <button id="sector" data-help="2.3" title="小节：新放的机关归到哪个小节（放盘点时自动切到它的小节）"><span id="sector-label">第 1 小节</span><svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+          <div class="dropdown-menu" id="sector-menu"></div>
         </span>
         <span class="dropdown">
-          <button id="view-btn" title="选择场景里显示哪些东西">显示<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
-          <div class="dropdown-menu left view-menu" id="view-menu">
+          <button id="view-btn" title="显示：选择场景里显示哪些东西"><svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" /><circle cx="8" cy="8" r="2" /></svg><span>显示</span><svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
+          <div class="dropdown-menu view-menu" id="view-menu">
+            <button id="gizmo" data-help="1.3" class="toggle" title="手柄：移动、旋转、拉伸、坡面工具里，选中的东西上显示对应的手柄（箭头、圆环、抓点）"><svg viewBox="0 0 16 16"><path d="M5 11h8.5M12 9.5l1.5 1.5-1.5 1.5 M5 11V2.5M3.5 4L5 2.5 6.5 4 M5 11l-3 3M2 12.2V14h1.8" /></svg><span>手柄</span></button>
             <button id="grid-eye" class="toggle" title="坐标轴和 5 大小的网格"><svg viewBox="0 0 16 16"><path d="M2 2h12v12H2z M2 6h12 M2 10h12 M6 2v12 M10 2v12" /></svg><span>网格</span></button>
-            <button id="sector-eye" class="toggle" title="在机关和盘点上显示所属小节，终点气球显示「终点」"><svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" /><circle cx="8" cy="8" r="2" /></svg><span>小节</span></button>
+            <button id="sector-eye" class="toggle" title="在机关和盘点上显示所属小节，终点气球显示「终点」"><svg viewBox="0 0 16 16"><path d="M2.5 13.5v-11M2.5 3h9l-2 2.8 2 2.7h-9" /></svg><span>小节</span></button>
             <button id="sky-eye" class="toggle" title="只影响编辑器，导出时总是显示"><svg viewBox="0 0 16 16"><path d="M4.5 12.5a3 3 0 0 1-.4-6A4 4 0 0 1 11.8 6a3.3 3.3 0 0 1-.3 6.5z" /></svg><span>云层</span></button>
             <button id="zone-eye" class="toggle" title="导出时总是隐藏"><svg viewBox="0 0 16 16"><path d="M8 1.8l5.6 3.1v6.2L8 14.2 2.4 11.1V4.9z M2.4 4.9L8 8l5.6-3.1 M8 8v6.2" /><path d="M6.3 9.6l3.4 2 M9.7 9.6l-3.4 2" class="x" /></svg><span>死亡区</span></button>
           </div>
         </span>
       </div>
-    </div>
-
-    <div class="tb-right">
-      <button id="theme" class="ghost" title="切换亮色 / 暗色">
-        <svg class="moon" viewBox="0 0 16 16"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z" /></svg>
-        <svg class="sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M3 13l1.1-1.1M11.9 4.1L13 3" /></svg>
-        <span class="theme-label">暗色</span>
-      </button>
-      <button id="settings" class="ghost" title="设置">
-        <svg viewBox="0 0 16 16"><path d="M2.5 4h4M9.5 4h4M2.5 8h7M12.5 8h1M2.5 12h2M7.5 12h6" /><circle cx="8" cy="4" r="1.5" /><circle cx="11" cy="8" r="1.5" /><circle cx="6" cy="12" r="1.5" /></svg>设置
-      </button>
-      <button id="help" class="ghost" title="帮助：图文教程，悬停在按钮上按 F1 直接看相关的部分（F1）">
-        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.5c0 1.3-1.9 1.6-1.9 2.8M8 11.4v.3" /></svg>帮助
-      </button>
-      <!-- 触摸屏：顶栏放不下的按钮收进这里 -->
-      <span class="dropdown touch-only">
-        <button id="more-btn" class="ghost" title="更多"><svg viewBox="0 0 16 16"><path d="M3.5 8h.01M8 8h.01M12.5 8h.01" stroke-width="2.6" /></svg></button>
+      <div class="sep app-only"></div>
+      <div class="group app-only">
+        <button id="theme" class="icon ghost" title="切换亮色 / 暗色">
+          <svg class="moon" viewBox="0 0 16 16"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z" /></svg>
+          <svg class="sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M3 13l1.1-1.1M11.9 4.1L13 3" /></svg>
+          <span class="theme-label">暗色</span>
+        </button>
+        <button id="settings" class="icon ghost" title="设置">
+          <svg viewBox="0 0 16 16"><path d="M2.5 4h4M9.5 4h4M2.5 8h7M12.5 8h1M2.5 12h2M7.5 12h6" /><circle cx="8" cy="4" r="1.5" /><circle cx="11" cy="8" r="1.5" /><circle cx="6" cy="12" r="1.5" /></svg>
+        </button>
+        <button id="help" class="icon ghost" title="帮助：图文教程，悬停在按钮上按 F1 直接看相关的部分（F1）">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M6.2 6.3a1.9 1.9 0 0 1 3.7.5c0 1.3-1.9 1.6-1.9 2.8M8 11.4v.3" /></svg>
+        </button>
+      </div>
+      <!-- 窄窗口、触摸屏：顶栏放不下的（帮助、设置、主题，再窄时还有对齐、格栅）收进这里 -->
+      <span class="dropdown more-only">
+        <button id="more-btn" class="icon ghost" title="更多"><svg viewBox="0 0 16 16"><path d="M3.5 8h.01M8 8h.01M12.5 8h.01" stroke-width="2.6" /></svg></button>
         <div class="dropdown-menu" id="more-menu">
+          <button data-more="align" class="check snap-more"><span>对齐</span></button>
+          <button data-more="grid" class="check snap-more"><span>格栅</span></button>
+          <div class="menu-sep snap-more"></div>
           <button data-more="help"><span>帮助</span><small>图文教程</small></button>
           <button data-more="settings"><span>设置</span></button>
           <button data-more="theme"><span>切换亮色 / 暗色</span></button>
           <button data-more="fullscreen" hidden><span>全屏</span><small>安卓上还会锁定横屏</small></button>
-          <div class="menu-sep"></div>
-          <button data-more="gizmo" class="check"><span>手柄</span></button>
-          <button data-more="align" class="check"><span>自动对齐</span></button>
-          <button data-more="grid" class="check"><span>格栅</span></button>
-          <div class="menu-sep"></div>
-          <button data-more="merge"><span>合并路面</span></button>
-          <button data-more="group"><span>绑定</span></button>
-          <button data-more="ungroup"><span>解绑</span></button>
         </div>
       </span>
     </div>
@@ -166,6 +158,18 @@
   <div id="viewport">
     <div id="props" hidden></div>
     <div id="marquee" class="marquee"></div>
+    <!-- 选择条：选中东西后出现在视图下方，放对选中的东西做的事；合并、绑定、解绑只在能做的时候出现 -->
+    <div id="selbar" hidden>
+      <span id="sel-count"></span>
+      <button id="dup" data-help="1.3" title="复制：复制后直接进入移动，左键放下、右键取消（{dup}）"><svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" /></svg><span>复制</span></button>
+      <button id="rot" data-help="1.3" title="转 90°：绕竖直轴转 90°&#10;任意角度用旋转工具"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3" /></svg><span>转 90°</span></button>
+      <button id="focus-sel" data-help="1.2" title="聚焦：把视角对准选中的东西（{focus}）"><svg viewBox="0 0 16 16"><path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5" /><circle cx="8" cy="8" r="2" /></svg><span>聚焦</span></button>
+      <button id="merge" data-help="1.5" title="合并：把选中的几块路面合成一块（{merge}）"><svg viewBox="0 0 16 16"><path d="M2 5h5v6H2z M9 5h5v6H9z M7 8h2" /></svg><span>合并</span></button>
+      <button id="group" data-help="1.6" title="绑定：把选中的东西绑成一个整体（{group}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M6.5 4.5h3a2 2 0 0 1 2 2v3" /></svg><span>绑定</span></button>
+      <button id="ungroup" data-help="1.6" title="解绑：解除绑定（{ungroup}）"><svg viewBox="0 0 16 16"><path d="M2.5 2.5h4v4h-4z M9.5 9.5h4v4h-4z M8 4.5h1.5M11.5 6.5V8" /></svg><span>解绑</span></button>
+      <button id="del" class="danger" data-help="1.3" title="删除（{delete}）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg><span>删除</span></button>
+      <button id="desel" class="touch-only" title="取消选择"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg><span>取消</span></button>
+    </div>
     <template id="about-tpl">
       <h1>关于 BVM</h1>
       <p class="about-lead">Ballance 制图器，三大主旨：</p>
