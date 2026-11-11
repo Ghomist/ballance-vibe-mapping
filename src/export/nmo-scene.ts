@@ -8,7 +8,8 @@ import { NmoDoc, NmoDocMesh, NmoDocObject, writeNmo } from './nmo';
 import { loadNmoLib, NmoLib } from './nmo-lib';
 import { Model } from '../model/types';
 import { stretchTriUV } from '../view/uvstretch';
-import { cutBoxes } from '../view/clipmesh';
+import { cutBoxes, type TriMesh } from '../view/clipmesh';
+import { tileMesh } from '../view/tilemesh';
 
 const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
   floor: ['Phys_Floors', 'Sound_HitID_01', 'Sound_RollID_01', 'Shadow'],
@@ -259,6 +260,34 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     return i;
   };
   /** 裁掉一部分的模型（盘点路面去掉延伸路）：每个面拆开、按本地 x 裁剪，材质槽照旧（Virtools 坐标里 x 不变） */
+  /** 接长 / 截断的木制件：按材质分开重新生成网格（Virtools 坐标里长度方向是 x 或 z，竖直是 y），另一个方向拉伸过的再补偿 UV */
+  const tiledMesh = (name: string, t: NonNullable<SceneDesc['assets'][number]['tile']>, s?: [number, number]) => {
+    const key = `${name}~${JSON.stringify(t)}@${s?.join(',') ?? ''}`;
+    let i = meshIdx.get(key);
+    if (i !== undefined) return i;
+    const m = lib.meshes[name];
+    const parts: TriMesh[] = m.mtls.map(() => ({ pos: [], uv: [], nrm: [] }));
+    for (let f = 0; f * 3 < m.faces.length; f++) {
+      const p = parts[m.faceMtl[f]];
+      for (let k = 0; k < 3; k++) { const v = m.faces[f * 3 + k]; p.pos.push(m.pos[v * 3], m.pos[v * 3 + 1], m.pos[v * 3 + 2]); p.uv.push(m.uv[v * 2], m.uv[v * 2 + 1]); p.nrm!.push(m.nml[v * 3], m.nml[v * 3 + 1], m.nml[v * 3 + 2]); }
+    }
+    const res = tileMesh(parts, { ai: t.axis === 0 ? 0 : 2, zi: 1, dir: t.dir, base: t.base, period: t.period, dz: t.dz, len: t.len, off: t.off, cont: t.cont });
+    const pos: number[] = [], nml: number[] = [], uv: number[] = [], faces: number[] = [], faceMtl: number[] = [];
+    res.forEach((r, mi) => {
+      for (let k = 0; k * 9 < r.pos.length; k++) {
+        const p = [0, 1, 2].map((j) => r.pos.slice(k * 9 + j * 3, k * 9 + j * 3 + 3));
+        let u = [0, 1, 2].map((j) => r.uv.slice(k * 6 + j * 2, k * 6 + j * 2 + 2));
+        if (s) u = stretchTriUV(p, u, s[0], s[1], 0, 2);
+        for (let j = 0; j < 3; j++) { faces.push(pos.length / 3); pos.push(...p[j]); nml.push(...r.nrm!.slice(k * 9 + j * 3, k * 9 + j * 3 + 3)); uv.push(...u[j]); }
+        faceMtl.push(mi);
+      }
+    });
+    i = doc.meshes.length;
+    doc.meshes.push({ name: unique(`${name}_Tile`), litMode: m.litMode, pos, nml, uv, faces, faceMtl, mtls: [] });
+    meshIdx.set(key, i);
+    doc.meshes[i].mtls = m.mtls.map(material);
+    return i;
+  };
   const croppedMesh = (name: string, c: [number, number, number, number][]) => {
     const key = `${name}#${JSON.stringify(c)}`;
     let i = meshIdx.get(key);
@@ -279,7 +308,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
   for (const a of desc.assets) {
     const src = lib.assets[a.asset];
     if (!src) continue;
-    const mesh = a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
+    const mesh = a.tile ? tiledMesh(src.mesh, a.tile, a.uvStretch) : a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
     // 云层和漩涡在原版里都叫 SkyLayer / SkyLayer_Mesh：材质本身不透明，游戏脚本按这个名字找到物体才加上混合，名字不对就是黑底
     const sky = a.asset.startsWith('SkyLayer');
     if (sky) doc.meshes[mesh].name = unique('SkyLayer_Mesh');

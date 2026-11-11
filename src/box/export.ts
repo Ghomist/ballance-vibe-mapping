@@ -9,7 +9,7 @@ import { solve } from './solve';
 import { buildRail, mergeRails } from '../geom/rail';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
-import { assetInfo } from './asset-info';
+import { assetInfo, meshScale, tileOf } from './asset-info';
 import { AssetElem, Doc, Obj, Piece, ZoneElem, toWorld, yawDeg } from './types';
 import { fromQuat, mul, rotZ } from './xform';
 
@@ -17,10 +17,14 @@ import { fromQuat, mul, rotZ } from './xform';
 function placement(e: Obj | AssetElem) {
   const pos = toWorld(e, [e.x, e.y, e.z]).map(r5) as [number, number, number];
   const sc = e.kind === 'asset' && e.scale && (e.scale[0] !== 1 || e.scale[1] !== 1) ? e.scale : null;
-  if (!e.q && !sc) return { pos, rotZ: r5(yawDeg(e)) };
+  const an = e.kind === 'asset' ? e.name : '';
+  // 花纹重复的木制件沿长度方向是接长 / 截断（tile），那个方向不缩放
+  const tile = e.kind === 'asset' ? tileOf(an, e.scale, e.off) : null;
+  if (!e.q && !sc) return { pos, rotZ: r5(yawDeg(e)), ...(tile ? { tile } : {}) };
   const R = e.q ? fromQuat(e.q) : rotZ(yawDeg(e));
-  const M = sc ? mul(R, [sc[0], 0, 0, 0, sc[1], 0, 0, 0, 1]) : R;
-  return { pos, rotZ: 0, rot3: M.map(r5), ...(sc ? { uvStretch: sc } : {}) };
+  const ms = sc ? meshScale(an, sc) : null;
+  const M = ms ? mul(R, [ms[0], 0, 0, 0, ms[1], 0, 0, 0, 1]) : R;
+  return { pos, rotZ: 0, rot3: M.map(r5), ...(ms && (ms[0] !== 1 || ms[1] !== 1) ? { uvStretch: ms } : {}), ...(tile ? { tile } : {}) };
 }
 
 /** 死亡区的长方体（世界坐标，12 个三角形） */

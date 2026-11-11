@@ -111,5 +111,37 @@ for (const name of names) {
     : { verts: [...verts.values()], mids: [...mids.values()] };
   console.log(name, 'verts', verts.size, 'mids', mids.size);
 }
+// 花纹重复的木制件（asset-info 里有 tile 的）：一个周期里顶面中线的高度起伏（已经减掉每周期升高的 dz），
+// 截断 / 接长以后远端的吸附点按这个算高度。取第二个周期来量，避开端面
+const prof = {};
+for (const m of src.matchAll(/\{ name: '(\w+)'[^\n]*tile: \{ axis: (\d), period: ([\d.]+)(?:, dz: (-?[\d.]+))?(?:, cont: true)? \}/g)) {
+  const name = m[1], ax = +m[2], P = +m[3], dz = +(m[4] ?? 0), ot = 1 - ax;
+  const asset = JSON.parse(readFileSync(`public/assets/${name}.json`, 'utf8'));
+  const T = [], lo = [1e9, 1e9], hi = [-1e9, -1e9];
+  for (const p of asset.parts) for (let i = 0; i < p.pos.length; i += 9) {
+    const t = [0, 1, 2].map((k) => p.pos.slice(i + k * 3, i + k * 3 + 3));
+    T.push(t);
+    for (const v of t) for (const k of [0, 1]) { lo[k] = Math.min(lo[k], v[k]); hi[k] = Math.max(hi[k], v[k]); }
+  }
+  const dir = hi[ax] >= -lo[ax] ? 1 : -1, oc = (lo[ot] + hi[ot]) / 2;
+  const topAt = (u) => {
+    const a = dir * u;
+    let best = -Infinity;
+    for (const [p, q, r] of T) {
+      const d = (q[ax] - p[ax]) * (r[ot] - p[ot]) - (r[ax] - p[ax]) * (q[ot] - p[ot]);
+      if (Math.abs(d) < 1e-9) continue;
+      const s = ((a - p[ax]) * (r[ot] - p[ot]) - (r[ax] - p[ax]) * (oc - p[ot])) / d, t = ((q[ax] - p[ax]) * (oc - p[ot]) - (a - p[ax]) * (q[ot] - p[ot])) / d;
+      if (s < -1e-6 || t < -1e-6 || s + t > 1 + 1e-6) continue;
+      best = Math.max(best, p[2] + s * (q[2] - p[2]) + t * (r[2] - p[2]));
+    }
+    return best;
+  };
+  const N = 128, arr = [];
+  for (let i = 0; i <= N; i++) { const u = P + (i * P) / N, z = topAt(u); arr.push(z === -Infinity ? (arr[arr.length - 1] ?? 0) : Math.round((z - (dz * u) / P) * 1000) / 1000); }
+  const z0 = arr[0];
+  prof[name] = arr.map((z) => Math.round((z - z0) * 1000) / 1000);
+  console.log(name, 'prof', Math.min(...prof[name]), '~', Math.max(...prof[name]));
+}
+const profBody = Object.entries(prof).map(([k, v]) => `  ${k}: ${JSON.stringify(v)},`).join('\n');
 const body = Object.entries(out).map(([k, v]) => `  ${k}: { verts: ${JSON.stringify(v.verts)}, mids: ${JSON.stringify(v.mids)} },`).join('\n');
-writeFileSync('src/box/asset-snap.ts', `// 由 scripts/build-asset-snap.mjs 生成，不要手改。木板、木桥这类路的吸附点（模型本地坐标，都是模型上真实的点）\nexport const ASSET_SNAP: Record<string, { verts: [number, number, number][]; mids: [number, number, number][] }> = {\n${body}\n};\n`);
+writeFileSync('src/box/asset-snap.ts', `// 由 scripts/build-asset-snap.mjs 生成，不要手改。木板、木桥这类路的吸附点（模型本地坐标，都是模型上真实的点）\nexport const ASSET_SNAP: Record<string, { verts: [number, number, number][]; mids: [number, number, number][] }> = {\n${body}\n};\n/** 花纹重复的木制件：一个周期里顶面中线的高度起伏（相对周期开头，等距取样，首尾相接） */\nexport const ASSET_PROF: Record<string, number[]> = {\n${profBody}\n};\n`);

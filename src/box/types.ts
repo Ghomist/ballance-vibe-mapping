@@ -5,7 +5,7 @@ import type { CurveRoad, SplineCurve } from '../model/spline';
 /** 盘点路面的路口离中心多远：圆盘边沿（自带的延伸路裁掉了，见 solve.ts 的 CP_CROP） */
 export const CP_PORT = { start: 7.386, check: 4.924 } as const;
 import { type RailPiece, type SideRail, sampleRail } from '../model/rail';
-import { assetInfo } from './asset-info';
+import { assetInfo, tileOf } from './asset-info';
 import { type M3, type Quat, type V3, I3, apply, fromQuat, mul, rotZ } from './xform';
 
 export type Dir = 0 | 1 | 2 | 3; // 0:+X 1:+Y 2:-X 3:-Y
@@ -131,7 +131,8 @@ export interface RailElem extends ElemBase {
 /**
  * 护栏：和上一版一样沿路面外沿走（拐角圆弧过渡、顺着坡走、两头立柱 + 铆钉），
  * 但放下时就把走过的路径存下来（pts：外沿上的点，顶面高度；outs：每一段朝外的方向），
- * 之后是一个独立的物体，可以移动 / 删除，不会因为路面改动而自己改道。
+ * 之后是一个独立的物体，可以移动 / 删除。它贴着的路面改了（移动、拉伸、旋转……）时，编辑器会让它跟着重新走线
+ * （app.ts 的 followGuards）；没贴着路沿的护栏不受影响。
  */
 export interface GuardElem extends ElemBase {
   kind: 'guard';
@@ -151,8 +152,10 @@ export interface AssetElem extends ElemBase, Oriented {
   y: number;
   z: number;
   rot: Dir;
-  /** 沿模型本地 X、Y 的缩放（Ctrl 拉伸木制件） */
+  /** 沿模型本地 X、Y 的缩放（Ctrl 拉伸木制件）；花纹重复的那类（asset-info 的 tile）沿长度方向是长度的倍数，模型接长 / 截断而不是缩放 */
   scale?: [number, number];
+  /** 花纹重复的木制件：从花纹的哪里开始（拉原点那一头时，那一头截掉 / 接上多少）；默认 0 */
+  off?: number;
 }
 
 /** 死亡区：半透明的长方体，球碰到它的包围盒就死；导出时隐藏，归到 DepthTestCubes 组 */
@@ -181,6 +184,13 @@ export function assetBounds(e: AssetElem): Rect & { z0: number; z1: number } {
   const [ks, kt] = e.scale ?? [1, 1];
   const mn0 = inf?.min ?? [-2.5, -2.5, -2.5], mx0 = inf?.max ?? [2.5, 2.5, 2.5];
   const mn = [mn0[0] * ks, mn0[1] * kt, mn0[2]], mx = [mx0[0] * ks, mx0[1] * kt, mx0[2]];
+  // 接长的木制件每个周期升高 dz：竖直范围跟着变
+  const tl = tileOf(e.name, e.scale, e.off);
+  if (tl?.dz) {
+    const h = (u: number) => (tl.dz * u) / tl.period, a = h(tl.off), b = h(tl.off + tl.len), full = h(tl.base);
+    mn[2] += Math.min(a, b) - Math.min(0, full);
+    mx[2] += Math.max(a, b) - Math.max(0, full);
+  }
   const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
   const xs: number[] = [], ys: number[] = [];
   for (const x of [mn[0], mx[0]]) for (const y of [mn[1], mx[1]]) { xs.push(e.x + x * c - y * s); ys.push(e.y + x * s + y * c); }

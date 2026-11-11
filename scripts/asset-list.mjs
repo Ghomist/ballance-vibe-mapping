@@ -11,6 +11,7 @@ export const ASSET_OBJECTS = [
   'Latern', 'LaternColumn_Full', 'LaternColumn', 'BarrierRail_1Edge', 'BarrierRail_3Edge', 'BarrierRail_3Edge_N', 'BarrierRail_3Edge_S', 'RailTip', 'RailNail',
   // 特殊路面（box 版编辑器的素材库）：木制路面、特殊路块、钢轨交叉
   'WoodPlate', 'Modul_02', 'Modul_13', 'Modul_42', 'Modul_42_Wide', 'Modul_11', 'ConcaveWood', 'ConvexWood', 'Level9_WoodBarrier', 'WoodSlope', 'Level13_UWoodPath', 'Level13_UWoodPath_Single',
+  'Level13_WIngWood', 'Level2_TiltedWoodPlate', 'Level2_WaveWood', 'Modul_27',
   'Modul_15', 'Modul_16', 'Turnstile', 'Turnstile_Big', 'RailCrossing', 'MonorailCrossing',
 ];
 

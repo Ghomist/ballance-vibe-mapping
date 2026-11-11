@@ -1,6 +1,7 @@
 // 吸附用的几何特征：顶点、边的中点、边
 import { assetInfo } from './asset-info';
-import { ASSET_SNAP } from './asset-snap';
+import { ASSET_PROF, ASSET_SNAP } from './asset-snap';
+import { meshScale, tileOf } from './asset-info';
 import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
 import { objType } from '../model/objects';
 import { roadRings } from '../geom/curve-road';
@@ -68,8 +69,20 @@ function localFeats(e: Elem): Feats {
     const preset = ASSET_SNAP[e.name];
     if (preset) {
       // 木板、木桥：模型上的预设点，跟着拉伸和朝向走
-      const [ks, kt] = e.scale ?? [1, 1], c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
-      const at = ([x, y, z]: P3): P3 => [e.x + x * ks * c - y * kt * s, e.y + x * ks * s + y * kt * c, e.z + z];
+      const [ks, kt] = meshScale(e.name, e.scale), c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
+      // 接长 / 截断的木制件：远端那一头的点跟着端面走，高度按那个位置的起伏算
+      const tl = tileOf(e.name, e.scale, e.off), prof = ASSET_PROF[e.name];
+      const top = (u: number) => { if (!tl) return 0; const f = (((u % tl.period) + tl.period) % tl.period) / tl.period * (prof?.length ? prof.length - 1 : 0); const i = Math.floor(f); return (prof?.length ? prof[i] + ((prof[i + 1] ?? prof[i]) - prof[i]) * (f - i) : 0) + (tl.dz * u) / tl.period; };
+      const far = (p: P3): P3 => {
+        if (!tl) return p;
+        const q: P3 = [...p];
+        // 近端的点：位置不动，高度按起点处的起伏；远端的点跟着端面走
+        if (tl.dir * p[tl.axis] < tl.base / 2) { q[2] += top(tl.off) - top(0); return q; }
+        q[tl.axis] += tl.dir * (tl.len - tl.base);
+        q[2] += top(tl.off + tl.len) - top(tl.base);
+        return q;
+      };
+      const at = (p: P3): P3 => { const [x, y, z] = far(p); return [e.x + x * ks * c - y * kt * s, e.y + x * ks * s + y * kt * c, e.z + z]; };
       return { verts: preset.verts.map(at), mids: preset.mids.map(at), edges: [] };
     }
     const b = assetBounds(e), st = assetInfo(e.name)?.snapTop, top = st === undefined ? b.z1 : e.z + st;

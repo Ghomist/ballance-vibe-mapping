@@ -378,6 +378,12 @@ export function solve(doc: Doc): Solved {
   try { return solveAll(doc); } finally { meshCache = nextMeshCache; }
 }
 
+/** 只要这些元素自己的外沿（护栏跟随用）：不动求解缓存和统计，夹在两次正常求解之间调用也不影响下一次的命中 */
+export function ownOutline(doc: Doc): Loop[] {
+  const keep = meshCache, stats = { ...solveStats };
+  try { return solve(doc).loops; } finally { meshCache = keep; Object.assign(solveStats, stats); }
+}
+
 function solveAll(doc: Doc): Solved {
   const out: Solved = { meshes: new Map(), assets: new Map(), owner: new Map(), loops: [] };
   const frames = new Map<number, Elem[]>();

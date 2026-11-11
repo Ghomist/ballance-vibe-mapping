@@ -22,19 +22,20 @@ import { initTooltips } from '../view/tooltip';
 import { initHelp } from './help';
 import { MoveGizmo, RotateGizmo } from '../view/move-gizmo';
 import { stretchUV } from '../view/uvstretch';
+import { tileMesh } from '../view/tilemesh';
 import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
 import { decodeShare, encodeShare } from './share';
 import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
-import { ASSET_INFO, assetInfo } from './asset-info';
+import { ASSET_INFO, assetInfo, meshScale, tileOf } from './asset-info';
 import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
 import { AXIS_COLORS, GRID_THEMES, createGrid, setGridAxes, themeGrid } from '../view/grid';
 import { type P3, feats as featsRaw } from './snap';
 import { curveSamples, roadClosed, sampleRail } from '../model/rail';
-import { solve, solveStats } from './solve';
-import { type Route, edgeAt, routeLen, shortPath } from './guard';
+import { ownOutline, solve, solveStats } from './solve';
+import { type ChangedFloor, type Route, edgeAt, refitGuard, routeLen, shortPath } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
 /** 全图设置：文档里改过的项覆盖默认值 */
@@ -312,9 +313,9 @@ function addMeshes(group: THREE.Group, pieces: AssetPiece[], id: number, place: 
 }
 /** 拉伸过的木制件：UV 补偿成平铺（贴图重复，不被拉长）；按模型名 + 缩放缓存 */
 const stretchCache = new Map<string, AssetPiece[]>();
-function stretchedPieces(name: string, pieces: AssetPiece[], s: [number, number]): AssetPiece[] {
+function stretchedPieces(name: string, pieces: AssetPiece[], s: [number, number], off = 0): AssetPiece[] {
   if (!pieces.length) return pieces; // 模型还没加载好：别把空的缓存起来
-  const key = `${name}@${s[0]},${s[1]}`;
+  const key = `${name}@${s[0]},${s[1]},${off}`;
   let hit = stretchCache.get(key);
   if (!hit) {
     hit = pieces.map((pc) => {
@@ -323,6 +324,27 @@ function stretchedPieces(name: string, pieces: AssetPiece[], s: [number, number]
       if (uv) g.setAttribute('uv', new THREE.BufferAttribute(stretchUV(pos.array, uv.array, s[0], s[1]), 2));
       return { ...pc, geometry: g };
     });
+    // 花纹重复的木制件：沿长度方向接长 / 截断（另一个方向照常缩放，UV 上面已经补偿过）
+    const tl = tileOf(name, s, off);
+    if (tl) {
+      const ms = meshScale(name, s);
+      const flat = pieces.map((pc) => (pc.geometry.index ? pc.geometry.toNonIndexed() : pc.geometry));
+      const parts = flat.map((g) => {
+        const pa = g.getAttribute('position'), n = g.getAttribute('normal'), t = g.getAttribute('uv');
+        const uv = t ? stretchUV(pa.array, t.array, ms[0], ms[1]) : new Float32Array(pa.count * 2);
+        return { pos: Array.from(pa.array), uv: Array.from(uv), nrm: n ? Array.from(n.array) : undefined };
+      });
+      // 有的部分没有法线就都不带（tileMesh 要么都有要么都没有）
+      const withN = parts.every((p) => p.nrm);
+      const res = tileMesh(withN ? parts : parts.map((p) => ({ pos: p.pos, uv: p.uv })), { ai: tl.axis, zi: 2, dir: tl.dir, base: tl.base, period: tl.period, dz: tl.dz, len: tl.len, off: tl.off, cont: tl.cont });
+      hit = pieces.map((pc, i) => {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(res[i].pos, 3));
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(res[i].uv, 2));
+        if (res[i].nrm) g.setAttribute('normal', new THREE.Float32BufferAttribute(res[i].nrm!, 3)); else g.computeVertexNormals();
+        return { ...pc, geometry: g };
+      });
+    }
     if (stretchCache.size > 64) stretchCache.clear();
     stretchCache.set(key, hit);
   }
@@ -382,6 +404,42 @@ function rebuild() {
   rebuildTimes.push(performance.now() - tStart);
   if (rebuildTimes.length > 200) rebuildTimes.shift();
 }
+/**
+ * 护栏跟着路面走（算法见 guard.ts 的 refitGuard）：每次重建时看哪些路面和「基准」不一样了，贴着它们的护栏重新走线。
+ * 基准是上一次没在拖动时的状态：拖动中每一帧都从基准重新算，不是一帧一帧累加，拖过头再拖回来、取消拖动都能原样回去。
+ *   floors / guards：基准里每个元素的 JSON；followed：这一轮拖动里被我们改过的护栏（改完以后的 JSON）
+ */
+let followBase: { doc: Doc; floors: Map<number, string>; guards: Map<number, string> } | null = null;
+const followed = new Map<number, string>();
+type GuardEl = Extract<Elem, { kind: 'guard' }>;
+function followGuards(solved: { loops: Loop[] }) {
+  const all = Object.values(doc.elems);
+  const guards = all.filter((e): e is GuardEl => e.kind === 'guard');
+  if (!guards.length) { followBase = null; followed.clear(); return; }
+  const floors = new Map<number, string>();
+  for (const e of all) if (e.kind !== 'guard' && e.kind !== 'obj' && e.kind !== 'zone') floors.set(e.id, JSON.stringify(e));
+  const snap = () => { followBase = { doc, floors, guards: new Map(guards.map((g) => [g.id, JSON.stringify(g)])) }; followed.clear(); };
+  // 换了一张图（打开、撤销、重做）：直接拿它当基准
+  if (!followBase || followBase.doc !== doc) { snap(); return; }
+  const base = followBase;
+  const ids = [...new Set([...floors.keys(), ...base.floors.keys()])].filter((id) => floors.get(id) !== base.floors.get(id));
+  // 改过的路面各自的新旧外沿：用到时才解
+  let changed: ChangedFloor[] | null = null;
+  const own = (s: string | undefined) => { if (!s) return null; const e = JSON.parse(s) as Elem; return ownOutline({ ...doc, elems: { [e.id]: e } }); };
+  const getChanged = () => (changed ??= ids.flatMap((id) => { const old = own(base.floors.get(id)); return old?.length ? [{ old, now: own(floors.get(id)) }] : []; }));
+  for (const g of guards) {
+    const b = base.guards.get(g.id), cur = JSON.stringify(g);
+    if (!b) continue;
+    // 用户自己动过这条护栏（和路一起选中拖着走、拖把手改长度）：不管它
+    if (cur !== b && cur !== followed.get(g.id)) continue;
+    const bg = JSON.parse(b) as GuardEl;
+    const r = ids.length ? refitGuard(bg, getChanged(), solved.loops) : null;
+    const next = r ? { pts: r.pts, outs: r.outs, x: r.pts[0][0], y: r.pts[0][1], z: r.pts[0][2] } : { pts: bg.pts, outs: bg.outs, x: bg.x, y: bg.y, z: bg.z };
+    Object.assign(g, next);
+    if (r) followed.set(g.id, JSON.stringify(g)); else followed.delete(g.id);
+  }
+  if (!drag) snap();
+}
 const featsCache = new Map<number, { e: Elem; f: ReturnType<typeof featsRaw>; b: Bounds }>();
 function cached(e: Elem) {
   let c = featsCache.get(e.id);
@@ -401,6 +459,7 @@ function rebuildInner() {
   const t0 = performance.now();
   const solved = solve(doc);
   lastSolved = solved;
+  followGuards(solved);
   lastSolve.ms = performance.now() - t0;
   let tris = 0;
   const usedGroups = new Map<string, THREE.Group>();
@@ -461,7 +520,7 @@ function rebuildInner() {
     const g = new THREE.Group(), xg = xfGroup(e);
     g.add(xg);
     const pieces = getAsset('asset', e.name) ?? [];
-    addMeshes(xg, e.scale ? stretchedPieces(e.name, pieces, e.scale) : pieces, e.id, (m) => { m.position.set(e.x, e.y, e.z); m.rotation.z = (e.rot * Math.PI) / 2; if (e.scale) m.scale.set(e.scale[0], e.scale[1], 1); });
+    addMeshes(xg, e.scale || tileOf(e.name, e.scale, e.off) ? stretchedPieces(e.name, pieces, e.scale ?? [1, 1], e.off) : pieces, e.id, (m) => { m.position.set(e.x, e.y, e.z); m.rotation.z = (e.rot * Math.PI) / 2; if (e.scale) { const ms = meshScale(e.name, e.scale); m.scale.set(ms[0], ms[1], 1); } });
     addGroup(e.id, g);
     if (g.children.length) objBoxes.set(e.id, new THREE.Box3().setFromObject(g));
   }
@@ -1704,7 +1763,7 @@ function modDrag(e: PointerEvent, h: { id: number; p: THREE.Vector3 }, ctrl: boo
     sel = new Set([h.id]);
     drag = { t: 'railLen', id: h.id, orig: origOf([h.id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -h.p.z), start: h.p, end: railEndAt(elem, h.p) };
   } else if (ctrl && !alt && elem.kind === 'asset' && assetInfo(elem.name)?.stretch) {
-    // Ctrl：拉伸木制件（木板、木制斜坡、凹凸木轨道、长 / 宽木桥），拖的是离鼠标最近的那一头
+    // Ctrl：拉伸木制件（木板、木制斜坡、凹凸木轨道是缩放；木桥、波浪板这类花纹重复的是接长 / 截断），拖的是离鼠标最近的那一头
     if (elem.q) { flash('倾斜的东西不能拉伸', true); return true; }
     snapshot();
     sel = new Set([h.id]);
@@ -2047,7 +2106,12 @@ function stretchTo(d: Extract<Drag, { t: 'stretch' }>, p: THREE.Vector3) {
   let raw = Math.max(0.5, d.pos ? moving - fixed : fixed - moving);
   if (gridOn) raw = Math.max(prefs.gridStep, snapG(raw));
   raw = Math.round(raw * 1000) / 1000;
-  const L5 = Math.round(raw / 5) * 5;
+  // 花纹重复的木制件沿长度方向：拉哪一头就在哪一头截断 / 接上。拉的是原点那一头时，花纹的起点（off）跟着变，另一头原样不动
+  const tl = inf.tile?.axis === ax ? inf.tile : null;
+  const off0 = o.off ?? 0, L0 = base * s0, atOrigin = !!tl && d.pos === (Math.abs(mx) < Math.abs(mn));
+  // 磁吸：一般是 5 的整数倍；这类木制件是让被拉的那一头落在半个周期的整数倍上（波峰、波谷，接别的路正好是平的）
+  const h = tl ? tl.period / 2 : 0;
+  const L5 = !tl ? Math.round(raw / 5) * 5 : atOrigin ? L0 + off0 - Math.round((off0 + L0 - raw) / h) * h : Math.round((off0 + raw) / h) * h - off0;
   const snap = L5 > 0 && Math.abs(raw - L5) < worldPerPx(p) * SIZE5_PX ? L5 : null;
   const apply = (e: AssetElem, len: number) => {
     const s1 = len / base;
@@ -2055,6 +2119,7 @@ function stretchTo(d: Extract<Drag, { t: 'stretch' }>, p: THREE.Vector3) {
     const sc: [number, number] = [...(o.scale ?? [1, 1])] as [number, number];
     sc[ax] = Math.round(s1 * 1e6) / 1e6;
     e.scale = sc[0] === 1 && sc[1] === 1 ? undefined : sc;
+    if (atOrigin) { const off = Math.round((off0 + L0 - len) * 1e6) / 1e6; if (off) e.off = off; else delete e.off; }
     e.x = Math.round((e.x + axv[0] * shift) * 1e6) / 1e6;
     e.y = Math.round((e.y + axv[1] * shift) * 1e6) / 1e6;
     return { s1, shift };
@@ -2590,7 +2655,7 @@ const ZONE_ICON = svgThumb('<path d="M32 10 L54 22 L54 44 L32 56 L10 44 L10 22 Z
 function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
   return ASSET_INFO.filter((a) => a.tab === tab).map((a) => ({
     type: `asset:${a.name}`, label: a.label,
-    hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : tab === 'deco' ? '装饰' : '特殊路块'} · ${a.name}${a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
+    hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : tab === 'deco' ? '装饰' : '特殊路块'} · ${a.name}${a.tile ? ' · Ctrl 拖可接长 / 截断' : a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
   }));
 }
 const LIB: { id: string; label: string; items: LibItem[] }[] = [

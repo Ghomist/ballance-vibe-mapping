@@ -8,15 +8,19 @@ import {
 } from '../src/model/rail';
 import { buildRail } from '../src/geom/rail';
 import { breakAt, closeCurve, insertAfter, openAt, parallelFrames, removePoint, sampleSpline, type SplineCurve } from '../src/model/spline';
-import { solve, type Solved } from '../src/box/solve';
+import { ownOutline, solve, type Solved } from '../src/box/solve';
 import { exportBoxScene } from '../src/box/export';
 import { sweepTube } from '../src/geom/railing';
 import { feats } from '../src/box/snap';
-import { edgeAt, routeLen, shortPath } from '../src/box/guard';
-import type { Loop, P3 } from '../src/model/outline';
+import { type Route, edgeAt, refitGuard, routeLen, shortPath } from '../src/box/guard';
+import { type Loop, type P3, pathAlong, project } from '../src/model/outline';
 import { Box, Obj, Piece, RailElem, boxTopAt, footprint, toWorld } from '../src/box/types';
 import { rotAxis, toQuat } from '../src/box/xform';
 import { ASSET_SNAP } from '../src/box/asset-snap';
+import { ASSET_INFO, tileOf } from '../src/box/asset-info';
+import { tileMesh } from '../src/view/tilemesh';
+import type { TriMesh } from '../src/view/clipmesh';
+import type { AssetElem } from '../src/box/types';
 
 type Check = (cond: boolean, msg: string) => void;
 type Scenario = (name: string, fn: () => void) => void;
@@ -489,5 +493,164 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     const long = shortPath(loop, 1, 21);
     check(near(routeLen(long), 20), `相距正好半圈时也应是 20，实际 ${routeLen(long)}`);
     check(near(routeLen({ pts: [[0, 0, 0], [3, 4, 0], [3, 4, 12]] }), 5), 'routeLen 只累加水平距离，竖直分量不计');
+  });
+
+  scenario('护栏跟着路面走：拉伸 / 移动 / 旋转 / 相邻的路 / 跟不了的情况', () => {
+    type Elems = Record<number, Box>;
+    const B = (id: number, x: number, y: number, sx: number, sy: number, o: Partial<Box> = {}): Box => ({ id, kind: 'box', x, y, z: 0, sx, sy, depth: 5, style: 'normal', ...o });
+    const docOf = (elems: Elems) => ({ elems, nextId: 99 }) as unknown as Parameters<typeof solve>[0];
+    const loopsOf = (elems: Elems) => solve(docOf(elems)).loops;
+    /** 和 app.ts 的 followGuards 一样：改过的路面各取自己的新旧外沿 */
+    const refit = (g: Route, a: Elems, b: Elems) => {
+      const ids = [...new Set([...Object.keys(a), ...Object.keys(b)].map(Number))].filter((id) => JSON.stringify(a[id]) !== JSON.stringify(b[id]));
+      const own = (e: Box | undefined) => (e ? ownOutline(docOf({ [e.id]: e })) : null);
+      return refitGuard(g, ids.flatMap((id) => { const old = own(a[id]); return old?.length ? [{ old, now: own(b[id]) }] : []; }), loopsOf(b));
+    };
+    const xs = (r: Route | null) => (r ? r.pts.map((q) => q.map((v) => +v.toFixed(3)).join(',')).join(' → ') : 'null');
+    const ends = (r: Route | null, a: number[], b: number[]) => !!r && near(r.pts[0][0], a[0], 1e-4) && near(r.pts[0][1], a[1], 1e-4) && near(r.pts[r.pts.length - 1][0], b[0], 1e-4) && near(r.pts[r.pts.length - 1][1], b[1], 1e-4);
+
+    const one: Elems = { 1: B(1, 0, 0, 15, 5) };
+    const full = edgeAt(loopsOf(one), [7, 0, 0], 1.5)!;
+    check(ends(full, [1.5, 0], [13.5, 0]), `整条直边的护栏：${xs(full)}`);
+    check(refit(full, one, one) === null, '路没改：不动');
+
+    let r = refit(full, one, { 1: B(1, 0, 0, 30, 5) });
+    check(ends(r, [1.5, 0], [28.5, 0]) && r!.outs.length === 1 && r!.outs[0][1] === -1, `拉长大头：两头还是各缩 1.5：${xs(r)}`);
+    r = refit(full, one, { 1: B(1, -10, 0, 25, 5) });
+    check(ends(r, [-8.5, 0], [13.5, 0]), `拉长小头：${xs(r)}`);
+    r = refit(full, one, { 1: B(1, 7, 3, 15, 5) });
+    check(ends(r, [8.5, 3], [20.5, 3]), `整体移动：跟着走：${xs(r)}`);
+    r = refit(full, one, { 1: B(1, 0, 0, 15, 5, { z: 4 }) });
+    check(!!r && near(r.pts[0][2], 4) && ends(r, [1.5, 0], [13.5, 0]), `抬高：高度跟着变：${xs(r)}`);
+    r = refit(full, one, { 1: B(1, 0, 0, 15, 9) });
+    check(r === null, '只改了另一边的宽度：这条边没动，不用跟');
+    r = refit(full, one, { 1: B(1, 0, 0, 15, 5, { ang: 90 }) });
+    const rl = loopsOf({ 1: B(1, 0, 0, 15, 5, { ang: 90 }) });
+    check(!!r && near(routeLen(r), 12, 1e-3) && r.pts.every((q) => (project(rl, q, 0.5)?.dist ?? 9) < 1e-3), `旋转：还贴着同一条边，长度不变：${xs(r)}`);
+    r = refit(full, one, { 1: B(1, 0, 0, 15, 5, { slope: { axis: 0, dz: 3 } }) });
+    check(!!r && near(r.pts[0][2], 0.3, 1e-3) && near(r.pts[r.pts.length - 1][2], 2.7, 1e-3), `拉成坡：两头的高度跟着坡：${xs(r)}`);
+
+    // 中间的一段：边的哪一头没动，位置就留在原地
+    const l0 = loopsOf(one)[0];
+    const s5 = project([l0], [5, 0, 0], 0.5)!.s, s10 = project([l0], [10, 0, 0], 0.5)!.s;
+    const mid = s5 < s10 ? pathAlong(l0, s5, s10) : pathAlong(l0, s10, s5);
+    r = refit(mid, one, { 1: B(1, 0, 0, 30, 5) });
+    check(r === null, '中间的一段，路拉长后还贴着：不动');
+    r = refit(mid, one, { 1: B(1, 4, 2, 15, 5) });
+    check(!!r && near(routeLen(r), 5) && near(r.pts[0][1], 2) && near(Math.min(r.pts[0][0], r.pts[1][0]), 9), `中间的一段，路移动：跟着走：${xs(r)}`);
+
+    // 两块路拼成一条直边，护栏跨过接缝；只拉长其中一块
+    const two: Elems = { 1: B(1, 0, 0, 15, 5), 2: B(2, 15, 0, 15, 5) };
+    const span = edgeAt(loopsOf(two), [20, 0, 0], 1.5)!;
+    check(ends(span, [1.5, 0], [28.5, 0]), `跨两块路的直边：${xs(span)}`);
+    r = refit(span, two, { 1: two[1], 2: B(2, 15, 0, 25, 5) });
+    check(ends(r, [1.5, 0], [38.5, 0]), `只拉长第二块：那一头跟过去，另一头不动：${xs(r)}`);
+
+    // 绕过拐角的护栏：两条边各自跟
+    const lc = loopsOf(one)[0];
+    const sa = project([lc], [10, 0, 0], 0.5)!.s, sb = project([lc], [15, 3, 0], 0.5)!.s;
+    const corner = shortPath(lc, sa, sb);
+    check(corner.pts.length === 3, `绕拐角的护栏有三个点：${xs(corner)}`);
+    r = refit(corner, one, { 1: B(1, 0, 0, 20, 5) });
+    check(!!r && r.pts.length === 3 && r.pts.some((q) => near(q[0], 20) && near(q[1], 0)) && r.pts.some((q) => near(q[0], 20) && near(q[1], 3)), `拉长后拐角跟着走：${xs(r)}`);
+
+    // 跟不了的：路删了、护栏本来就不在路沿上、边缩得比内缩还短
+    check(refit(full, one, {}) === null, '路删了：护栏留在原地');
+    const off: Route = { pts: [[1.5, -4, 0], [13.5, -4, 0]], outs: [[0, -1]] };
+    check(refit(off, one, { 1: B(1, 7, 3, 15, 5) }) === null, '没贴着路沿的护栏：不动');
+    check(refit(full, one, { 1: B(1, 0, 0, 2, 5) }) === null, '边缩到比两头的内缩还短：不跟');
+  });
+
+  scenario('花纹重复的木制件：接长 / 截断（tileMesh）', () => {
+    const load = (name: string): TriMesh[] => (JSON.parse(fs.readFileSync(`public/assets/${name}.json`, 'utf8')) as { parts: TriMesh[] }).parts.map((q) => ({ pos: q.pos, uv: q.uv, nrm: q.nrm }));
+    /** 每条有向边都有一条反向的边配对：网格是封闭的，没有破洞 */
+    const openEdges = (ms: TriMesh[]) => {
+      const cnt = new Map<string, number>();
+      const k = (a: number[]) => a.map((v) => Math.round(v * 200)).join(',');
+      for (const m of ms) for (let i = 0; i < m.pos.length; i += 9) {
+        const v = [0, 1, 2].map((j) => k(m.pos.slice(i + j * 3, i + j * 3 + 3)));
+        if (v[0] === v[1] || v[1] === v[2] || v[0] === v[2]) continue;
+        for (let j = 0; j < 3; j++) { const a = v[j], b = v[(j + 1) % 3]; cnt.set(`${a}>${b}`, (cnt.get(`${a}>${b}`) ?? 0) + 1); }
+      }
+      let open = 0;
+      for (const [e, n] of cnt) { const [a, b] = e.split('>'); if ((cnt.get(`${b}>${a}`) ?? 0) !== n) open++; }
+      return open;
+    };
+    const range = (ms: TriMesh[], i: number) => { let lo = Infinity, hi = -Infinity; for (const m of ms) for (let j = i; j < m.pos.length; j += 3) { lo = Math.min(lo, m.pos[j]); hi = Math.max(hi, m.pos[j]); } return [lo, hi]; };
+    const tris = (ms: TriMesh[]) => ms.reduce((n, m) => n + m.pos.length / 9, 0);
+
+    /** 实心的（截面是连着的一整块，哪里切都该有端面） */
+    const solid = new Set(['Level2_WaveWood', 'WoodSlope', 'Level2_TiltedWoodPlate']);
+    for (const a of ASSET_INFO.filter((x) => x.tile)) {
+      const parts = load(a.name), base = a.max[a.tile!.axis] - a.min[a.tile!.axis];
+      const open0 = openEdges(parts);
+      for (const k of [0.3, 0.77, 1.6, 2.5]) {
+        const t = tileOf(a.name, a.tile!.axis === 0 ? [k, 1] : [1, k])!;
+        // 从原点那一头截掉 / 接上一段（off），长度一样：结果还是从模型原点开始
+        const off = k === 0.77 ? t.period * 0.3 : k === 1.6 ? -t.period * 1.25 : 0;
+        const r = tileMesh(parts, { ai: t.axis, zi: 2, dir: t.dir, base: t.base, period: t.period, dz: t.dz, len: t.len, off, cont: t.cont });
+        const [lo, hi] = range(r, t.axis);
+        check(near(t.dir > 0 ? lo : -hi, 0, 0.01) && near(t.dir > 0 ? hi : -lo, base * k, 0.01), `${a.name} ×${k}：长度应是 ${(base * k).toFixed(2)}，实际 ${lo.toFixed(2)}～${hi.toFixed(2)}`);
+        check(r.length === parts.length && tris(r) > 0 && r.every((m) => m.uv.length / 2 === m.pos.length / 3 && m.nrm!.length === m.pos.length), `${a.name} ×${k}：每部分的位置、贴图坐标、法线数量对得上`);
+        // 原来就封闭的模型，截断 / 接长以后也要封闭（端面补上了）
+        // 切口上要补端面：正好落在切口平面里的三角形面积不能是零（木桥的木板之间有缝，切在缝里可以没有，不查）
+        const capArea = (at: number) => r.reduce((sum, m) => {
+          for (let i = 0; i < m.pos.length; i += 9) {
+            const q = [0, 1, 2].map((j) => m.pos.slice(i + j * 3, i + j * 3 + 3));
+            if (!q.every((v) => near(v[t.axis], at, 0.005))) continue;
+            const e1 = q[1].map((v, j) => v - q[0][j]), e2 = q[2].map((v, j) => v - q[0][j]);
+            sum += Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]) / 2;
+          }
+          return sum;
+        }, 0);
+        if (solid.has(a.name)) {
+          check(capArea(t.dir * base * k) > 0.5, `${a.name} ×${k}：末尾的切口补了端面（面积 ${capArea(t.dir * base * k).toFixed(2)}）`);
+          check(capArea(0) > 0.5, `${a.name} ×${k}：开头的切口补了端面（面积 ${capArea(0).toFixed(2)}）`);
+          // 破洞不能比原来的模型多（原来的模型自己就有没焊上的边）
+          check(openEdges(r) <= open0 * Math.max(1, Math.ceil(k)) + 8, `${a.name} ×${k}：没焊上的边 ${openEdges(r)} 条，原来 ${open0} 条`);
+        }
+        // 另一个方向和别的坐标不变
+        const o = 1 - t.axis, [olo, ohi] = range(r, o);
+        check(near(olo, a.min[o], 0.01) && near(ohi, a.max[o], 0.01), `${a.name} ×${k}：宽度不变`);
+      }
+    }
+    check(tileOf('Level2_WaveWood', [1, 2], 5) !== null && tileOf('WoodSlope', undefined) !== null, '起点动过、或者贴图要重排的（木制斜坡）：没拉长也要重新生成');
+    check(tileOf('Level2_WaveWood', [1, 2]) === null && tileOf('WoodPlate', [2, 1]) === null && tileOf('Level2_WaveWood', undefined) === null, '长度方向没拉、或者不是这类素材：不走接长 / 截断');
+
+    // 波浪板：接到整数个周期时两头一样高（都是波峰），半个周期时是波谷；吸附点跟着端面走
+    const wave = (k: number): AssetElem => ({ id: 1, kind: 'asset', name: 'Level2_WaveWood', x: 0, y: 0, z: 0, rot: 0, scale: [k, 1] });
+    const P = 32.88709, base = 180.8776;
+    const farZ = (L: number) => { const f = feats(wave(L / base))!; return Math.max(...f.verts.filter((v) => near(v[0], -L, 0.01)).map((v) => v[2])); };
+    check(near(farZ(4 * P), 0, 0.05), `4 个周期：远端在波峰，和近端一样高，实际 ${farZ(4 * P)}`);
+    check(near(farZ(6.5 * P), -8.001, 0.05), `6.5 个周期：远端在波谷，实际 ${farZ(6.5 * P)}`);
+    const wp = load('Level2_WaveWood');
+    const r4 = tileMesh(wp, { ai: 0, zi: 2, dir: -1, base, period: P, dz: 0, len: 4 * P });
+    const endTop = Math.max(...r4.flatMap((m) => { const z: number[] = []; for (let i = 0; i < m.pos.length; i += 3) if (near(m.pos[i], -4 * P, 0.01)) z.push(m.pos[i + 2]); return z; }));
+    check(near(endTop, 0, 0.02), `网格在 4 个周期处的端面顶也在波峰：${endTop}`);
+  });
+
+  scenario('木制斜坡：贴图一段接一段，接缝处两边的贴图坐标一样', () => {
+    const parts = (JSON.parse(fs.readFileSync('public/assets/WoodSlope.json', 'utf8')) as { parts: TriMesh[] }).parts.map((q) => ({ pos: q.pos, uv: q.uv, nrm: q.nrm }));
+    const t = tileOf('WoodSlope', [1, 2.3])!;
+    const r = tileMesh(parts, { ai: 1, zi: 2, dir: t.dir, base: t.base, period: t.period, dz: t.dz, len: t.len, cont: t.cont });
+    /** 顶面上每个位置出现过的贴图坐标：同一个位置只能有一个 */
+    const seams = (ms: TriMesh[]) => {
+      const at = new Map<string, number[]>();
+      let bad = 0, n = 0;
+      for (const m of ms) for (let i = 0; i < m.pos.length / 3; i++) {
+        if (m.nrm![i * 3 + 2] < 0.5) continue;
+        const k = [0, 1, 2].map((j) => Math.round(m.pos[i * 3 + j] * 100)).join(','), uv = [m.uv[i * 2], m.uv[i * 2 + 1]], was = at.get(k);
+        n++;
+        if (!was) at.set(k, uv); else if (Math.abs(was[0] - uv[0]) > 1e-3 || Math.abs(was[1] - uv[1]) > 1e-3) bad++;
+      }
+      return { bad, n };
+    };
+    const orig = seams(parts), now = seams(r);
+    check(orig.bad > 0, `原来的模型顶面每段各贴各的（${orig.bad} 处对不上），这条测试才有意义`);
+    check(now.n > 20 && now.bad === 0, `重新生成后顶面的贴图坐标处处接得上：${now.bad} / ${now.n}`);
+    // 坡度不变：每个周期升高 6.1467
+    let top = -Infinity;
+    for (const m of r) for (let i = 2; i < m.pos.length; i += 3) top = Math.max(top, m.pos[i]);
+    check(near(top, (t.len / t.period) * t.dz, 0.05), `拉到 2.3 倍：顶端高度 ${top.toFixed(3)}`);
   });
 }

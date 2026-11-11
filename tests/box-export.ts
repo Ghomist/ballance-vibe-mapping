@@ -227,6 +227,44 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     check(!!floor && state(floor).join() === 'false,true', '普通物体不受影响');
   });
 
+  scenario('NMO：波浪板接长 / 截断后导出的是重新生成的网格，不是缩放', () => {
+    const P = 32.88709, base = 180.8776;
+    for (const [L, rot] of [[4 * P, 0], [250, 1], [60, 2]] as const) {
+      const d = level();
+      d.elems[60] = { id: 60, kind: 'asset', name: 'Level2_WaveWood', x: 100, y: 50, z: 10, rot, scale: [L / base, 1.5] };
+      const n = buildNmoDoc(exportBoxScene(d), lib());
+      const o = n.objects.find((x) => x.name.includes('Level2_WaveWood'));
+      const m = o?.mesh != null ? n.meshes[o.mesh] : null;
+      check(!!m && m.name.includes('_Tile'), `长 ${L.toFixed(1)}：用的是接长 / 截断的网格（${m?.name}）`);
+      if (!m || !o) continue;
+      // Virtools 坐标：长度方向是 x，模型往 -x 长；矩阵里长度方向不缩放、宽度方向 1.5 倍
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < m.pos.length; i += 3) { lo = Math.min(lo, m.pos[i]); hi = Math.max(hi, m.pos[i]); }
+      check(Math.abs(lo + L) < 0.01 && Math.abs(hi) < 0.01, `长 ${L.toFixed(1)}：网格长度 ${lo.toFixed(2)}～${hi.toFixed(2)}`);
+      const mx = o.matrix, row = (r: number) => Math.hypot(mx[r * 4], mx[r * 4 + 1], mx[r * 4 + 2]);
+      check(Math.abs(row(0) - 1) < 1e-4 && Math.abs(row(1) - 1) < 1e-4 && Math.abs(row(2) - 1.5) < 1e-4, `长 ${L.toFixed(1)}：矩阵只在宽度方向缩放（${[0, 1, 2].map((r) => row(r).toFixed(3))}）`);
+      check(m.faces.length / 3 === m.faceMtl.length && m.uv.length / 2 === m.pos.length / 3 && m.nml.length === m.pos.length, '面、材质、贴图坐标、法线数量对得上');
+      // 绕序和法线一致（端面没有翻面）
+      let bad = 0;
+      for (let f = 0; f < m.faces.length; f += 3) {
+        const [a0, b0, c0] = [0, 1, 2].map((k) => m.faces[f + k] * 3);
+        const e1 = [0, 1, 2].map((k) => m.pos[b0 + k] - m.pos[a0 + k]), e2 = [0, 1, 2].map((k) => m.pos[c0 + k] - m.pos[a0 + k]);
+        const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        const len = Math.hypot(...cr);
+        if (len < 1e-6) continue;
+        const dn = (cr[0] * m.nml[a0] + cr[1] * m.nml[a0 + 1] + cr[2] * m.nml[a0 + 2]) / len;
+        bad += dn > 0.2 ? 1 : dn < -0.2 ? -1 : 0;
+      }
+      check(Math.abs(bad) === m.faces.length / 3 || Math.abs(Math.abs(bad) - m.faces.length / 3) <= 2, `长 ${L.toFixed(1)}：所有面的绕序和法线方向一致（${bad} / ${m.faces.length / 3}）`);
+    }
+    // 没拉长度方向的还是走原来的路
+    const d = level();
+    d.elems[60] = { id: 60, kind: 'asset', name: 'Level2_WaveWood', x: 0, y: 0, z: 0, rot: 0 };
+    d.elems[61] = { id: 61, kind: 'asset', name: 'Level2_WaveWood', x: 0, y: 40, z: 0, rot: 0, scale: [1, 2] };
+    const n = buildNmoDoc(exportBoxScene(d), lib());
+    check(!n.meshes.some((m) => m.name.includes('_Tile')) && n.meshes.some((m) => m.name.includes('_Stretch')), '只拉宽度：走缩放 + UV 补偿');
+  });
+
   scenario('NMO：漩涡和云层一样叫 SkyLayer（游戏脚本按名字加混合）', () => {
     const d = level();
     d.elems[60] = { id: 60, kind: 'asset', name: 'SkyLayerVortex', x: 0, y: 0, z: -80, rot: 0 };

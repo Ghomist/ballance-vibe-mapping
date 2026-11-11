@@ -32,6 +32,8 @@ export interface SceneAsset {
   rot3?: number[];
   /** 拉伸过的木制件：本地 X、Y 的缩放（rot3 里已经带着），UV 要补偿成平铺重复 */
   uvStretch?: [number, number];
+  /** 花纹重复的木制件接长 / 截断（模型本地、Blender 坐标；见 view/tilemesh.ts）：网格要重新生成 */
+  tile?: { axis: 0 | 1; dir: 1 | -1; base: number; period: number; dz: number; len: number; off: number; cont: boolean };
   /** 挖掉模型本地的这些矩形 [x0, x1, y0, y1]（盘点路面去掉自带的延伸路） */
   crop?: [number, number, number, number][];
 }
@@ -75,7 +77,7 @@ const ASSET_KIND: Record<string, SceneAsset['kind']> = {
   RailCrossing: 'rail', MonorailCrossing: 'rail',
 };
 export const assetKind = (name: string): SceneAsset['kind'] =>
-  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider|Wood|Modul_|ConcaveWood|ConvexWood|Level9_WoodBarrier|Level13_UWoodPath|Turnstile)/.test(name) ? 'floor' : 'deco');
+  ASSET_KIND[name] ?? (/^(CheckPoint_|StartPoint_|TrafoBase_|Ventilator_|Slider|Wood|Modul_|ConcaveWood|ConvexWood|Level\d+_|Turnstile)/.test(name) ? 'floor' : 'deco');
 
 export function exportScene(m: Model): SceneDesc {
   const warnings: string[] = [];
