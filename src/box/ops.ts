@@ -233,3 +233,86 @@ export function uprightElem(e: Elem) {
   e.x += c[0] - p[0]; e.y += c[1] - p[1]; e.z += c[2] - p[2];
   rotateWorld(e, rotZ(yaw), c);
 }
+
+/** 把别处来的元素（剪贴板、另一张图）放进这张图：换上新的编号，绑定组也换成这张图里没用过的。返回新编号 */
+export function pasteElems(doc: Doc, src: Elem[]): number[] {
+  let g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0));
+  const remap = new Map<number, number>();
+  const out: number[] = [];
+  for (const s of [...src].sort((a, b) => a.id - b.id)) {
+    const e: Elem = JSON.parse(JSON.stringify(s));
+    e.id = doc.nextId++;
+    if (e.group !== undefined) { if (!remap.has(e.group)) remap.set(e.group, ++g); e.group = remap.get(e.group); }
+    doc.elems[e.id] = e;
+    out.push(e.id);
+  }
+  return out;
+}
+
+/** 能不能镜像：路面、平凹转换、钢轨（直轨、弯轨、曲线、曲线路面、弧形路面）、护栏、死亡区；机关、木制件这些固定的模型和倾斜的东西不行 */
+export function canMirror(e: Elem): boolean {
+  if (e.kind === 'guard') return true;
+  if (e.kind === 'rail') return !e.q;
+  if (e.kind === 'box' || e.kind === 'zone') return !e.q;
+  if (e.kind === 'piece') return !e.q && (e.type === 'transition' || e.type === 'transition-narrow');
+  return false;
+}
+
+/**
+ * 镜像：沿 axis（0 是左右翻，x 取反；1 是前后翻，y 取反）翻过去，镜面过 c。只处理 canMirror 的元素，返回处理了几个、跳过了几个。
+ * 思路：镜像 = 「元素在自己的坐标系里翻一下」+「朝向取反」+「参考点挪到镜像的位置」。
+ */
+export function mirrorElems(doc: Doc, ids: Iterable<number>, axis: 0 | 1, c: number): { done: number; skipped: number } {
+  let done = 0, skipped = 0;
+  const flip = (p: number[]) => { p[axis] = r6(2 * c - p[axis]); };
+  const norm = (a: number) => r6(((a % 360) + 360) % 360);
+  for (const id of ids) {
+    const e = doc.elems[id];
+    if (!e) continue;
+    if (!canMirror(e)) { skipped++; continue; }
+    done++;
+    if (e.kind === 'guard') {
+      // 点翻过去以后绕向反了（朝外的方向要在前进方向的右手边）：整条倒过来
+      for (const p of e.pts) flip(p);
+      e.outs = e.outs.map((o) => { const v: [number, number] = [o[0], o[1]]; v[axis] = -v[axis]; return v; });
+      e.pts.reverse(); e.outs.reverse();
+      [e.x, e.y, e.z] = e.pts[0];
+      continue;
+    }
+    if (e.kind === 'rail') {
+      const o = [e.x, e.y];
+      flip(o);
+      e.x = o[0]; e.y = o[1];
+      // 朝向取反（左右翻还要掉个头），自己的坐标系里左右对调：转弯反向、侧轨换边、曲线的点和侧倾取反
+      e.heading = norm(axis === 0 ? 180 - e.heading : -e.heading);
+      for (const p of e.pieces) if (p.angle) p.angle = -p.angle;
+      if (e.side) e.side.dir = -e.side.dir as 1 | -1;
+      if (e.curve) for (const p of e.curve.pts) {
+        p.p[1] = r6(-p.p[1]);
+        if (p.in) p.in[1] = r6(-p.in[1]);
+        if (p.out) p.out[1] = r6(-p.out[1]);
+        if (p.bank) p.bank = -p.bank;
+      }
+      continue;
+    }
+    // 路面、死亡区、平凹转换：中心挪到镜像的位置，绕 Z 的角度取反，自己的坐标系里沿这根轴翻一下
+    const was = toWorld(e, pivotOf(e));
+    if (e.ang) e.ang = norm(-e.ang) || undefined;
+    if (e.kind === 'box') {
+      // 坡：沿这根轴的坡，高低两头对调；另一根轴的坡不变
+      if (e.slope && e.slope.axis === axis) { e.z = r6(e.z + e.slope.dz); e.slope = { axis, dz: -e.slope.dz }; }
+      const swap = (m: number | undefined) => { if (!m) return m; const a = (m >> axis) & 1, b = (m >> (axis + 2)) & 1; return (m & ~((1 << axis) | (1 << (axis + 2)))) | (b << axis) | (a << (axis + 2)); };
+      e.open = swap(e.open) || undefined;
+      e.closed = swap(e.closed) || undefined;
+    } else if (e.kind === 'piece') {
+      // 朝向是四个方向之一：沿这根轴的两个方向对调
+      if (e.rot % 2 === axis) e.rot = ((e.rot + 2) % 4) as Dir;
+    }
+    const to: V3 = [was[0], was[1], was[2]];
+    flip(to);
+    const now = toWorld(e, pivotOf(e));
+    translateElem(e, [to[0] - now[0], to[1] - now[1], to[2] - now[2]]);
+    e.x = r6(e.x); e.y = r6(e.y); e.z = r6(e.z);
+  }
+  return { done, skipped };
+}

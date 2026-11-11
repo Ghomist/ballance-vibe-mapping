@@ -15,7 +15,7 @@ import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoa
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
 import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
-import { Bounds, V3, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
+import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
@@ -28,6 +28,8 @@ import { SCENES } from './scenes';
 import { decodeShare, encodeShare } from './share';
 import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
 import { ASSET_INFO, assetInfo, meshScale, tileOf } from './asset-info';
+import { checkLevel, type Issue } from './check';
+import { BVM_EXT, decodeBvm, encodeBvm } from './file';
 import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
 import { setTextureLoadedCallback } from '../view/assets';
@@ -117,6 +119,8 @@ const LIB_W = 284, LIB_H = 236;
 interface Prefs {
   side: 'left' | 'right' | 'bottom'; gridStep: number; modelView: boolean; theme: 'dark' | 'light'; tab: string;
   grid: boolean; align: boolean; sectors: boolean; sector: number; flySpeed: number; folded: boolean;
+  /** 素材库「常用」：收藏的素材、最近放过的素材（素材库卡片的 type） */
+  fav: string[]; recent: string[];
   /** 移动手柄（选中后的 X / Y / Z 箭头）一直显示：没设过时手机上开、电脑上关（关着时按住 Shift 临时显示） */
   gizmo: boolean | null;
   /** 护栏工具点一下放整条直边时，两头各往里缩多少 */
@@ -137,7 +141,7 @@ interface Prefs {
   gridShown: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
+  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 loadKeys(prefs.keys);
@@ -145,13 +149,21 @@ loadKeys(prefs.keys);
  * 触摸屏界面：手机尺寸（横屏时高度、竖屏时宽度不超过 600）的触摸设备，平板和电脑不算。
  * 网址加 ?touch 可以在电脑上强制打开，方便调试。打开时 body 有 touch-ui 类（布局见 app.css）
  */
-const TOUCH_MQ = matchMedia('(pointer: coarse) and (max-height: 600px), (pointer: coarse) and (max-width: 600px)');
-const TOUCH_FORCED = new URLSearchParams(location.search).has('touch');
-let touchUI = TOUCH_FORCED || TOUCH_MQ.matches;
-document.body.classList.toggle('touch-ui', touchUI);
-TOUCH_MQ.addEventListener('change', () => {
-  touchUI = TOUCH_FORCED || TOUCH_MQ.matches;
-  document.body.classList.toggle('touch-ui', touchUI);
+const PHONE_MQ = matchMedia('(pointer: coarse) and (max-height: 600px), (pointer: coarse) and (max-width: 600px)');
+/** 平板：手指是主要的输入、没有能悬停的鼠标（接了鼠标 / 触控板的平板按电脑算）。手势、大按钮和手机一样，布局用电脑的 */
+const TABLET_MQ = matchMedia('(pointer: coarse) and (hover: none)');
+/** 网址加 ?touch 强制成手机界面，?touch=tablet 强制成平板界面 */
+const TOUCH_PARAM = new URLSearchParams(location.search).get('touch');
+const isPhone = () => (TOUCH_PARAM !== null && TOUCH_PARAM !== 'tablet') || PHONE_MQ.matches;
+/** 触摸界面（手机和平板）：手势、提示、手柄大小；phoneUI 只管手机的紧凑布局（body.phone） */
+let touchUI = TOUCH_PARAM !== null || PHONE_MQ.matches || TABLET_MQ.matches;
+let phoneUI = isPhone();
+const syncTouchClass = () => { document.body.classList.toggle('touch-ui', touchUI); document.body.classList.toggle('phone', phoneUI); };
+syncTouchClass();
+for (const mq of [PHONE_MQ, TABLET_MQ]) mq.addEventListener('change', () => {
+  touchUI = TOUCH_PARAM !== null || PHONE_MQ.matches || TABLET_MQ.matches;
+  phoneUI = isPhone();
+  syncTouchClass();
   applySide(); updateStatus();
 });
 /** 触摸屏的框选开关：打开时单指在空白处拖是框选，关着是环视（按钮在文件末尾） */
@@ -189,6 +201,12 @@ const savePrefs = () => { try { localStorage.setItem('bvm.box.prefs', JSON.strin
 const snapG = (v: number) => Math.round(v / prefs.gridStep) * prefs.gridStep;
 let doc: Doc = (() => { try { const s = localStorage.getItem(STORE); if (s) return JSON.parse(s) as Doc; } catch { /* 读不了就从空白开始 */ } return emptyDoc(); })();
 let sel = new Set<number>();
+/**
+ * 孤立模式：只留选中的那些元素，其余的暂存在 stash 里（不画、点不到、不参与吸附和花纹解算），退出时放回来。
+ * doc 里这时只有看得见的元素；保存、导出、撤销、检查这些要整张图的地方一律用 fullDoc()。
+ */
+let stash: Record<number, Elem> | null = null;
+const fullDoc = (): Doc => (stash ? { ...doc, elems: { ...stash, ...doc.elems } } : doc);
 let gridOn = prefs.grid;
 let alignOn = prefs.align; // 自动对齐默认开着，格栅默认关着
 /** 新放的机关归到第几小节（顶栏的下拉框；放盘点时自动切到它的小节） */
@@ -217,9 +235,10 @@ let cleanDoc: string | null = JSON.stringify(emptyDoc());
 let mapTimer = 0;
 async function flushMap() {
   clearTimeout(mapTimer);
-  const id = mapId, json = JSON.stringify(doc), name = doc.name ?? '', count = Object.keys(doc.elems).length;
+  const full = fullDoc();
+  const id = mapId, json = JSON.stringify(full), name = doc.name ?? '', count = Object.keys(full.elems).length;
   if (!count || json === cleanDoc) return;
-  const code = await encodeShare(doc);
+  const code = await encodeShare(full);
   if (!putMap(localStorage, { id, name, code, count, updated: Date.now() })) flash('浏览器存储满了，历史地图没存上，删掉几张吧', true);
 }
 const scheduleMap = () => { clearTimeout(mapTimer); mapTimer = window.setTimeout(() => void flushMap(), 800); };
@@ -235,8 +254,8 @@ mapNameEl.addEventListener('change', () => { setMapName(mapNameEl.value.trim());
 mapNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === 'Escape') mapNameEl.blur(); });
 syncMapName();
 const redo: string[] = [];
-const snapshot = () => { undo.push(JSON.stringify(doc)); redo.length = 0; if (undo.length > 200) undo.shift(); };
-const save = () => { try { localStorage.setItem(STORE, JSON.stringify(doc)); } catch { /* 存不了就算了 */ } scheduleMap(); };
+const snapshot = () => { undo.push(JSON.stringify(fullDoc())); redo.length = 0; if (undo.length > 200) undo.shift(); };
+const save = () => { try { localStorage.setItem(STORE, JSON.stringify(fullDoc())); } catch { /* 存不了就算了 */ } scheduleMap(); };
 
 /** 提示消息：顶栏下方居中，新的排在下面，最多同时三条；同样的话连着说只把时间续上，轻轻跳一下 */
 const toastHost = document.createElement('div');
@@ -770,17 +789,31 @@ function syncOps() {
     group: es.length >= 2 && !(es.every((e) => e.group !== undefined && e.group === es[0].group)),
     ungroup: es.some((e) => e.group !== undefined),
   };
-  const shown = es.length > 0 && !busy;
-  const key = shown ? `${es.length}:${+can.merge}${+can.group}${+can.ungroup}` : '';
+  // 孤立模式里没选东西也留着这一条：上面有「退出孤立」，不会被困在里面
+  const iso = !!stash, mirror = es.some(canMirror);
+  const shown = (es.length > 0 || iso) && !busy;
+  const key = shown ? `${es.length}:${+can.merge}${+can.group}${+can.ungroup}${+mirror}${+iso}${iso ? Object.keys(doc.elems).length : ''}${prefs.coordSys}` : '';
   if (key === selbarKey) return;
   selbarKey = key;
   selbar.hidden = !shown;
   if (!shown) return;
-  selCount.textContent = `已选 ${es.length}`;
+  selCount.textContent = es.length ? `已选 ${es.length}` : '';
+  selCount.hidden = !es.length;
   for (const [id, on] of Object.entries(can)) document.getElementById(id)!.hidden = !on;
+  for (const b of selbar.querySelectorAll<HTMLElement>('.needs-sel')) b.hidden = !es.length;
+  for (const a of [0, 1] as const) {
+    const b = document.getElementById(a ? 'mirror-y' : 'mirror-x')!;
+    b.hidden = !mirror;
+    b.querySelector('span')!.textContent = `镜像 ${axisNames(prefs.coordSys !== 'math')[a]}`;
+  }
+  document.getElementById('isolate')!.hidden = iso || !es.length;
+  document.getElementById('iso-exit')!.hidden = !iso;
+  const chip = document.getElementById('iso-chip')!;
+  chip.hidden = !iso;
+  chip.textContent = `孤立中 · ${Object.keys(doc.elems).length} 个`;
 }
 // ---- 小节（和上一版一样：顶栏选当前小节，新放的机关归到这个小节；不自动推断）----
-const checksSorted = () => Object.values(doc.elems).filter((e): e is Extract<Elem, { kind: 'piece' }> => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
+const checksSorted = () => Object.values(fullDoc().elems).filter((e): e is Extract<Elem, { kind: 'piece' }> => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
 const sectorCount = () => 1 + checksSorted().length;
 const sectorOfCheck = (id: number) => { const c = checksSorted(); const p = c.find((x) => x.id === id); return p?.sector ?? c.indexOf(p!) + 2; };
 const sectorBtn = document.getElementById('sector')!, sectorMenu = document.getElementById('sector-menu')!, sectorEye = document.getElementById('sector-eye')!;
@@ -2520,10 +2553,11 @@ function placeMove(e: PointerEvent) {
   const over = document.elementFromPoint(e.clientX, e.clientY) === el;
   if (!over) return;
   // 触摸屏：卡片真的拖进视图了，素材库收起来，整个视图都能放（轻点卡片放到视图中心时不收）
-  if (!drag.moved && touchUI && !prefs.folded) toggleFold();
+  if (!drag.moved && phoneUI && !prefs.folded) toggleFold();
   drag.moved = true;
   if (drag.ids === null) {
     snapshot();
+    noteUsed(drag.type);
     const es = newElems(drag.type);
     for (const n of es) doc.elems[n.id] = n;
     drag.ids = es.map((n) => n.id);
@@ -2625,6 +2659,7 @@ function placeEnd(e: PointerEvent) {
   if (!drag.moved && !over && !drag.touch) {
     // 点击按钮：放到视图中心（手指按住又松开不算）
     snapshot();
+    noteUsed(drag.type);
     const es = newElems(drag.type);
     for (const n of es) doc.elems[n.id] = n;
     const ids = es.map((n) => n.id);
@@ -2657,6 +2692,19 @@ function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
     type: `asset:${a.name}`, label: a.label,
     hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : tab === 'deco' ? '装饰' : '特殊路块'} · ${a.name}${a.tile ? ' · Ctrl 拖可接长 / 截断' : a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
   }));
+}
+/** 「常用」标签：收藏的（星标）在前，最近放过的在后 */
+const FAV_TAB = 'fav', RECENT_MAX = 12;
+function favItems(): LibItem[] {
+  const all = new Map(LIB.flatMap((g) => g.items).map((it) => [it.type, it]));
+  return [...prefs.fav, ...prefs.recent.filter((t) => !prefs.fav.includes(t))].map((t) => all.get(t)).filter((it): it is LibItem => !!it);
+}
+/** 放下了一个素材：记到「最近用过」的最前面 */
+function noteUsed(type: string) {
+  if (prefs.recent[0] === type) return;
+  prefs.recent = [type, ...prefs.recent.filter((t) => t !== type)].slice(0, RECENT_MAX);
+  savePrefs();
+  if (prefs.tab === FAV_TAB && !libSearch.value) renderLib();
 }
 const LIB: { id: string; label: string; items: LibItem[] }[] = [
   {
@@ -2713,7 +2761,7 @@ palette.innerHTML = `
     </span>
     <button class="fold" id="lib-fold" title="收起 / 展开"><svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg></button>
   </div>
-  <div class="lib-tabs">${LIB.map((g) => `<button data-tab="${g.id}">${g.label}<small>${g.items.length}</small></button>`).join('')}</div>
+  <div class="lib-tabs"><button data-tab="${FAV_TAB}" title="常用：收藏的和最近放过的素材">常用<small>0</small></button>${LIB.map((g) => `<button data-tab="${g.id}">${g.label}<small>${g.items.length}</small></button>`).join('')}</div>
   <div class="lib-search"><input type="search" placeholder="搜索名称或代号…" /></div>
   <div class="lib-body"><div class="lib-grid"></div><div class="lib-empty" hidden>没有匹配的素材</div></div>
   <div class="lib-foot">按住卡片拖到场景里放下（拖动中 R 旋转、右键取消）· 点一下放到视图中心</div>`;
@@ -2725,10 +2773,18 @@ const keyHint = (t: string) => t.replace(/\bCtrl\b/g, keyText('hold.stretch')).r
 function renderLib() {
   const q = libSearch.value.trim().toLowerCase();
   // 搜索时跨所有标签找；不搜索时只显示当前标签
-  const items = q ? LIB.flatMap((g) => g.items).filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q)) : (LIB.find((g) => g.id === prefs.tab) ?? LIB[0]).items;
-  palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => b.classList.toggle('on', !q && b.dataset.tab === prefs.tab));
-  libGrid.innerHTML = items.map((it) => `<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
-${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span></div>`).join('');
+  const fav = !q && prefs.tab === FAV_TAB;
+  const items = q ? LIB.flatMap((g) => g.items).filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q)) : fav ? favItems() : (LIB.find((g) => g.id === prefs.tab) ?? LIB[0]).items;
+  palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => {
+    b.classList.toggle('on', !q && b.dataset.tab === prefs.tab);
+    if (b.dataset.tab === FAV_TAB) b.querySelector('small')!.textContent = String(favItems().length);
+  });
+  const stars = new Set(prefs.fav);
+  // 「常用」里先是收藏的，后面是最近放过的；两段之间隔一下
+  const nFav = fav ? items.filter((it) => stars.has(it.type)).length : 0;
+  libGrid.innerHTML = items.map((it, i) => `${fav && i === nFav && nFav > 0 ? '<div class="lib-sep">最近用过</div>' : ''}<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
+${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button></div>`).join('');
+  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : '没有匹配的素材';
   libEmpty.hidden = items.length > 0;
   fillThumbs();
 }
@@ -2791,7 +2847,15 @@ palette.querySelector('.lib-tabs')!.addEventListener('click', (e) => {
   renderLib();
 });
 libSearch.addEventListener('input', renderLib);
+libGrid.addEventListener('click', (e) => {
+  const st = (e.target as Element).closest<HTMLElement>('[data-star]'), type = st?.closest<HTMLElement>('.lib-card')?.dataset.type;
+  if (!st || !type) return;
+  prefs.fav = prefs.fav.includes(type) ? prefs.fav.filter((t) => t !== type) : [...prefs.fav, type];
+  savePrefs();
+  renderLib();
+});
 libGrid.addEventListener('pointerdown', (e) => {
+  if ((e.target as Element).closest('[data-star]')) return; // 点星标不算拿起卡片
   const c = (e.target as Element).closest<HTMLElement>('.lib-card');
   if (!c || e.button !== 0) return;
   if (e.pointerType === 'touch') {
@@ -2925,7 +2989,7 @@ setTextureLoadedCallback(fillThumbs);
 function applySide() {
   const work = document.getElementById('work')!;
   // 触摸屏横着拿时太矮，停靠底部按右边算
-  const side = touchUI && prefs.side === 'bottom' ? 'right' : prefs.side;
+  const side = phoneUI && prefs.side === 'bottom' ? 'right' : prefs.side;
   work.classList.remove('dock-left', 'dock-right', 'dock-bottom');
   work.classList.add(`dock-${side}`);
   props.classList.toggle('right', side === 'left');
@@ -3236,9 +3300,19 @@ function nudge(d: V3) {
 }
 const keepSel = () => { sel = new Set([...sel].filter((id) => doc.elems[id])); };
 /** 撤销、重做不动地图名字（改名不算一步编辑） */
-const restoreDoc = (s: string) => { const name = doc.name; doc = JSON.parse(s); if (name) doc.name = name; else delete doc.name; };
-function undoOnce() { if (undo.length) { redo.push(JSON.stringify(doc)); restoreDoc(undo.pop()!); keepSel(); rebuild(); } }
-function redoOnce() { if (redo.length) { undo.push(JSON.stringify(doc)); restoreDoc(redo.pop()!); keepSel(); rebuild(); } }
+const restoreDoc = (s: string) => {
+  const name = doc.name;
+  doc = JSON.parse(s);
+  if (name) doc.name = name; else delete doc.name;
+  // 孤立模式里撤销：存的是整张图，进孤立时藏起来的那些还是藏着
+  if (stash) {
+    const hidden = stash, st: Record<number, Elem> = {};
+    for (const e of Object.values(doc.elems)) if (e.id in hidden) { st[e.id] = e; delete doc.elems[e.id]; }
+    stash = st;
+  }
+};
+function undoOnce() { if (undo.length) { redo.push(JSON.stringify(fullDoc())); restoreDoc(undo.pop()!); keepSel(); rebuild(); } }
+function redoOnce() { if (redo.length) { undo.push(JSON.stringify(fullDoc())); restoreDoc(redo.pop()!); keepSel(); rebuild(); } }
 
 const lastMouse = { clientX: 0, clientY: 0 };
 let lastPointerTouch = false;
@@ -3251,6 +3325,10 @@ document.getElementById('dup')!.addEventListener('click', () => { const r = el.g
 document.getElementById('rot')!.addEventListener('click', doRotate);
 document.getElementById('del')!.addEventListener('click', doDelete);
 document.getElementById('focus-sel')!.addEventListener('click', () => frameSelection());
+document.getElementById('mirror-x')!.addEventListener('click', () => doMirror(0));
+document.getElementById('mirror-y')!.addEventListener('click', () => doMirror(1));
+document.getElementById('isolate')!.addEventListener('click', () => enterIsolate());
+document.getElementById('iso-exit')!.addEventListener('click', () => exitIsolate());
 document.getElementById('desel')!.addEventListener('click', () => { sel.clear(); drawOverlay(); syncProps(); updateStatus(); });
 const gridBtn = document.getElementById('grid')!;
 gridBtn.classList.toggle('active', gridOn);
@@ -3292,6 +3370,9 @@ window.addEventListener('keydown', (e) => {
   else if (act === 'align') toggleAlign();
   else if (act === 'guard') (guardMode ? exitGuard() : enterGuard());
   else if (act === 'focus') frameSelection();
+  else if (act === 'mirror.x') doMirror(0);
+  else if (act === 'mirror.y') doMirror(1);
+  else if (act === 'isolate') (stash ? exitIsolate() : enterIsolate());
   else if (act === 'delete' && !drag) doDelete();
   else if (act === 'mode.select') selectTool();
   else if (act?.startsWith('mode.')) setPermMode(act.slice(5) as Mode);
@@ -3334,6 +3415,7 @@ function yawOfElem(e: Elem): number | null {
 }
 
 function syncProps() {
+  if (sel.size > 1 && drag?.t !== 'grab' && drag?.t !== 'rotate') { syncMultiProps(); return; }
   const one = sel.size === 1 ? doc.elems[[...sel][0]] : null;
   if (!one || drag?.t === 'grab' || drag?.t === 'rotate') { showEl(props, false); return; }
   if (props.dataset.id === String(one.id) && props.contains(document.activeElement)) return;
@@ -3822,12 +3904,15 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'import') openImport();
   else if (act === 'copy') void copyMapCode();
   else if (act === 'nmo') void exportNmo();
+  else if (act === 'check') void openCheck(false);
+  else if (act === 'save-file') void saveFile();
+  else if (act === 'open-file') fileInput.click();
 });
 /** 把当前地图的地图码放进剪贴板 */
 async function copyMapCode() {
-  if (!Object.keys(doc.elems).length) { flash('地图是空的', true); return; }
+  if (!Object.keys(fullDoc().elems).length) { flash('地图是空的', true); return; }
   try {
-    const code = await encodeShare(doc);
+    const code = await encodeShare(fullDoc());
     await navigator.clipboard.writeText(code);
     flash(`已复制地图码（${code.length} 个字符）`);
   } catch (e) { flash(`复制失败：${(e as Error).message}`, true); }
@@ -3923,13 +4008,12 @@ async function openHistory() {
 let exporting = false;
 async function exportNmo() {
   if (exporting) return;
-  const desc = exportBoxScene(doc);
-  if (desc.warnings.length && !await askConfirm(`${desc.warnings.join('\n')}\n\n仍然导出？`, '仍然导出')) return;
+  if (!await openCheck(true)) return;
   const file = `${(doc.name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'map'}.nmo`;
   try {
     exporting = true;
     flash('正在生成 .nmo…');
-    const { data } = await exportBoxNmo(doc);
+    const { data } = await exportBoxNmo(fullDoc());
     download(file, data as BlobPart, 'application/octet-stream');
     flash(`已导出 ${file}`);
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
@@ -4397,6 +4481,7 @@ window.addEventListener('blur', () => { modKeys.ctrl = modKeys.alt = false; sync
 /** 换一张地图：当前的先存进历史，撤销记录清掉（不能撤销到别的地图上） */
 async function switchMap(d: Doc, id = newMapId()) {
   await flushMap();
+  stash = null;
   doc = d;
   mapId = id;
   try { localStorage.setItem(MAP_ID, id); } catch { /* 存不了就算了 */ }
@@ -4595,7 +4680,8 @@ renderer.setAnimationLoop(() => {
   get solveStats() { return { ...solveStats }; },
   get groups() { return elemGroups; },
   get doc() { return doc; },
-  set doc(d: Doc) { doc = d; rebuild(); },
+  set doc(d: Doc) { stash = null; doc = d; rebuild(); },
+  get isolated() { return !!stash; },
   get prefs() { return prefs; },
   /** 手柄现在在哪、多大（演示和测试找箭头、圆环用）：mode 是当前编辑模式 */
   gizmoInfo: () => ({
@@ -5295,3 +5381,222 @@ function handleAt(e: { clientX: number; clientY: number }): Handle | null {
   return best;
 }
 applyMode();
+
+// ---------------- 多选时的属性面板：一起改高度、样式、厚度、小节、轨型 ----------------
+/** 路面类（方块路面、曲线路面、弧形路面）的样式和厚度 */
+const roadOf = (e: Elem) => (e.kind === 'box' ? e : e.kind === 'rail' && e.road ? e.road : null);
+const isModule = (e: Elem): e is Obj => e.kind === 'obj' && objType(e.type)?.cat === 'module' && e.type !== 'PE_Balloon';
+/** 普通钢轨（不是曲线路面 / 弧形路面 / 侧轨）：能换单轨 / 双轨 */
+const plainRail = (e: Elem): e is RailElem => e.kind === 'rail' && !e.road && !e.side && !e.sideSpiral && e.pieces.every((p) => p.kind !== 'transition');
+function syncMultiProps() {
+  const es = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  const key = `m:${es.map((e) => e.id).join(',')}`;
+  if (props.dataset.id === key && props.contains(document.activeElement)) return;
+  showEl(props, true);
+  props.dataset.id = key;
+  /** 都一样就是那个值，不一样是 null */
+  const common = <T,>(vs: T[]): T | null => (vs.length && vs.every((v) => v === vs[0]) ? vs[0] : null);
+  const num = (k: string, label: string, v: number | null, step = 0.5, extra = '') => `<label>${label}</label><input data-mk="${k}" type="number" step="${step}"${extra} value="${v === null ? '' : +v.toFixed(4)}" placeholder="多个值">`;
+  const pick = (k: string, label: string, opts: [string, string][], v: string | null) => `<label>${label}</label><select data-mk="${k}">${v === null ? '<option value="" selected>多个值</option>' : ''}${opts.map(([o, n]) => `<option value="${o}"${o === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+  const NAMES: [string, (e: Elem) => boolean][] = [['路面', (e) => !!roadOf(e) || (e.kind === 'piece' && !isCheckpoint(e))], ['钢轨', (e) => e.kind === 'rail' && !e.road], ['机关', isModule], ['护栏', (e) => e.kind === 'guard'], ['死亡区', (e) => e.kind === 'zone']];
+  const counts = NAMES.map(([n, f]) => [n, es.filter(f).length] as const).filter(([, c]) => c > 0);
+  const rest = es.length - counts.reduce((s, [, c]) => s + c, 0);
+  const roads = es.map(roadOf).filter((r): r is NonNullable<ReturnType<typeof roadOf>> => !!r), mods = es.filter(isModule), rails = es.filter(plainRail);
+  const zs = es.filter((e) => e.kind !== 'guard').map((e) => +propPos(e)[2].toFixed(4));
+  let h = `<div class="title"><span>已选 ${es.length} 个<small>${[...counts.map(([n, c]) => `${n} ${c}`), ...(rest ? [`其他 ${rest}`] : [])].join(' · ')}；改这里的值会一起改</small></span></div>`;
+  if (zs.length) h += num('z', prefs.coordSys !== 'math' ? '高度 y' : '高度 z', common(zs), 0.5);
+  if (roads.length) {
+    h += `<div class="sub">路面 ${roads.length} 块</div>`;
+    h += pick('style', '样式', [['normal', '平路'], ['sink', '凹路'], ['ribbon', '细边框凹路']], common(roads.map((r) => r.style)));
+    h += num('depth', '厚度', common(roads.map((r) => +r.depth.toFixed(4))), 0.5, ' min="0.1"');
+  }
+  if (rails.length) {
+    h += `<div class="sub">钢轨 ${rails.length} 条</div>`;
+    h += pick('railkind', '轨型', [['double', '双轨'], ['mono', '单轨']], common(rails.map((r) => r.pieces[0].kind)));
+  }
+  if (mods.length) {
+    h += `<div class="sub">机关 ${mods.length} 个</div>`;
+    h += pick('sector', '小节', Array.from({ length: sectorCount() }, (_, i) => [String(i + 1), `第 ${i + 1} 小节`] as [string, string]), common(mods.map((m) => String(Math.min(m.sector ?? 1, sectorCount())))));
+  }
+  props.innerHTML = h;
+  enhanceFields(props);
+}
+props.addEventListener('change', (ev) => {
+  const t = ev.target as HTMLInputElement, mk = t.dataset.mk;
+  if (!mk || sel.size < 2 || t.value === '') return;
+  const es = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  if (!numDrag) snapshot();
+  if (mk === 'z') { for (const e of es) if (e.kind !== 'guard') translateElem(e, [0, 0, +t.value - propPos(e)[2]]); }
+  else if (mk === 'style') { for (const e of es) { const r = roadOf(e); if (r) r.style = t.value as Style; } }
+  else if (mk === 'depth') { const d = Math.max(0.1, +t.value || 0.1); for (const e of es) { const r = roadOf(e); if (r) r.depth = d; } }
+  else if (mk === 'railkind') { for (const e of es) if (plainRail(e)) for (const p of e.pieces) p.kind = t.value as 'double' | 'mono'; }
+  else if (mk === 'sector') { for (const e of es) if (isModule(e)) e.sector = +t.value; }
+  props.dataset.id = '';
+  rebuild();
+});
+
+// ---------------- 镜像：路面、钢轨、护栏、死亡区沿选中整体的中线翻过去 ----------------
+function doMirror(axis: 0 | 1) {
+  if (!sel.size || drag) return;
+  const ids = [...expandGroups(doc, sel)];
+  const b = boundsOf(doc, ids.filter((id) => canMirror(doc.elems[id])).length ? ids.filter((id) => canMirror(doc.elems[id])) : ids);
+  snapshot();
+  const r = mirrorElems(doc, ids, axis, axis === 0 ? (b.x0 + b.x1) / 2 : (b.y0 + b.y1) / 2);
+  if (!r.done) { undo.pop(); flash('选中的东西不支持镜像：机关、木制件这些固定的模型，盘点，还有倾斜的东西都不行', true); return; }
+  flash(`已沿 ${AXIS_NAME[axis]} 镜像 ${r.done} 个${r.skipped ? `；跳过了 ${r.skipped} 个不支持镜像的（机关、固定的模型、倾斜的东西）` : ''}`, r.skipped > 0);
+  rebuild();
+}
+
+// ---------------- 孤立模式 ----------------
+function enterIsolate() {
+  if (stash || drag) return;
+  const keep = expandGroups(doc, sel);
+  if (!keep.size) { flash('先选中要单独留下的东西', true); return; }
+  if (keep.size === Object.keys(doc.elems).length) { flash('地图里只有这些东西，不用孤立', true); return; }
+  const st: Record<number, Elem> = {};
+  for (const e of Object.values(doc.elems)) if (!keep.has(e.id)) { st[e.id] = e; delete doc.elems[e.id]; }
+  stash = st;
+  document.body.classList.add('isolated');
+  flash(`孤立模式：只显示这 ${keep.size} 个，其余 ${Object.keys(st).length} 个先藏起来。按 ${keyText('isolate')} 或点「退出孤立」放回来`);
+  frameSelection();
+  rebuild();
+}
+function exitIsolate() {
+  if (!stash) return;
+  if (drag) return;
+  // 孤立期间新绑的组，组号可能和藏起来的撞上：换成没用过的
+  const taken = new Set(Object.values(stash).map((e) => e.group).filter((g): g is number => g !== undefined));
+  let next = Math.max(0, ...taken, ...Object.values(doc.elems).map((e) => e.group ?? 0));
+  const remap = new Map<number, number>();
+  for (const e of Object.values(doc.elems)) if (e.group !== undefined && taken.has(e.group)) { if (!remap.has(e.group)) remap.set(e.group, ++next); e.group = remap.get(e.group); }
+  Object.assign(doc.elems, stash);
+  stash = null;
+  document.body.classList.remove('isolated');
+  flash('已退出孤立模式');
+  rebuild();
+}
+
+// ---------------- 复制 / 粘贴：剪贴板里放一段地图码，同一张图或别的图里都能贴 ----------------
+const CLIP_PREFIX = 'bvm-clip:';
+/** 键盘正在别处用（输入框、弹窗、设置、帮助）：复制粘贴交给浏览器 */
+function typingElsewhere(e: Event) {
+  const t = e.target as HTMLElement | null, tag = t?.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t?.isContentEditable || !!document.querySelector('.confirm-mask') || settingsOpen() || !!document.querySelector('#help-modal.shown');
+}
+async function copySelection(cut: boolean) {
+  const ids = [...expandGroups(doc, sel)];
+  if (!ids.length) return;
+  try {
+    const part: Doc = { elems: Object.fromEntries(ids.map((id) => [id, doc.elems[id]])), nextId: doc.nextId };
+    await navigator.clipboard.writeText(CLIP_PREFIX + await encodeShare(part));
+  } catch (err) { flash(`复制失败：${(err as Error).message}`, true); return; }
+  if (cut) { snapshot(); for (const id of ids) delete doc.elems[id]; sel.clear(); rebuild(); }
+  flash(`已${cut ? '剪切' : '复制'} ${ids.length} 个元素：按 Ctrl+V 粘贴，在别的地图里也能粘贴`);
+}
+async function pasteText(text: string) {
+  const own = text.startsWith(CLIP_PREFIX);
+  let d: Doc;
+  try { d = await decodeShare((own ? text.slice(CLIP_PREFIX.length) : text).replace(/\s+/g, '')); }
+  catch { if (own) flash('剪贴板里的内容粘贴不了，可能复制得不完整', true); return; } // 别的文字：不是给我们的，不管
+  const src = Object.values(d.elems);
+  if (!src.length || drag) return;
+  exitGuard(); clearModes();
+  snapshot();
+  const ids = pasteElems(doc, src);
+  // 放到鼠标底下（鼠标不在视图里就放视图中间），高度不变；然后和复制一样跟着鼠标走，左键放下、右键取消
+  const r = el.getBoundingClientRect();
+  const inView = lastMouse.clientX >= r.left && lastMouse.clientX <= r.right && lastMouse.clientY >= r.top && lastMouse.clientY <= r.bottom;
+  const at = inView ? lastMouse : { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+  const b = boundsOf(doc, ids);
+  const p = planeHit(at, new THREE.Plane(new THREE.Vector3(0, 0, 1), -b.z1));
+  if (p) for (const id of ids) translateElem(doc.elems[id], [p.x - (b.x0 + b.x1) / 2, p.y - (b.y0 + b.y1) / 2, 0]);
+  sel = new Set(ids);
+  rebuild();
+  startGrab(at, true);
+  flash(`粘贴了 ${ids.length} 个元素：移动鼠标，左键放下，右键 / Esc 取消`);
+}
+document.addEventListener('copy', (e) => { if (typingElsewhere(e) || !sel.size || String(window.getSelection() ?? '')) return; e.preventDefault(); void copySelection(false); });
+document.addEventListener('cut', (e) => { if (typingElsewhere(e) || !sel.size || drag) return; e.preventDefault(); void copySelection(true); });
+document.addEventListener('paste', (e) => {
+  if (typingElsewhere(e)) return;
+  const text = e.clipboardData?.getData('text/plain')?.trim();
+  if (!text) return;
+  e.preventDefault();
+  void pasteText(text);
+});
+
+// ---------------- 地图文件（.bvm）：保存到电脑上、从电脑上打开 ----------------
+const fileName = () => (doc.name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'map';
+async function saveFile() {
+  const full = fullDoc();
+  if (!Object.keys(full.elems).length) { flash('地图是空的', true); return; }
+  try {
+    download(fileName() + BVM_EXT, await encodeBvm(full), 'application/json');
+    flash(`已保存 ${fileName()}${BVM_EXT}：以后用「文件 → 打开地图文件」打开`);
+  } catch (err) { flash(`保存失败：${(err as Error).message}`, true); }
+}
+/** 打不开的文件：弹框说清楚是哪个文件、为什么（一闪而过的提示容易错过） */
+function fileError(name: string, why: string) {
+  const { box, close } = openModal(`<h3>打不开这个文件</h3><p></p><div class="row"><button class="primary" data-r="1">知道了</button></div>`, '');
+  box.querySelector('p')!.textContent = `${name}\n${why}`;
+  box.querySelector('button')!.addEventListener('click', close);
+}
+async function openFile(f: File) {
+  let d: Doc;
+  try {
+    if (f.size > 20 * 1024 * 1024) throw new Error('文件太大了，不像是地图文件');
+    d = await decodeBvm(await f.text());
+  } catch (err) { fileError(f.name, (err as Error).message); return; }
+  if (!d.name) { const n = f.name.replace(/\.[^.]+$/, '').slice(0, 40); if (n) d.name = n; }
+  await switchMap(d);
+  cleanDoc = null; // 打开的图直接进历史
+  save();
+  flash(`已打开「${d.name || UNNAMED}」（${Object.keys(d.elems).length} 个元素），原来的地图在历史里`);
+}
+const fileInput = document.createElement('input');
+fileInput.type = 'file';
+fileInput.accept = `${BVM_EXT},.txt,application/json`;
+fileInput.hidden = true;
+document.body.appendChild(fileInput);
+fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) void openFile(f); });
+// 把文件拖进窗口也能打开
+const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } });
+window.addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  const f = e.dataTransfer!.files[0];
+  if (f) void openFile(f);
+});
+
+// ---------------- 关卡检查：导出前、或者从文件菜单打开 ----------------
+/** 列出检查结果。forExport：底下是「取消 / 导出」，返回要不要接着导出；没有任何问题时不弹，直接返回 true */
+function openCheck(forExport: boolean): Promise<boolean> {
+  const full = fullDoc();
+  const issues: Issue[] = [...checkLevel(full), ...exportBoxScene(full).warnings.filter((w) => w.startsWith('未知')).map((w) => ({ level: 'warn' as const, text: w }))];
+  if (forExport && !issues.length) return Promise.resolve(true);
+  const errs = issues.filter((i) => i.level === 'error').length;
+  return new Promise((resolve) => {
+    const rows = issues.map((it, n) => `<div class="chk-row ${it.level}${it.ids?.length ? ' go' : ''}" data-n="${n}"><i></i><div><b>${escHtml(it.text)}</b>${it.hint ? `<small>${escHtml(it.hint)}</small>` : ''}</div>${it.ids?.length ? '<span class="chk-go">查看</span>' : ''}</div>`).join('');
+    const head = !issues.length ? '没有发现问题' : errs ? `${errs} 个问题会让游戏拒绝加载这一关${issues.length > errs ? `，另有 ${issues.length - errs} 条提醒` : ''}` : `${issues.length} 条提醒：不影响导出，进游戏可能有问题`;
+    const btns = forExport ? `<button data-r="0">取消</button><button data-r="1" class="primary">${errs ? '仍然导出' : '导出'}</button>` : '<button data-r="0" class="primary">关闭</button>';
+    const { box, close } = openModal(`<h3>关卡检查</h3><p class="chk-head${errs ? ' error' : issues.length ? ' warn' : ' ok'}">${head}</p><div class="chk-list">${rows || '<div class="chk-ok">起点、终点、小节、云层、死亡区都齐了</div>'}</div><div class="row">${btns}</div>`, 'chk-box');
+    let done = false;
+    const finish = (v: boolean) => { if (done) return; done = true; close(); resolve(v); };
+    // 点外面、按 Esc 关掉的也算取消
+    new MutationObserver((_, o) => { if (!box.isConnected) { o.disconnect(); finish(false); } }).observe(document.body, { childList: true });
+    box.addEventListener('click', (e) => {
+      const t = e.target as Element, b = t.closest<HTMLButtonElement>('button');
+      if (b) { finish(b.dataset.r === '1'); return; }
+      const row = t.closest<HTMLElement>('.chk-row.go');
+      if (!row) return;
+      // 跳到出问题的元素：孤立模式里藏着的先放回来；隐藏着的类别（云层、死亡区）不管，选中框照样看得到
+      const ids = issues[+row.dataset.n!].ids!;
+      finish(false);
+      if (stash && ids.some((id) => !doc.elems[id])) exitIsolate();
+      sel = new Set(ids.filter((id) => doc.elems[id]));
+      drawOverlay(); syncProps(); updateStatus();
+      frameSelection();
+    });
+  });
+}

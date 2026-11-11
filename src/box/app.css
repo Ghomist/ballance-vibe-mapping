@@ -438,7 +438,7 @@ select.native { display: none; }
 /* 悬停提示里的「F1 看教程」 */
 #tooltip .tip-help { display: flex; align-items: center; gap: 5px; margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--tip-line); color: var(--text-3); font-size: 11px; }
 
-/* ---------------- 触摸屏（手机）：body.touch-ui，见 app.ts 的 touchUI ---------------- */
+/* ---------------- 触摸屏：body.touch-ui 是手机和平板共用的（手势、大按钮），body.phone 是手机的紧凑布局；见 app.ts 的 touchUI / phoneUI ---------------- */
 .touch-only { display: none !important; }
 body.touch-ui button.touch-only { display: inline-flex !important; }
 #more-menu [hidden], #rotate-hint [hidden] { display: none !important; }
@@ -448,42 +448,42 @@ body.touch-ui {
   padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 /* 顶栏：只留图标，放不下的收进「更多」 */
-body.touch-ui #toolbar { gap: 4px; padding: 4px 8px; min-height: 40px; }
-body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right { gap: 4px; }
-body.touch-ui .brand { font-size: 0; gap: 0; margin-right: 2px; }
-body.touch-ui #map-name { display: none !important; }
-body.touch-ui #toolbar button:not(.dropdown-menu button) { font-size: 0; gap: 0; height: 32px; min-width: 32px; padding: 0 7px; justify-content: center; }
-body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector { font-size: 12.5px; gap: 3px; }
-body.touch-ui #toolbar .seg { padding: 1px; }
-body.touch-ui #toolbar .seg button { height: 30px; }
-body.touch-ui .sep { margin: 0 1px; }
+body.phone #toolbar { gap: 4px; padding: 4px 8px; min-height: 40px; }
+body.phone .tb-left, body.phone .tb-center, body.phone .tb-right { gap: 4px; }
+body.phone .brand { font-size: 0; gap: 0; margin-right: 2px; }
+body.phone #map-name { display: none !important; }
+body.phone #toolbar button:not(.dropdown-menu button) { font-size: 0; gap: 0; height: 32px; min-width: 32px; padding: 0 7px; justify-content: center; }
+body.phone #toolbar #file-btn, body.phone #toolbar #sector { font-size: 12.5px; gap: 3px; }
+body.phone #toolbar .seg { padding: 1px; }
+body.phone #toolbar .seg button { height: 30px; }
+body.phone .sep { margin: 0 1px; }
 body.touch-ui .dropdown-menu button { padding: 9px 12px; }
 /* 素材库：窄一点（两列卡片），不能拖边缘改大小，不能停靠底部 */
-body.touch-ui #work #palette:not(.narrow) { width: min(var(--lib-w, 284px), 220px); }
-body.touch-ui #work #palette.narrow { width: 40px; }
-body.touch-ui .lib-resize, body.touch-ui #palette .lib-dock [data-dock='bottom'], body.touch-ui #palette .lib-foot { display: none !important; }
-body.touch-ui #palette .lib-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-body.touch-ui #palette .lib-search { padding: 4px 10px; }
-body.touch-ui #work #palette .lib-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+body.phone #work #palette:not(.narrow) { width: min(var(--lib-w, 284px), 220px); }
+body.phone #work #palette.narrow { width: 40px; }
+body.phone .lib-resize, body.phone #palette .lib-dock [data-dock='bottom'], body.phone #palette .lib-foot { display: none !important; }
+body.phone #palette .lib-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+body.phone #palette .lib-search { padding: 4px 10px; }
+body.phone #work #palette .lib-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
 /* 属性面板：窄一点，点标题收起成一行 */
-body.touch-ui #props { width: 210px; padding: 8px 10px; gap: 5px 6px; grid-template-columns: 56px 1fr; }
+body.phone #props { width: 210px; padding: 8px 10px; gap: 5px 6px; grid-template-columns: 56px 1fr; }
 body.touch-ui #props .title { display: flex; align-items: center; justify-content: space-between; gap: 6px; cursor: var(--cur-pointer, pointer); }
 body.touch-ui #props .title::after { content: ''; flex: none; width: 7px; height: 7px; margin-right: 3px; border-right: 1.6px solid var(--text-3); border-bottom: 1.6px solid var(--text-3); transform: rotate(45deg) translateY(-2px); transition: transform 0.15s; }
 body.touch-ui #props.mini .title::after { transform: rotate(-45deg); }
 body.touch-ui #props.mini > :not(.title) { display: none !important; }
 body.touch-ui #props.mini .title small { display: none; }
 /* 视图里的小东西 */
-body.touch-ui #viewcube { transform: scale(0.72); transform-origin: top right; }
-body.touch-ui #fps { display: none; }
-body.touch-ui #statusbar { min-height: 22px; padding: 2px 10px; font-size: 11px; }
+body.phone #viewcube { transform: scale(0.72); transform-origin: top right; }
+body.phone #fps { display: none; }
+body.phone #statusbar { min-height: 22px; padding: 2px 10px; font-size: 11px; }
 /* 帮助：几乎铺满 */
-body.touch-ui :is(#help-modal, #settings-modal) .help-win { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 170px minmax(0, 1fr); border-radius: 12px; }
-body.touch-ui .help-body { padding: 4px 24px 40px; }
+body.phone :is(#help-modal, #settings-modal) .help-win { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 170px minmax(0, 1fr); border-radius: 12px; }
+body.phone .help-body { padding: 4px 24px 40px; }
 
 /* 竖着拿时：请横过来 */
 #rotate-hint { display: none; }
 @media (orientation: portrait) {
-  body.touch-ui #rotate-hint {
+  body.phone #rotate-hint {
     position: fixed; inset: 0; z-index: 300; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
     padding: 24px; background: var(--bg); color: var(--text); text-align: center;
   }
@@ -494,16 +494,16 @@ body.touch-ui .help-body { padding: 4px 24px 40px; }
 #rotate-hint small { color: var(--text-3); font-size: 12px; max-width: 260px; line-height: 1.5; }
 #rotate-hint button { height: 38px; padding: 0 18px; font-size: 14px; }
 @keyframes rotate-hint { 0%, 20% { transform: rotate(0); } 45%, 75% { transform: rotate(-90deg); } 100% { transform: rotate(0); } }
-body.touch-ui #palette .lib-tabs button { flex: none; white-space: nowrap; }
+body.phone #palette .lib-tabs button { flex: none; white-space: nowrap; }
 /* 更窄的手机（iPhone SE 横屏 667 宽）：再收一档 */
 @media (max-width: 760px) {
-  body.touch-ui .brand { display: none; }
-  body.touch-ui #toolbar, body.touch-ui .tb-left, body.touch-ui .tb-center, body.touch-ui .tb-right, body.touch-ui .group { gap: 2px; }
-  body.touch-ui #toolbar { padding: 4px 6px; }
-  body.touch-ui #toolbar button:not(.dropdown-menu button) { padding: 0 5px; min-width: 30px; }
-  body.touch-ui #toolbar #file-btn, body.touch-ui #toolbar #sector { font-size: 11.5px; padding: 0 6px; }
-  body.touch-ui .sep { display: none; }
-  body.touch-ui #toolbar .caret { display: none; }
+  body.phone .brand { display: none; }
+  body.phone #toolbar, body.phone .tb-left, body.phone .tb-center, body.phone .tb-right, body.phone .group { gap: 2px; }
+  body.phone #toolbar { padding: 4px 6px; }
+  body.phone #toolbar button:not(.dropdown-menu button) { padding: 0 5px; min-width: 30px; }
+  body.phone #toolbar #file-btn, body.phone #toolbar #sector { font-size: 11.5px; padding: 0 6px; }
+  body.phone .sep { display: none; }
+  body.phone #toolbar .caret { display: none; }
 }
 
 /* ---------------- 帮助里的实时演示（?demo=名字）：只要 3D 视图 ---------------- */
@@ -552,8 +552,8 @@ html.demo #viewcube { transform: scale(0.7); transform-origin: top right; }
 #more-menu button.check.on::after { content: ''; width: 9px; height: 5px; margin: -3px 2px 0 auto; border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); }
 /* 「⋯」只在窄窗口和触摸屏出现，接住收起来的按钮；对齐、格栅只有顶栏上放不下时才出现在菜单里 */
 .more-only { display: none !important; }
-body.touch-ui .more-only { display: inline-block !important; }
-body.touch-ui .app-only { display: none !important; }
+body.phone .more-only { display: inline-block !important; }
+body.phone .app-only { display: none !important; }
 #more-menu .snap-more { display: none; }
 
 /* 顶栏放不下时分档收（悬停提示里有名字和按键）：
@@ -582,9 +582,9 @@ body.touch-ui .app-only { display: none !important; }
 }
 /* 触摸屏的按钮本来就只有图标，对齐、格栅到 760 以下才收 */
 @media (max-width: 760px) {
-  body.touch-ui :is(#snaps, #snaps + .sep) { display: none !important; }
-  body.touch-ui #more-menu button.snap-more { display: flex; }
-  body.touch-ui #more-menu .menu-sep.snap-more { display: block; }
+  body.phone :is(#snaps, #snaps + .sep) { display: none !important; }
+  body.phone #more-menu button.snap-more { display: flex; }
+  body.phone #more-menu .menu-sep.snap-more { display: block; }
 }
 
 /* ---------------- 选择条：选中东西后出现在视图下方 ---------------- */
@@ -683,3 +683,44 @@ body.touch-ui .num-field input { touch-action: pan-y; }
   #settings-modal .help-brand { display: none; }
   #settings-modal .help-nav a { white-space: nowrap; }
 }
+
+/* ---------------- 选择条：镜像、孤立 ---------------- */
+#selbar { overflow-x: auto; scrollbar-width: none; }
+#selbar button { flex: none; }
+#iso-chip { flex: none; margin-right: 2px; padding: 3px 9px; border-radius: 10px; background: rgba(240, 140, 46, 0.18); border: 1px solid rgba(240, 140, 46, 0.6); color: #ffb86b; font-size: 12px; white-space: nowrap; }
+[data-theme='light'] #iso-chip { color: #b25a10; }
+#selbar #iso-exit { background: #f08c2e; border-color: #f08c2e; color: #fff; }
+#selbar #iso-exit:hover { background: #f59f4c; }
+/* 孤立模式：视图四周一圈橙色，一眼看得出现在不是整张图 */
+body.isolated #viewport::after { content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; box-shadow: inset 0 0 0 2px rgba(240, 140, 46, 0.75); }
+
+/* ---------------- 关卡检查 ---------------- */
+.confirm-box.chk-box { width: 480px; }
+.chk-head { margin: 0 0 10px; font-size: 12.5px; }
+.chk-head.error { color: #ff8080; }
+.chk-head.warn { color: #ffb35c; }
+.chk-head.ok { color: #6fe0a0; }
+[data-theme='light'] .chk-head.error { color: #c62f2f; }
+[data-theme='light'] .chk-head.warn { color: #b25a10; }
+[data-theme='light'] .chk-head.ok { color: #1f8a4c; }
+.chk-list { display: flex; flex-direction: column; gap: 4px; max-height: min(56vh, 420px); margin-bottom: 12px; overflow-y: auto; }
+.chk-row { display: flex; align-items: flex-start; gap: 9px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.chk-row i { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #ffb35c; }
+.chk-row.error i { background: #ff6a6a; }
+.chk-row > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.chk-row b { color: var(--text); font-size: 13px; font-weight: 600; }
+.chk-row small { color: var(--text-3); font-size: 12px; line-height: 1.5; white-space: normal; }
+.chk-row.go { cursor: var(--cur-pointer, pointer); }
+.chk-row.go:hover { background: var(--hover); border-color: var(--line-2); }
+.chk-go { flex: none; align-self: center; color: var(--accent-2); font-size: 12px; }
+.chk-ok { padding: 18px 0; color: var(--text-2); font-size: 12.5px; text-align: center; }
+
+/* ---------------- 素材库：收藏的星标、「常用」里的分隔 ---------------- */
+#palette .lib-card { position: relative; }
+#palette .lib-star { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; padding: 0; justify-content: center; background: transparent; border: none; border-radius: 6px; color: var(--text-3); opacity: 0; transition: opacity 0.1s; }
+#palette .lib-star svg { width: 13px; height: 13px; stroke-width: 1.3; }
+#palette .lib-card:hover .lib-star, #palette .lib-star.on, body.touch-ui #palette .lib-star { opacity: 1; }
+#palette .lib-star:hover { background: var(--hover); color: var(--text); }
+#palette .lib-star.on { color: #ffcf4a; }
+#palette .lib-star.on svg { fill: currentColor; }
+#palette .lib-sep { grid-column: 1 / -1; margin-top: 4px; padding: 4px 2px 0; border-top: 1px solid var(--line); color: var(--text-3); font-size: 11px; }

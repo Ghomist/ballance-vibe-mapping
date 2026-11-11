@@ -7,6 +7,7 @@ import { boxGeomScenarios } from './box-geom';
 import { boxExportScenarios } from './box-export';
 import { boxShareScenarios } from './box-share';
 import { boxKeymapScenarios } from './box-keymap';
+import { boxToolsScenarios } from './box-tools';
 import { railEditScenarios } from './rail';
 import { gapScenarios } from './gaps';
 import { deepTransitionScenario, flushOpeningScenario, moreScenarios, pieceScenarios, platformScenarios, railScenarios, visualJoinScenarios } from './platform';
@@ -301,6 +302,7 @@ boxGeomScenarios(check, scenario);
 boxExportScenarios(check, scenario);
 boxShareScenarios(check, scenario);
 boxKeymapScenarios(check, scenario);
+boxToolsScenarios(check, scenario);
 await nmoScenarios(check, scenario);
 for (const p of pending) await p;
 
