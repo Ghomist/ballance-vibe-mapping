@@ -66,7 +66,7 @@ export const STILLS = [
     async setup({ setDoc, view, center, js, clickEl, pasteText }) {
       await setDoc(DEFAULT); await view([24, -46, 32], [32, 0, 0]); await center([34, 0, 0], 800);
       await js(`import('/src/box/share.ts').then(async (m) => { window.__code = await m.encodeShare(window.__proto.doc); return 1; })`);
-      await clickEl('#file-btn', 100); await clickEl('#file-menu [data-act="import"]', 100);
+      await clickEl('#file-btn', 100); await clickEl('#file-menu .submenu:has([data-act="import"]) > .sub-trigger', 100); await clickEl('#file-menu [data-act="import"]', 100);
       await js(`document.querySelector('.import-box textarea').focus(); 1`);
       await pasteText(await js('window.__code'));
     },

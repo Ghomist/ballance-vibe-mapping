@@ -6,6 +6,7 @@ import { exportBoxScene, zoneTris } from '../src/box/export';
 import { solve } from '../src/box/solve';
 import { buildNmoDoc } from '../src/export/nmo-scene';
 import { writeNmo } from '../src/export/nmo';
+import { glMatrix, nmoDocToGlb, nmoDocToObj, zipStore } from '../src/export/model3d';
 import type { NmoLib } from '../src/export/nmo-lib';
 import { FLOOR_MATERIALS, type SceneDesc } from '../src/export/scene';
 import { buildRail } from '../src/geom/rail';
@@ -454,5 +455,72 @@ export function boxExportScenarios(check: Check, scenario: Scenario) {
     const b = await writeNmo(buildNmoDoc(exportBoxScene(level()), lib()));
     check(a.length === b.length && a.every((v, i) => v === b[i]), `同一份文档两次导出的字节应完全相同（${a.length} 字节）`);
     check(JSON.stringify(exportBoxScene(level())) === JSON.stringify(exportBoxScene(level())), '场景描述应是确定的');
+  });
+  scenario('OBJ / glTF：和 NMO 同一份占位符', () => {
+    const d = level();
+    d.elems[61] = { id: 61, kind: 'obj', type: 'P_Box', x: 3, y: 1, z: 0.5, rot: 0, q: [0, 0, Math.sin(0.3), Math.cos(0.3)] } as Obj;
+    const nmo = buildNmoDoc(exportBoxScene(d), lib());
+    // glTF
+    const glb = nmoDocToGlb(nmo, new Map([['Floor_Side.bmp', new Uint8Array([0x89, 0x50, 0x4e, 0x47])]]));
+    const dv = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
+    check(dv.getUint32(0, true) === 0x46546c67 && dv.getUint32(4, true) === 2 && dv.getUint32(8, true) === glb.length, 'GLB 文件头');
+    const jl = dv.getUint32(12, true);
+    check(jl % 4 === 0 && dv.getUint32(16, true) === 0x4e4f534a, 'GLB 的 JSON 块');
+    const g = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + jl)));
+    const binLen = dv.getUint32(20 + jl, true);
+    check(dv.getUint32(24 + jl, true) === 0x004e4942 && binLen === g.buffers[0].byteLength, 'GLB 的 BIN 块长度要和 buffers 一致');
+    check(g.nodes.length === nmo.objects.length, `每个物体一个节点（${g.nodes.length} / ${nmo.objects.length}）`);
+    check(g.nodes.some((n: { name: string }) => n.name === 'P_Box_01_01'), '机关节点用 NMO 的名字');
+    check(g.nodes.some((n: { name: string; extras: { groups: string[] } }) => n.name.startsWith('A_Floor_') && n.extras.groups.includes('Phys_Floors')), '节点 extras 里带组');
+    check(g.nodes.some((n: { extras: { hidden?: boolean } }) => n.extras.hidden), '死亡区标成隐藏');
+    check(g.images?.length === 1 && g.images[0].name === 'Floor_Side.bmp', '给了 PNG 的贴图要嵌进去');
+    for (const v of g.bufferViews) check(v.byteOffset % 4 === 0 && v.byteOffset + v.byteLength <= binLen, '缓冲视图对齐且不越界');
+    let badIdx = 0;
+    for (const m of g.meshes) for (const p of m.primitives) {
+      const n = g.accessors[p.attributes.POSITION].count;
+      const a = g.accessors[p.indices], v = g.bufferViews[a.bufferView];
+      const idx = new Uint32Array(glb.buffer.slice(glb.byteOffset + 28 + jl + v.byteOffset, glb.byteOffset + 28 + jl + v.byteOffset + v.byteLength));
+      if (idx.some((k) => k >= n) || a.count % 3) badIdx++;
+    }
+    check(badIdx === 0, `索引要在顶点范围内（${badIdx} 个图元出错）`);
+    // 机关占位网格共用：两个同类机关只存一份
+    const meshNames = g.meshes.map((m: { name: string }) => m.name);
+    check(new Set(meshNames).size === meshNames.length, '网格不重复存');
+    // 坐标换算：Virtools (x, y, z) → (x, y, -z)
+    const vx = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 4, 5, 1];
+    check(glMatrix(vx).slice(12, 15).join() === '3,4,-5', '平移的 Z 取反');
+    // OBJ
+    const { obj, mtl } = nmoDocToObj(nmo, 'lvl');
+    const objCount = (obj.match(/^o /gm) ?? []).length;
+    check(objCount === nmo.objects.filter((o) => o.mesh !== null && nmo.meshes[o.mesh].faces.length).length, 'OBJ 每个物体一个 o');
+    const nv = (obj.match(/^v /gm) ?? []).length;
+    const maxRef = Math.max(...[...obj.matchAll(/^f (\d+)\/\S* (\d+)\/\S* (\d+)\//gm)].flatMap((m) => [+m[1], +m[2], +m[3]]));
+    check(maxRef === nv, `面引用的顶点要正好用到最后一个（${maxRef} / ${nv}）`);
+    check(obj.startsWith('#') && obj.includes('mtllib lvl.mtl'), 'OBJ 引用 .mtl');
+    const used = new Set([...obj.matchAll(/^usemtl (\S+)/gm)].map((m) => m[1]).filter((n) => n !== 'None'));
+    const defined = new Set([...mtl.matchAll(/^newmtl (\S+)/gm)].map((m) => m[1]));
+    check([...used].every((n) => defined.has(n)), 'OBJ 用到的材质都在 .mtl 里');
+    check(/map_Kd textures\/Floor_Side\.bmp/.test(mtl), '.mtl 引用贴图');
+    // 气球的位置：场景里 (29, 1.25, 2) → Y 朝上右手系 (29, 2, -1.25)
+    const bn = g.nodes.find((n: { name: string }) => n.name === 'PE_Balloon_01');
+    check(bn?.matrix?.slice(12, 15).join() === '29,2,-1.25', `glTF 气球的位置（${bn?.matrix?.slice(12, 15)}）`);
+    const balloon = obj.split('\no ').find((b) => b.startsWith('PE_Balloon'))!;
+    const bv = [...balloon.matchAll(/^v (\S+) (\S+) (\S+)/gm)].map((m) => [+m[1], +m[2], +m[3]]);
+    const mid = (k: number) => (Math.min(...bv.map((v) => v[k])) + Math.max(...bv.map((v) => v[k]))) / 2;
+    // 占位网格本身不居中：中心 = 位置 + 网格本地包围盒的中心（Virtools 本地 x 不变，z 取反）
+    const lm = lib().meshes[lib().elements.PE_Balloon.mesh].pos;
+    const lmid = (k: number) => { const v = lm.filter((_, i) => i % 3 === k); return (Math.min(...v) + Math.max(...v)) / 2; };
+    check(bv.length > 0 && Math.abs(mid(0) - (29 + lmid(0))) < 1e-3 && Math.abs(mid(2) - (-1.25 - lmid(2))) < 1e-3,`OBJ 气球顶点换到世界坐标（中心 ${mid(0).toFixed(2)}, ${mid(2).toFixed(2)}）`);
+  });
+
+  scenario('zip：只存储的压缩包结构', () => {
+    const z = zipStore([{ name: 'a.txt', data: new TextEncoder().encode('hello') }, { name: '贴图/b.bin', data: new Uint8Array([1, 2, 3]) }]);
+    const dv = new DataView(z.buffer);
+    check(dv.getUint32(0, true) === 0x04034b50, '本地文件头');
+    check(dv.getUint32(14, true) === 0x3610a686, 'CRC32 正确（hello）');
+    const end = z.length - 22;
+    check(dv.getUint32(end, true) === 0x06054b50 && dv.getUint16(end + 10, true) === 2, '目录结尾记录');
+    const cd = dv.getUint32(end + 16, true);
+    check(dv.getUint32(cd, true) === 0x02014b50 && cd + dv.getUint32(end + 12, true) === end, '中央目录位置');
   });
 }

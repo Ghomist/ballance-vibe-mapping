@@ -3,6 +3,7 @@ import { assetKind, type SceneAsset, type SceneDesc, type SceneElement, type Sce
 import { buildNmoDoc } from '../export/nmo-scene';
 import { writeNmo } from '../export/nmo';
 import { loadNmoLib } from '../export/nmo-lib';
+import { nmoDocToGlb, nmoDocToObj, textureFiles, zipStore } from '../export/model3d';
 import { objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { solve } from './solve';
@@ -135,4 +136,64 @@ export async function exportBoxNmo(doc: Doc): Promise<{ data: Uint8Array; warnin
   const desc = exportBoxScene(doc);
   const nmo = buildNmoDoc(desc, await loadNmoLib());
   return { data: await writeNmo(nmo), warnings: desc.warnings };
+}
+
+// ---- 通用 3D 模型（.obj / .glb）：和 .nmo 同一份文档，导出的也是占位符 ----
+
+/** 读一张游戏贴图（public/textures），没有就是 null */
+async function fetchTexture(file: string): Promise<Uint8Array | null> {
+  try {
+    const r = await fetch(`${import.meta.env.BASE_URL}textures/${file}`);
+    return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+  } catch { return null; }
+}
+
+/** 贴图转 PNG（glTF 只认 PNG / JPEG）：.bmp 交给浏览器解码，.tga 用 three 的 TGALoader（它的行序是从下往上，要翻过来） */
+async function toPng(file: string, bytes: Uint8Array): Promise<Uint8Array | null> {
+  try {
+    let src: CanvasImageSource, w: number, h: number;
+    if (/\.tga$/i.test(file)) {
+      const { TGALoader } = await import('three/examples/jsm/loaders/TGALoader.js');
+      const t = new TGALoader().parse(bytes.slice().buffer) as unknown as { data: Uint8Array; width: number; height: number };
+      w = t.width; h = t.height;
+      const img = new ImageData(w, h);
+      for (let y = 0; y < h; y++) img.data.set(t.data.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      src = await createImageBitmap(img);
+    } else {
+      const bmp = await createImageBitmap(new Blob([bytes as BlobPart]));
+      src = bmp; w = bmp.width; h = bmp.height;
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d')!.drawImage(src, 0, 0);
+    const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+  } catch { return null; }
+}
+
+/** box 文档 → .zip（.obj + .mtl + 贴图原文件） */
+export async function exportBoxObj(doc: Doc, base: string): Promise<{ data: Uint8Array; warnings: string[] }> {
+  const desc = exportBoxScene(doc);
+  const nmo = buildNmoDoc(desc, await loadNmoLib());
+  const { obj, mtl } = nmoDocToObj(nmo, base);
+  const enc = new TextEncoder();
+  const files = [{ name: `${base}.obj`, data: enc.encode(obj) }, { name: `${base}.mtl`, data: enc.encode(mtl) }];
+  for (const f of textureFiles(nmo)) {
+    const b = await fetchTexture(f);
+    if (b) files.push({ name: `textures/${f}`, data: b });
+  }
+  return { data: zipStore(files), warnings: desc.warnings };
+}
+
+/** box 文档 → .glb（贴图转成 PNG 嵌在里面） */
+export async function exportBoxGlb(doc: Doc): Promise<{ data: Uint8Array; warnings: string[] }> {
+  const desc = exportBoxScene(doc);
+  const nmo = buildNmoDoc(desc, await loadNmoLib());
+  const images = new Map<string, Uint8Array>();
+  await Promise.all(textureFiles(nmo).map(async (f) => {
+    const b = await fetchTexture(f);
+    const png = b && (await toPng(f, b));
+    if (png) images.set(f, png);
+  }));
+  return { data: nmoDocToGlb(nmo, images), warnings: desc.warnings };
 }

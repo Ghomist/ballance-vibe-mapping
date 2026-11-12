@@ -43,7 +43,7 @@ import { DEFAULT_SETTINGS } from '../model/types';
 /** 全图设置：文档里改过的项覆盖默认值 */
 const mapSettings = (): MapSettings => ({ ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
 import { type Loop, pathAlong, project, projectNear } from '../model/outline';
-import { exportBoxNmo, exportBoxScene } from './export';
+import { exportBoxGlb, exportBoxNmo, exportBoxObj, exportBoxScene } from './export';
 import type { MapSettings } from '../model/types';
 import {
   AssetElem, Box, DX, DY, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, ZoneElem, anchorRects, baseSpec, boxTopAt, canTilt, dirToLocal, elemXf,
@@ -3865,7 +3865,15 @@ function download(name: string, data: BlobPart, type: string) {
 const fileMenu = document.getElementById('file-menu')!;
 const fileBtn = document.getElementById('file-btn')!;
 const viewMenu = document.getElementById('view-menu')!;
-function closeMenus() { fileMenu.classList.remove('open'); viewMenu.classList.remove('open'); }
+function closeMenus() { fileMenu.classList.remove('open'); viewMenu.classList.remove('open'); closeSubs(); }
+/** 二级菜单：鼠标移上去就打开（同级的收起），移到普通项上收起；点标题切换（触屏靠这个，就地展开） */
+const closeSubs = (keep?: Element) => fileMenu.querySelectorAll('.submenu.open').forEach((s) => { if (s !== keep) s.classList.remove('open'); });
+fileMenu.addEventListener('pointerover', (e) => {
+  if (e.pointerType !== 'mouse' || touchUI) return;
+  const t = e.target as Element;
+  const sub = t.closest('.submenu');
+  if (sub) { closeSubs(sub); sub.classList.add('open'); } else if (t.closest('button')) closeSubs();
+});
 viewBtn.addEventListener('click', (e) => { e.stopPropagation(); const open = viewMenu.classList.contains('open'); closeMenus(); viewMenu.classList.toggle('open', !open); viewBtn.blur(); });
 fileBtn.addEventListener('click', (e) => { e.stopPropagation(); viewMenu.classList.remove('open'); fileMenu.classList.toggle('open'); fileBtn.blur(); });
 window.addEventListener('pointerdown', (e) => { const t = e.target as Node; if (!fileMenu.contains(t) && !viewMenu.contains(t) && !viewBtn.contains(t) && t !== fileBtn) closeMenus(); });
@@ -3897,6 +3905,13 @@ fileMenu.addEventListener('click', async (e) => {
   const b = (e.target as Element).closest<HTMLButtonElement>('button');
   if (!b) return;
   closeMenus();
+  if (b.classList.contains('sub-trigger')) {
+    const sub = b.parentElement!;
+    // 鼠标悬停时已经打开了，点一下不要又收起来
+    const open = touchUI ? !sub.classList.contains('open') : true;
+    closeSubs(sub); sub.classList.toggle('open', open);
+    return;
+  }
   if (b.dataset.scene !== undefined) { setScene(+b.dataset.scene); return; }
   const act = b.dataset.act;
   if (act === 'new') setScene(-1);
@@ -3905,6 +3920,7 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'copy') void copyMapCode();
   else if (act === 'nmo') void exportNmo();
   else if (act === 'check') void openCheck(false);
+  else if (act === 'obj' || act === 'glb') void exportModel(act);
   else if (act === 'save-file') void saveFile();
   else if (act === 'open-file') fileInput.click();
 });
@@ -4020,6 +4036,21 @@ async function exportNmo() {
   finally { exporting = false; }
 }
 
+/** 导出 .glb / .obj（zip）：和 NMO 一样是占位符；不进游戏，所以不先做关卡检查 */
+async function exportModel(fmt: 'obj' | 'glb') {
+  if (exporting) return;
+  if (!Object.keys(fullDoc().elems).length) { flash('地图是空的', true); return; }
+  const base = (doc.name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'map';
+  const file = `${base}.${fmt === 'obj' ? 'zip' : 'glb'}`;
+  try {
+    exporting = true;
+    flash(`正在生成 ${file}…`);
+    const { data } = fmt === 'obj' ? await exportBoxObj(fullDoc(), base) : await exportBoxGlb(fullDoc());
+    download(file, data as BlobPart, fmt === 'obj' ? 'application/zip' : 'model/gltf-binary');
+    flash(`已导出 ${file}`);
+  } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
+  finally { exporting = false; }
+}
 // ---------------- 主题、设置 ----------------
 
 function applyTheme(t: 'dark' | 'light') {

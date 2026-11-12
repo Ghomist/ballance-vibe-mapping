@@ -3,6 +3,23 @@
 /* 文件菜单里的分隔与小标题 */
 .dropdown-menu .menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 .dropdown-menu .menu-title { padding: 4px 10px 2px; color: var(--text-3); font-size: 11px; }
+/* 二级菜单：鼠标悬停（或点一下）从右边弹出；触屏上就地展开，免得伸出屏幕 */
+#file-menu { min-width: 250px; }
+.dropdown-menu .submenu { position: relative; }
+.dropdown-menu .sub-trigger { position: relative; padding-right: 28px; }
+.dropdown-menu .sub-trigger::after {
+  content: ''; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px;
+  border-right: 1.5px solid var(--text-3); border-top: 1.5px solid var(--text-3); transform: translateY(-50%) rotate(45deg); transition: transform 0.12s ease;
+}
+.dropdown-menu .submenu.open > .sub-trigger { background: var(--hover); }
+.dropdown-menu.sub { top: -5px; left: 100%; right: auto; min-width: 240px; }
+.dropdown-menu .submenu.open > .dropdown-menu.sub { opacity: 1; transform: none; pointer-events: auto; }
+body.touch-ui .dropdown-menu.sub {
+  position: static; display: none; min-width: 0; margin: 0 0 2px 10px; padding: 0 0 0 6px;
+  border: none; border-left: 1px solid var(--line); border-radius: 0; box-shadow: none; background: none; opacity: 1; transform: none;
+}
+body.touch-ui .dropdown-menu .submenu.open > .dropdown-menu.sub { display: block; }
+body.touch-ui .dropdown-menu .submenu.open > .sub-trigger::after { transform: translateY(-75%) rotate(135deg); }
 
 /* ---------------- 工作区：素材库嵌在视图旁边（左 / 右 / 下），占自己的地方，不压在 3D 视图上 ---------------- */
 #work { position: relative; display: grid; min-height: 0; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); }

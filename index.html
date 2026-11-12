@@ -43,21 +43,35 @@
         <button id="file-btn" data-help="3.1" class="ghost">文件<svg class="caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg></button>
         <div class="dropdown-menu left" id="file-menu">
           <button data-act="new"><span>新建</span><small>当前地图留在历史里</small></button>
-          <button data-act="history"><span>历史地图…</span><small>打开、重命名以前的地图（Ctrl+O）</small></button>
-          <div class="menu-sep"></div>
           <button data-act="open-file"><span>打开地图文件…</span><small>打开电脑上的 .bvm 文件（也可以把文件拖进窗口）</small></button>
           <button data-act="save-file"><span>保存为文件</span><small>存成 .bvm 文件放在电脑上，换浏览器、清数据都不怕</small></button>
+          <button data-act="history"><span>历史地图…</span><small>打开、重命名以前的地图（Ctrl+O）</small></button>
           <div class="menu-sep"></div>
-          <button data-act="import"><span>导入地图码…</span><small>粘贴别人分享的地图码</small></button>
-          <button data-act="copy"><span>复制地图码</span><small>一串文字，发给别人就能打开</small></button>
+          <div class="submenu">
+            <button class="sub-trigger"><span>地图码</span><small>一串文字，发给别人就能打开</small></button>
+            <div class="dropdown-menu sub">
+              <button data-act="copy"><span>复制地图码</span><small>放进剪贴板，发给别人</small></button>
+              <button data-act="import"><span>导入地图码…</span><small>粘贴别人分享的地图码</small></button>
+            </div>
+          </div>
+          <div class="submenu">
+            <button class="sub-trigger"><span>导出</span><small>NMO 进游戏，OBJ / glTF 给建模软件</small></button>
+            <div class="dropdown-menu sub">
+              <button data-act="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
+              <div class="menu-sep"></div>
+              <button data-act="glb"><span>导出 glTF（.glb）</span><small>一个文件，贴图嵌在里面；Blender 等软件直接打开</small></button>
+              <button data-act="obj"><span>导出 OBJ（.zip）</span><small>.obj + .mtl + 贴图打成压缩包</small></button>
+            </div>
+          </div>
           <button data-act="check"><span>检查关卡</span><small>起点、终点、小节、云层、死亡区有没有问题</small></button>
-          <button data-act="nmo"><span>导出 NMO</span><small>直接在浏览器里生成，放进 Ballance 就能玩</small></button>
           <div class="menu-sep"></div>
-          <div class="menu-title">测试场景</div>
-          <div id="scene-list"></div>
+          <div class="submenu">
+            <button class="sub-trigger"><span>测试场景</span><small>内置的示例地图</small></button>
+            <div class="dropdown-menu sub" id="scene-list"></div>
+          </div>
         </div>
       </span>
-      <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是导出 NMO 的文件名" />
+      <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是保存和导出的文件名" />
       <div class="sep"></div>
       <div class="group">
         <button id="undo" class="icon ghost" title="撤销（{undo}）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
