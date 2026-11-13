@@ -38,6 +38,18 @@ export function boxToolsScenarios(check: Check, scenario: Scenario) {
     check(!!oi && oi.ids!.join() === '40', '机关的小节号超出范围：只指出超出的那个');
     const two = full(); two.elems[50] = piece(50, 'start', 9, 9); two.elems[51] = { ...sky, id: 51 } as Elem;
     check(texts(two, 'warn').join() === '有 2 个起点,有 2 个云层', `多个起点、多个云层：${texts(two, 'warn')}`);
+
+    // 挡块附近的护栏：5 个单位以内提醒，远了不提醒；关掉挡块的机关不算
+    const guard = (id: number, y: number): Elem => ({ id, kind: 'guard', pts: [[0, y, 0], [20, y, 0]], outs: [[0, -1]], x: 0, y, z: 0 });
+    const sg = full(); sg.elems[60] = obj(60, 'P_Modul_25', 10, 0); sg.elems[61] = guard(61, 3); sg.elems[62] = guard(62, 40);
+    const si = checkLevel(sg).find((i) => i.text.includes('挡块'));
+    check(!!si && si.level === 'warn' && si.ids!.join() === '60,61', `挡块旁边的护栏：指出机关和近的那段护栏（${si?.ids}）`);
+    const far = full(); far.elems[60] = obj(60, 'P_Modul_25', 10, 0); far.elems[62] = guard(62, 40);
+    check(!checkLevel(far).some((i) => i.text.includes('挡块')), '护栏离得远：不提醒');
+    const off = full(); off.elems[60] = obj(60, 'P_Modul_25', 10, 0, { noStopper: true }); off.elems[61] = guard(61, 3);
+    check(!checkLevel(off).some((i) => i.text.includes('挡块')), '关掉挡块的机关：不提醒');
+    const box5 = full(); box5.elems[60] = obj(60, 'P_Box', 10, 0); box5.elems[61] = guard(61, 1);
+    check(!checkLevel(box5).some((i) => i.text.includes('挡块')), '没有挡块的机关：不提醒');
   });
 
   scenario('地图文件 .bvm：存了再读回来；坏文件给出原因', async () => {

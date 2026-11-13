@@ -3,7 +3,10 @@
 //   error：游戏会拒绝加载（没有起点、没有终点飞船）；warn：能玩，但有已知的问题或者多半是忘了放
 import { assetInfo } from './asset-info';
 import { objType } from '../model/objects';
-import type { Doc } from './types';
+import { stopperMesh } from '../model/stoppers';
+import { guardFromRoute } from '../geom/railing';
+import { DEFAULT_SETTINGS } from '../model/types';
+import { toWorld, yawDeg, type Doc, type GuardElem } from './types';
 
 export interface Issue {
   level: 'error' | 'warn';
@@ -40,5 +43,64 @@ export function checkLevel(doc: Doc): Issue[] {
   if (!skies.length) out.push({ level: 'warn', text: '没有云层', hint: '没有云层的关卡下面是空的。素材库 → 装饰里有云层和漩涡云层' });
   if (skies.length > 1) out.push({ level: 'warn', text: `有 ${skies.length} 个云层`, hint: '一张图只能有一个云层，只导出最早放的那个', ids: skies.map((e) => e.id) });
   if (!elems.some((e) => e.kind === 'zone')) out.push({ level: 'warn', text: '没有死亡区', hint: '没有死亡区，球掉下去以后不会死，会一直往下掉。素材库 → 机关里有死亡区，一般在整张图下面放一大片' });
+  const near = stoppersNearGuards(doc);
+  if (near.objs.length) out.push({
+    level: 'warn', text: `${near.objs.length} 个机关的挡块附近有护栏`,
+    hint: `挡块 ${STOPPER_GUARD_DIST} 个单位以内有护栏：护栏的顶点很多，会拖累物理引擎，让挡块间歇失效、球直接滚过去。建议改一下设计，删掉这附近的护栏`,
+    ids: [...near.objs, ...near.guards],
+  });
   return out;
+}
+
+/** 挡块离护栏多近就提醒 */
+export const STOPPER_GUARD_DIST = 5;
+
+/** 挡块（和导出一样：没关掉、没倾斜的机关）附近 STOPPER_GUARD_DIST 以内有护栏的机关和护栏 */
+function stoppersNearGuards(doc: Doc): { objs: number[]; guards: number[] } {
+  const elems = Object.values(doc.elems);
+  const st = { ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) };
+  // 护栏网格的三角形边（护栏是细管子，到边的距离就够准）
+  const guards = elems.filter((e): e is GuardElem => e.kind === 'guard').flatMap((g) => {
+    const m = guardFromRoute({ pts: g.pts, outs: g.outs }, st);
+    if (!m?.pos.length) return [];
+    const p = m.pos;
+    const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) { box[k] = Math.min(box[k], p[i + k]); box[k + 3] = Math.max(box[k + 3], p[i + k]); }
+    return [{ id: g.id, pos: p, box }];
+  });
+  if (!guards.length) return { objs: [], guards: [] };
+  const D = STOPPER_GUARD_DIST, D2 = D * D;
+  const segDist2 = (q: number[], p: number[], a: number, b: number) => {
+    const ax = p[a], ay = p[a + 1], az = p[a + 2];
+    const dx = p[b] - ax, dy = p[b + 1] - ay, dz = p[b + 2] - az;
+    const l = dx * dx + dy * dy + dz * dz;
+    const t = l ? Math.max(0, Math.min(1, ((q[0] - ax) * dx + (q[1] - ay) * dy + (q[2] - az) * dz) / l)) : 0;
+    const x = ax + dx * t - q[0], y = ay + dy * t - q[1], z = az + dz * t - q[2];
+    return x * x + y * y + z * z;
+  };
+  const objs: number[] = [], hit = new Set<number>();
+  for (const o of elems) {
+    if (o.kind !== 'obj' || o.noStopper || o.q) continue;
+    const w = toWorld(o, [o.x, o.y, o.z]);
+    const sm = stopperMesh({ id: 0, cat: 'module', type: o.type, x: w[0], y: w[1], z: w[2], rot: yawDeg(o), stopOff: o.stopOff });
+    if (!sm?.pos.length) continue;
+    const sp = sm.pos;
+    const sb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < sp.length; i += 3) for (let k = 0; k < 3; k++) { sb[k] = Math.min(sb[k], sp[i + k]); sb[k + 3] = Math.max(sb[k + 3], sp[i + k]); }
+    let near = false;
+    for (const g of guards) {
+      if ([0, 1, 2].some((k) => g.box[k] > sb[k + 3] + D || g.box[k + 3] < sb[k] - D)) continue;
+      let found = false;
+      for (let i = 0; i < sp.length && !found; i += 3) {
+        const q = [sp[i], sp[i + 1], sp[i + 2]];
+        if ([0, 1, 2].some((k) => q[k] < g.box[k] - D || q[k] > g.box[k + 3] + D)) continue;
+        for (let t = 0; t + 8 < g.pos.length && !found; t += 9) {
+          if (segDist2(q, g.pos, t, t + 3) <= D2 || segDist2(q, g.pos, t + 3, t + 6) <= D2 || segDist2(q, g.pos, t + 6, t) <= D2) found = true;
+        }
+      }
+      if (found) { near = true; hit.add(g.id); }
+    }
+    if (near) objs.push(o.id);
+  }
+  return { objs, guards: [...hit] };
 }

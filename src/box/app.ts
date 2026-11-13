@@ -3904,7 +3904,6 @@ function askConfirm(text: string, ok = '确定'): Promise<boolean> {
 fileMenu.addEventListener('click', async (e) => {
   const b = (e.target as Element).closest<HTMLButtonElement>('button');
   if (!b) return;
-  closeMenus();
   if (b.classList.contains('sub-trigger')) {
     const sub = b.parentElement!;
     // 鼠标悬停时已经打开了，点一下不要又收起来
@@ -3912,6 +3911,7 @@ fileMenu.addEventListener('click', async (e) => {
     closeSubs(sub); sub.classList.toggle('open', open);
     return;
   }
+  closeMenus();
   if (b.dataset.scene !== undefined) { setScene(+b.dataset.scene); return; }
   const act = b.dataset.act;
   if (act === 'new') setScene(-1);
