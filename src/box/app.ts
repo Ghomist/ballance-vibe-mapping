@@ -225,7 +225,7 @@ let guardMode = false;
 let lastSolved: { loops: Loop[] } = { loops: [] };
 let guardPreview: Route | null = null;
 /** 护栏工具的拖动：从 s0 沿外沿拖；replace：正在拖某条护栏的端头 */
-let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean } | null = null;
+let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean; snaps: GuardSnapPt[]; snapWhy: string | null } | null = null;
 let splitAxis: 0 | 1 | null = null; // null：按路面较长的方向自动选
 const undo: string[] = [];
 // 当前地图在历史里的记录：编辑后过一会儿自动存（第一次打开、没动过的图不存）
@@ -966,7 +966,18 @@ const ALIGN_PX = 5;
  * 钢轨的包围盒：按钢轨自己的朝向（倾斜的跟着转）把网格框起来，直轨就是贴着轨的长方体。
  * 拉坡的钢轨和拉坡的路面一样，方块跟着坡度错切：用网格拟合一个斜面 z = a·x + b·y，整圈以上的螺旋没有整体坡度，不错切
  */
+/** 钢轨包围盒的缓存：按元素 id 存，内容（连同立柱深度）没变就直接用。曲线路面每次都要重新生成整条网格，选中时每次重画叠加层都算会掉帧 */
+const railCornerCache = new Map<number, { sig: string; c: P3[] }>();
 function railCorners(e: RailElem): P3[] {
+  const sig = `${mapSettings().guardPostDepth}|${JSON.stringify(e)}`;
+  const hit = railCornerCache.get(e.id);
+  if (hit?.sig === sig) return hit.c;
+  const c = railCornersRaw(e);
+  if (railCornerCache.size > 256) railCornerCache.clear();
+  railCornerCache.set(e.id, { sig, c });
+  return c;
+}
+function railCornersRaw(e: RailElem): P3[] {
   const pos = e.road ? Object.values(buildCurveRoad(e, ['closed', 'closed'])).flatMap((p) => p!.pos) : buildRail(e, mapSettings().guardPostDepth).pos;
   if (!pos.length) return [];
   const M = mul(e.q ? fromQuat(e.q) : I3, rotZ(e.heading));
@@ -1060,7 +1071,8 @@ let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
 let splitPreview: { a: P3; b: P3 } | null = null;
 /** Ctrl 改尺寸时顶面的测量线（on5：长度正好是 5 的整数倍） */
-let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean; plane?: Bounds } | null = null;
+/** path：沿折线量（护栏），这时 a、b 都是标签的位置，两头的短横按 tick / tickB */
+let measure: { a: P3; b: P3; tick: P3; text: string; on5: boolean; plane?: Bounds; path?: P3[]; tickB?: P3 } | null = null;
 /** 改尺寸时长度吸附到 5 的整数倍的距离（屏幕像素） */
 const SIZE5_PX = 7;
 const measureLabel = document.createElement('div');
@@ -1080,7 +1092,13 @@ const FADE_MS = 120;
 const fadeLayer = new THREE.Group();
 scene.add(fadeLayer);
 const fading: { obj: THREE.Object3D; t0: number; from: number; to: number }[] = [];
-const disposeObj = (o: THREE.Object3D) => o.traverse((x) => { const m = x as THREE.Mesh; if (m.geometry) m.geometry.dispose(); (m.material as THREE.Material | undefined)?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
+const disposeNow = (o: THREE.Object3D) => o.traverse((x) => { const m = x as THREE.Mesh; if (m.geometry) m.geometry.dispose(); (m.material as THREE.Material | undefined)?.dispose(); /* 贴图不跟着材质释放，吸附点的贴图可以复用 */ });
+/**
+ * 叠加层换下来的物体：等下一帧画完再释放。马上释放的话，它的材质是这种着色器的最后一个使用者，three.js 会把编译好的着色器程序删掉，
+ * 下一帧新的选中框、抓点又要重新编译一遍（拖动时每帧都重画叠加层，200 帧掉到几十帧就是这个）
+ */
+const disposeQueue: THREE.Object3D[] = [];
+const disposeObj = (o: THREE.Object3D) => { disposeQueue.push(o); };
 /** 按比例 k 设置一个物体里所有材质的不透明度（基准不透明度第一次用时记下来） */
 function setFade(o: THREE.Object3D, k: number) {
   o.traverse((x) => {
@@ -1194,7 +1212,12 @@ function drawOverlayInner() {
     const color = measure.on5 ? 0x4cff8a : 0xe6ebf5;
     const A = new THREE.Vector3(...measure.a), B = new THREE.Vector3(...measure.b);
     const side = new THREE.Vector3(...measure.tick);
-    const segs = [A, B, A.clone().sub(side), A.clone().add(side), B.clone().sub(side), B.clone().add(side)];
+    let segs = [A, B, A.clone().sub(side), A.clone().add(side), B.clone().sub(side), B.clone().add(side)];
+    if (measure.path && measure.path.length > 1) {
+      const ps = measure.path.map((q) => new THREE.Vector3(...q));
+      const p0 = ps[0], p1 = ps[ps.length - 1], s1 = new THREE.Vector3(...(measure.tickB ?? measure.tick));
+      segs = [...ps.slice(1).flatMap((q, i) => [ps[i], q]), p0.clone().sub(side), p0.clone().add(side), p1.clone().sub(s1), p1.clone().add(s1)];
+    }
     const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), new THREE.LineBasicMaterial({ color, depthTest: false }));
     l.renderOrder = 7;
     put(overlay, 'measure', l);
@@ -1260,13 +1283,16 @@ function drawOverlayInner() {
   }
   // 护栏工具里：每条护栏两头的把手（拖它改长度），鼠标靠近的那个放大变绿
   if (guardMode) {
+    // 不悬停的把手合成一个点集（护栏多时每次鼠标移动都给每个把手新建一个物体会掉帧），悬停的那个单独画
+    const idle: P3[] = [];
     for (const g of Object.values(doc.elems)) {
       if (g.kind !== 'guard') continue;
-      ([0, 1] as const).forEach((end) => {
-        const on = guardEndHover?.id === g.id && guardEndHover.end === end;
-        put(overlay, `gh:${g.id}:${end}`, marks([guardHandle(g, end)], 'dot', on ? 0x4cff8a : 0xffd34c, on ? 16 : 11));
-      });
+      for (const end of [0, 1] as const) {
+        if (guardEndHover?.id === g.id && guardEndHover.end === end) put(overlay, `gh:${g.id}:${end}`, marks([guardHandle(g, end)], 'dot', 0x4cff8a, 16));
+        else idle.push(guardHandle(g, end));
+      }
     }
+    if (idle.length) put(overlay, 'gh', marks(idle, 'dot', 0xffd34c, 11));
   }
   if (splitPreview) {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...splitPreview.a), new THREE.Vector3(...splitPreview.b)]);
@@ -1493,7 +1519,7 @@ type Drag =
   | { t: 'stretch'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; pos: boolean }
   | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
   | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
-  | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; loop: number; sFixed: number; sNear: number; moveB: boolean }
+  | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; loop: number; sFixed: number; sNear: number; moveB: boolean; snaps: GuardSnapPt[] }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
@@ -2410,7 +2436,8 @@ function startGuardLen(id: number, end: 0 | 1): boolean {
   // 展开弧长：终点在起点之后（闭合环上可能要加一圈）
   let sNear = pm.s;
   if (l.closed) { if (end === 1 && sNear <= pf.s) sNear += l.len; if (end === 0 && sNear >= pf.s) sNear -= l.len; }
-  drag = { t: 'guardLen', id, orig: origOf([id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -movP[2]), loop: pf.loop, sFixed: pf.s, sNear, moveB: end === 1 };
+  // 拖动平面放在把手的高度（护栏顶）：放在路面高度的话，斜着看时鼠标和把手会错开，拖起来不跟手
+  drag = { t: 'guardLen', id, orig: origOf([id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -(movP[2] + mapSettings().guardTop)), loop: pf.loop, sFixed: pf.s, sNear, moveB: end === 1, snaps: guardSnapPts(pf.loop, id) };
   return true;
 }
 
@@ -2427,14 +2454,8 @@ function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
   let len = Math.abs(s - d.sFixed);
   if (gridOn) len = Math.max(prefs.gridStep, snapG(len));
   const raw = d.sFixed + sgn * len;
-  const thr = worldPerPx(p) * SIZE5_PX;
-  const cands: number[] = [];
-  const L5 = Math.round(len / 5) * 5;
-  if (L5 > 0) cands.push(d.sFixed + sgn * L5);
-  // 外沿的拐角（展开到 raw 附近）
-  const base = l.closed ? Math.floor(raw / l.len) * l.len : 0;
-  for (const c of l.cum) for (const k of l.closed ? [-1, 0, 1] : [0]) cands.push(base + c + k * l.len);
-  const snap = cands.filter((c) => Math.abs(c - raw) < thr && (c - d.sFixed) * sgn > 0.2).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw))[0] ?? null;
+  const hit = guardSnapAt(l, d.snaps, raw, guardSnapThr(p), d.sFixed, (c) => (c - d.sFixed) * sgn > 0.2);
+  const snap = hit?.s ?? null;
   const final = snap ?? raw;
   drive([raw], snap === null ? null : [snap], (v) => {
     restore(d.orig);
@@ -2445,7 +2466,73 @@ function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
     g.outs = r.outs.map((o) => [...o] as [number, number]);
     [g.x, g.y, g.z] = g.pts[0];
   }, [raw]);
-  dragInfo = `护栏长 ${fmt(Math.abs(final - d.sFixed))}${snap !== null ? '（吸附）' : ''}`;
+  measure = guardMeasure(doc.elems[d.id] as Extract<Elem, { kind: 'guard' }>, !!hit);
+  dragInfo = `护栏长 ${fmt(Math.abs(final - d.sFixed))}${hit ? `（吸附：${hit.why}）` : ''}`;
+}
+
+/** 护栏端头能吸附的位置（外沿上的弧长，0～len）：一次拖动里外沿不变，按下时算一次 */
+interface GuardSnapPt { s: number; why: string }
+function guardSnapPts(li: number, skip?: number): GuardSnapPt[] {
+  const l = lastSolved.loops[li];
+  if (!l) return [];
+  const out: GuardSnapPt[] = [];
+  const inset = prefs.guardInset;
+  const ok = (v: number) => l.closed || (v >= 0 && v <= l.len);
+  const wrap = (v: number) => (l.closed ? ((v % l.len) + l.len) % l.len : v);
+  // 拐角：往两边各缩「护栏端头内缩」（和点一下放整条直边的护栏一样，立柱不会顶到拐角上）；内缩为 0 时就是拐角本身
+  for (const c of l.cum) for (const v of inset > 0 ? [c - inset, c + inset] : [c]) if (ok(v)) out.push({ s: wrap(v), why: '拐角内缩' });
+  // 别的护栏的端头（在同一圈外沿上的）：接上
+  for (const g of Object.values(doc.elems)) {
+    if (g.kind !== 'guard' || g.id === skip) continue;
+    for (const q of [g.pts[0], g.pts[g.pts.length - 1]]) {
+      const pr = project(lastSolved.loops, q, 1);
+      if (pr && pr.loop === li && pr.dist < 0.3) out.push({ s: pr.s, why: '护栏端头' });
+    }
+  }
+  // 路块之间的接缝：路面顶面的角正好落在外沿上、又不是拐角的地方
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'box' || hiddenElem(e)) continue;
+    for (const q of cornersOf(e).slice(0, 4)) {
+      const pr = project([l], q, 0.5);
+      if (!pr || pr.dist > 0.05 || l.cum.some((c) => Math.abs(c - pr.s) < 0.05)) continue;
+      out.push({ s: pr.s, why: '路块接缝' });
+    }
+  }
+  return out;
+}
+/** 吸附范围：屏幕上 12 像素，至少 0.5 个单位（拉近了也吸得上） */
+const guardSnapThr = (p: THREE.Vector3) => Math.max(worldPerPx(p) * 12, 0.5);
+/** raw 附近最近的吸附位置；from 给了时再加上「从 from 量过去长度是 5 的整数倍」 */
+function guardSnapAt(l: Loop, pts: GuardSnapPt[], raw: number, thr: number, from?: number, valid: (s: number) => boolean = () => true): GuardSnapPt | null {
+  const cands: GuardSnapPt[] = pts.map((c) => ({ s: l.closed ? c.s + Math.round((raw - c.s) / l.len) * l.len : c.s, why: c.why }));
+  if (from !== undefined) {
+    const L5 = Math.round(Math.abs(raw - from) / 5) * 5;
+    if (L5 > 0) cands.push({ s: from + Math.sign(raw - from) * L5, why: `长 ${L5}` });
+  }
+  let best: GuardSnapPt | null = null;
+  for (const c of cands) if (Math.abs(c.s - raw) < thr && valid(c.s) && (!best || Math.abs(c.s - raw) < Math.abs(best.s - raw))) best = c;
+  return best;
+}
+/** 护栏的测量线：沿护栏走，比护栏顶高一点、往外让开一点；拐角处取两边朝外方向的平均；吸附时变绿 */
+function guardMeasure(r: { pts: P3[]; outs: [number, number][] }, snapped: boolean): typeof measure {
+  if (r.pts.length < 2 || !r.outs.length) return null;
+  const st = mapSettings(), off = st.guardOffset + 0.8, up = st.guardTop + 0.5;
+  const outAt = (i: number): [number, number] => {
+    const a = r.outs[Math.max(0, Math.min(i - 1, r.outs.length - 1))], b = r.outs[Math.min(i, r.outs.length - 1)];
+    const x = a[0] + b[0], y = a[1] + b[1], n = Math.hypot(x, y) || 1;
+    return [x / n, y / n];
+  };
+  const path = r.pts.map((q, i) => { const o = outAt(i); return [q[0] + o[0] * off, q[1] + o[1] * off, q[2] + up] as P3; });
+  // 标签放在路程的一半处
+  const len = routeLen({ pts: path });
+  let left = len / 2, mid = path[0];
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i], d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (left <= d || i === path.length - 1) { const t = d > 0 ? Math.min(1, left / d) : 0; mid = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; break; }
+    left -= d;
+  }
+  const o0 = r.outs[0], o1 = r.outs[r.outs.length - 1];
+  return { a: mid, b: mid, path, tick: [o0[0] * 0.6, o0[1] * 0.6, 0], tickB: [o1[0] * 0.6, o1[1] * 0.6, 0], text: fmt(routeLen(r)), on5: snapped };
 }
 
 /** Ctrl 拖钢轨：沿钢轨末端方向拉长 / 缩短最后一段直线（最后一段是弯道时接一段新的直线）；长度靠近 5 的倍数时磁吸 */
@@ -3225,16 +3312,34 @@ function guardHover(e: PointerEvent) {
   if (guardDrag) {
     const l = lastSolved.loops[guardDrag.loop];
     const pr = p ? project([l], p, 3) : null;
-    if (pr) guardPreview = shortPath(l, guardDrag.s0, pr.s);
+    if (pr) {
+      // 展开到起点附近（和 shortPath 一样走近的那一边），再吸附：拐角内缩、别的护栏端头、路块接缝、长度是 5 的整数倍；格栅开着时长度取整
+      let s1 = l.closed ? pr.s + Math.round((guardDrag.s0 - pr.s) / l.len) * l.len : pr.s;
+      if (gridOn && s1 !== guardDrag.s0) s1 = guardDrag.s0 + Math.sign(s1 - guardDrag.s0) * Math.max(prefs.gridStep, snapG(Math.abs(s1 - guardDrag.s0)));
+      const gd = guardDrag;
+      const hit = guardSnapAt(l, gd.snaps, s1, guardSnapThr(new THREE.Vector3(...p!)), gd.s0, (c) => Math.abs(c - gd.s0) > 0.2);
+      gd.snapWhy = hit?.why ?? null;
+      guardPreview = shortPath(l, gd.s0, hit?.s ?? s1);
+      measure = gd.moved || Math.abs(s1 - gd.s0) > 0.3 ? guardMeasure(guardPreview, !!hit) : null;
+    }
     if (pr && Math.abs(pr.s - guardDrag.s0) > 0.3) guardDrag.moved = true;
   } else {
     const end = guardEndAt(e);
     guardEndHover = end;
+    measure = null;
     guardPreview = end ? null : p ? edgeAt(lastSolved.loops, p, prefs.guardInset) : null;
   }
-  dragInfo = guardPreview ? `护栏长 ${fmt(routeLen(guardPreview))}` : '';
+  dragInfo = guardPreview ? `护栏长 ${fmt(routeLen(guardPreview))}${guardDrag?.snapWhy ? `（吸附：${guardDrag.snapWhy}）` : ''}` : '';
+  // 鼠标在同一条边上移动时把手、预览都没变：不重画（每次都重画叠加层，护栏多时会掉帧）
+  const key = `${guardEndHover ? `${guardEndHover.id}:${guardEndHover.end}` : ''}|${guardPreview ? JSON.stringify(guardPreview.pts) : ''}`;
+  // 别处重画过叠加层（放下护栏、撤销……）就不算没变
+  if (key === guardHoverKey && overlayDraws === guardHoverDraw) return;
+  guardHoverKey = key;
   drawOverlay(); updateStatus();
+  guardHoverDraw = overlayDraws;
 }
+let guardHoverDraw = -1;
+let guardHoverKey = '';
 function guardDown(e: PointerEvent) {
   // 拖护栏的端头：另一头固定，沿外沿改长度（可以跨拐角）
   const end = guardEndAt(e);
@@ -3252,7 +3357,11 @@ function guardDown(e: PointerEvent) {
   const pr = project(lastSolved.loops, p, 1.5);
   if (!pr || pr.dist > 1.5) return;
   el.setPointerCapture(e.pointerId);
-  guardDrag = { loop: pr.loop, s0: pr.s, a: pr.p, moved: false };
+  // 起点也吸附（拐角内缩、别的护栏端头、路块接缝）
+  const snaps = guardSnapPts(pr.loop);
+  const l = lastSolved.loops[pr.loop];
+  const s0 = guardSnapAt(l, snaps, pr.s, guardSnapThr(new THREE.Vector3(...p)))?.s ?? pr.s;
+  guardDrag = { loop: pr.loop, s0: l.closed ? ((s0 % l.len) + l.len) % l.len : s0, a: pr.p, moved: false, snaps, snapWhy: null };
   pauseControls();
 }
 function guardUp(e: PointerEvent) {
@@ -4733,6 +4842,8 @@ renderer.setAnimationLoop(() => {
   renderCount++;
   syncGizmo(cam);
   renderer.render(scene, cam);
+  // 这一帧画完了，新的材质已经接上了着色器程序：换下来的叠加层物体可以释放了
+  if (disposeQueue.length) for (const o of disposeQueue.splice(0)) disposeNow(o);
   renderViewCube();
   if (secLabels.size) placeSectorLabels();
 });
@@ -4811,7 +4922,7 @@ function yieldToGesture() {
   touchTap = null;
   grabTouchId = null;
   clearTimeout(pressTimer);
-  if (guardDrag) { guardDrag = null; guardPreview = null; dragInfo = ''; drawOverlay(); }
+  if (guardDrag) { guardDrag = null; guardPreview = null; measure = null; dragInfo = ''; drawOverlay(); }
   if (drag?.t === 'click' || drag?.t === 'marquee') { drag = null; marqueeEl.classList.remove('shown', 'open'); }
   else if (drag && drag.t !== 'place' && !((drag.t === 'grab' || drag.t === 'rotate') && !drag.gz)) {
     cancelTransform();

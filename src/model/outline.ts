@@ -189,6 +189,10 @@ export function project(loops: Loop[], p: P3, maxDz = 3): Proj | null {
  */
 export function projectNear(l: Loop, x: number, y: number, near: number): number {
   let best = near, bs = Infinity;
+  // 沿外沿走的路程不超过直线距离的 1.5 倍（拐过一个直角是 1.41 倍）不算跳：鼠标甩得快、拐过拐角时照样跟手；
+  // 跳到路对面那条边要绕一大圈，路程远大于直线距离，照样不跳
+  const pn = pointAt(l, near).p;
+  const chord = Math.hypot(x - pn[0], y - pn[1]);
   for (let i = 0; i < l.outs.length; i++) {
     const a = l.pts[i], b = l.pts[(i + 1) % l.pts.length];
     const dx = b[0] - a[0], dy = b[1] - a[1];
@@ -197,7 +201,7 @@ export function projectNear(l: Loop, x: number, y: number, near: number): number
     let s = l.cum[i] + Math.sqrt(L2) * t;
     if (l.closed) s += Math.round((near - s) / l.len) * l.len;
     const d = Math.hypot(a[0] + dx * t - x, a[1] + dy * t - y);
-    const score = d + 0.6 * Math.max(0, Math.abs(s - near) - d);
+    const score = d + 0.6 * Math.max(0, Math.abs(s - near) - d - 1.5 * chord);
     if (score < bs) { bs = score; best = s; }
   }
   return best;
