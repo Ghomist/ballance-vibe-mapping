@@ -50,6 +50,20 @@ export function boxToolsScenarios(check: Check, scenario: Scenario) {
     check(!checkLevel(off).some((i) => i.text.includes('挡块')), '关掉挡块的机关：不提醒');
     const box5 = full(); box5.elems[60] = obj(60, 'P_Box', 10, 0); box5.elems[61] = guard(61, 1);
     check(!checkLevel(box5).some((i) => i.text.includes('挡块')), '没有挡块的机关：不提醒');
+
+    // 风柱旁边的变球器：风柱是 5×5、高出风扇 16.7 的柱子，变球器 4 个单位以内提醒
+    const fanTrafo = (tx: number, ty: number, tz: number, fan: Partial<Obj> = {}) => {
+      const d = full(); d.elems[70] = obj(70, 'P_Modul_18', 0, 0, fan); d.elems[71] = obj(71, 'P_Trafo_Paper', tx, ty, { z: tz });
+      return checkLevel(d).find((i) => i.text.includes('风柱'));
+    };
+    const ft = fanTrafo(0, 6, 0);
+    check(!!ft && ft.level === 'warn' && ft.ids!.join() === '70,71', `变球器在风柱旁边 1 个单位：提醒并指出两个（${ft?.ids}）`);
+    check(!fanTrafo(0, 12, 0), '旁边隔 7 个单位：不提醒');
+    check(!!fanTrafo(0, 0, 20), '风柱顶上 3.3 个单位：提醒');
+    check(!fanTrafo(0, 0, 25), '风柱顶上 8.3 个单位：不提醒');
+    // 风扇横过来（绕 X 转 90°，风朝 -Y 吹）：风柱沿 Y 伸出去，原本够远的位置也在风里
+    const s = Math.SQRT1_2;
+    check(!!fanTrafo(0, -15, 0, { q: [s, 0, 0, s] }) && !fanTrafo(0, -15, 0), '倾斜的风扇按它自己的朝向算风柱');
   });
 
   scenario('地图文件 .bvm：存了再读回来；坏文件给出原因', async () => {

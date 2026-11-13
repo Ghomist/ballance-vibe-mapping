@@ -6,7 +6,8 @@ import { objType } from '../model/objects';
 import { stopperMesh } from '../model/stoppers';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
-import { toWorld, yawDeg, type Doc, type GuardElem } from './types';
+import { toWorld, yawDeg, type Doc, type GuardElem, type Obj } from './types';
+import { apply, fromQuat, rotZ, type V3 } from './xform';
 
 export interface Issue {
   level: 'error' | 'warn';
@@ -49,6 +50,53 @@ export function checkLevel(doc: Doc): Issue[] {
     hint: `挡块 ${STOPPER_GUARD_DIST} 个单位以内有护栏：护栏的顶点很多，会拖累物理引擎，让挡块间歇失效、球直接滚过去。建议改一下设计，删掉这附近的护栏`,
     ids: [...near.objs, ...near.guards],
   });
+  const ft = fansNearTrafos(doc);
+  if (ft.length) out.push({
+    level: 'warn', text: `${ft.length} 处变球器离风扇的风柱太近`,
+    hint: `变球器离风扇的风柱不到 ${FAN_TRAFO_DIST} 个单位：在风扇的受力区域里变球，可能触发物理引擎的 bug。建议把变球器挪远一点`,
+    ids: [...new Set(ft.flat())],
+  });
+  return out;
+}
+
+/** 变球器离风柱多近就提醒 */
+export const FAN_TRAFO_DIST = 4;
+/** 风扇的风柱（受力区域）：和导出的占位符 P_Modul_18 一样，机关本地坐标 [x0, x1, y0, y1, z0, z1] */
+const FAN_COLUMN = [-2.49, 2.51, -2.5, 2.5, -4.66, 16.7];
+/** 变球器的触发区域：占位符 P_Trafo_* */
+const TRAFO_BOX = [-2.5, 2.5, -2.5, 2.5, -0.1, 2.4];
+
+/** 机关的世界摆放（和导出一样：位置经过绑定 / 倾斜，朝向是自己的四元数或者绕 Z 的转角） */
+const placeOf = (o: Obj) => ({ pos: toWorld(o, [o.x, o.y, o.z]), R: o.q ? fromQuat(o.q) : rotZ(yawDeg(o)) });
+
+/** 离风柱太近的 [风扇, 变球器] 对：变球器的触发区域按 1 个单位左右的间隔取点，换到风扇本地坐标里量到风柱的距离 */
+function fansNearTrafos(doc: Doc): [number, number][] {
+  const objs = Object.values(doc.elems).filter((e): e is Obj => e.kind === 'obj');
+  const fans = objs.filter((o) => o.type === 'P_Modul_18').map((o) => ({ id: o.id, ...placeOf(o) }));
+  const trafos = objs.filter((o) => /^P_Trafo_/.test(o.type)).map((o) => ({ id: o.id, ...placeOf(o) }));
+  if (!fans.length || !trafos.length) return [];
+  const steps = (a: number, b: number) => { const n = Math.max(1, Math.ceil(b - a)); return Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n); };
+  const local: V3[] = [];
+  for (const x of steps(TRAFO_BOX[0], TRAFO_BOX[1])) for (const y of steps(TRAFO_BOX[2], TRAFO_BOX[3])) for (const z of steps(TRAFO_BOX[4], TRAFO_BOX[5])) local.push([x, y, z]);
+  const D2 = FAN_TRAFO_DIST * FAN_TRAFO_DIST, c = FAN_COLUMN;
+  const out: [number, number][] = [];
+  for (const t of trafos) {
+    const pts = local.map((p) => { const w = apply(t.R, p); return [w[0] + t.pos[0], w[1] + t.pos[1], w[2] + t.pos[2]] as V3; });
+    for (const f of fans) {
+      // 粗筛：风柱离原点最远约 17.1，变球器约 4.2，加上阈值 4 还不到 30
+      if (Math.hypot(t.pos[0] - f.pos[0], t.pos[1] - f.pos[1], t.pos[2] - f.pos[2]) > 30) continue;
+      const Rt = f.R;
+      const hit = pts.some((w) => {
+        const v: V3 = [w[0] - f.pos[0], w[1] - f.pos[1], w[2] - f.pos[2]];
+        // 世界 → 风扇本地：乘 Rᵀ
+        const l = [0, 1, 2].map((k) => Rt[k] * v[0] + Rt[k + 3] * v[1] + Rt[k + 6] * v[2]);
+        let d2 = 0;
+        for (let k = 0; k < 3; k++) { const e = Math.max(c[k * 2] - l[k], 0, l[k] - c[k * 2 + 1]); d2 += e * e; }
+        return d2 <= D2;
+      });
+      if (hit) out.push([f.id, t.id]);
+    }
+  }
   return out;
 }
 
