@@ -15,7 +15,7 @@ import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoa
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
 import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
-import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
+import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
@@ -1523,7 +1523,7 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
+  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; /** 蓝图：没转过的原样（按 R 时从它转）；bpRot：orig 现在是转了几个 90° 的 */ bpBase?: Map<number, string>; bpRot?: number; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
   | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean }
   /** 样条线：拖控制点、方向手柄或高度抓点 */
@@ -2633,6 +2633,8 @@ function finishMarquee(d: { sx: number; sy: number; add: boolean }, e: PointerEv
 // ---------------- 从顶栏拖进来放置 ----------------
 
 function newElems(type: string): Elem[] {
+  const bp = bpOf(type);
+  if (bp) return blueprintElems(bp);
   const id = doc.nextId++;
   if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
   if (type.startsWith('obj:')) {
@@ -2665,6 +2667,151 @@ function handleOf(e: Elem): P3 {
   return [b.x0, b.y0, b.z1];
 }
 
+/** 蓝图放下时的元素：新编号，绑定组重新编号；地图里已经有起点时去掉蓝图里的起点 */
+function blueprintElems(bp: Blueprint): Elem[] {
+  const hasStart = Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start');
+  const src = bp.elems.filter((e) => !(hasStart && e.kind === 'piece' && e.type === 'start'));
+  if (src.length < bp.elems.length) flash('全图只能有一个起点：蓝图里的起点没有放', true);
+  let g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0));
+  const remap = new Map<number, number>();
+  return [...src].sort((a, b) => a.id - b.id).map((s) => {
+    const e: Elem = JSON.parse(JSON.stringify(s));
+    e.id = doc.nextId++;
+    if (e.group !== undefined) { if (!remap.has(e.group)) remap.set(e.group, ++g); e.group = remap.get(e.group); }
+    return e;
+  });
+}
+/** 蓝图的抓手：整体的水平中心；高度取最低的路面顶面（放到路上时路面接平），没有路面就是底部 */
+function blueprintHandle(ids: number[]): P3 {
+  const b = boundsOf(doc, ids);
+  const tops = ids.map((id) => doc.elems[id]).filter((e): e is Extract<Elem, { kind: 'box' }> => e?.kind === 'box').map((e) => elemBounds(e).z1);
+  return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, tops.length ? Math.min(...tops) : b.z0];
+}
+/** 拖着蓝图：整体保持原样（不按鼠标下的路自动转向），R 整体转 90°；跟着鼠标下的路面顶面（或地面），格栅、顶点吸附照常 */
+function placeBlueprintMove(d: Extract<Drag, { t: 'place' }> & { ids: number[] }, e: PointerEvent, ids: Set<number>) {
+  const n = ((d.rotOff % 4) + 4) % 4;
+  const orig = d.orig!;
+  // 转的次数变了才重新从原样转一遍（鼠标移动时不用每次都转）
+  const turned = n !== (d.bpRot ?? 0);
+  if (turned) {
+    const base = [...d.bpBase!.values()].map((js) => JSON.parse(js) as Elem);
+    const b = boundsOf({ elems: Object.fromEntries(base.map((x) => [x.id, x])), nextId: 0 }, base.map((x) => x.id));
+    const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    for (let k = 0; k < n; k++) for (const x of base) rotateElem(x, cx, cy);
+    for (const x of base) orig.set(x.id, JSON.stringify(x));
+    d.bpRot = n;
+  }
+  restore(orig);
+  const h = pick(e, ids);
+  const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  const hd = blueprintHandle(d.ids);
+  let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
+  if (gridOn) { const b = boundsOf(doc, d.ids); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
+  moveSel(orig, raw);
+  let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
+  for (const id of ids) {
+    const f = feats(doc.elems[id]);
+    for (const v of [...f.verts, ...f.mids]) {
+      const sc = toScreen(v);
+      const t = findTarget(sc.x, sc.y, ids, 16);
+      if (t && Math.abs(t.p[2] - v[2]) > 1) continue;
+      if (t && (!best || t.d < best.d)) best = { from: v, to: t.p, d: t.d, kind: t.kind };
+    }
+  }
+  const snap: V3 | null = best ? [raw[0] + best.to[0] - best.from[0], raw[1] + best.to[1] - best.from[1], raw[2] + best.to[2] - best.from[2]] : null;
+  if (anim?.applied) moveSel(orig, anim.applied as V3);
+  drive(raw, snap, (v) => moveSel(orig, v as V3), raw, { ids });
+  // 转了但落点没变（drive 只在落点变了时才重画）：也要马上重画，不然要等鼠标再动一下才看得到转过去
+  if (turned) { moveSel(orig, (anim?.applied ?? snap ?? raw) as V3); rebuildWanted = true; }
+  snapTarget = best ? { p: best.to, kind: best.kind } : null;
+  dragInfo = n ? `蓝图 · 转了 ${n * 90}°` : '蓝图';
+}
+/** 选中的东西存成蓝图（连同绑在一起的） */
+function saveBlueprint() {
+  if (drag) return;
+  const ids = [...expandGroups(doc, sel)].filter((id) => doc.elems[id]);
+  if (!ids.length) { flash(`先选中要存成蓝图的东西，再按 ${keyText('blueprint')}`, true); return; }
+  const { box, close } = openModal(`<h3>存为蓝图</h3><p class="set-note">选中的 ${ids.length} 个元素会存进素材库的「蓝图」里，以后在任何地图里都能拖出来用。蓝图存在这台电脑的这个浏览器里。</p><input type="text" maxlength="40" spellcheck="false"><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary">保存</button></div>`, 'bp-box');
+  const input = box.querySelector('input')!;
+  input.value = `蓝图 ${blueprints.length + 1}`;
+  input.select();
+  const ok = () => {
+    const name = input.value.trim() || `蓝图 ${blueprints.length + 1}`;
+    close();
+    const elems = ids.map((id) => JSON.parse(JSON.stringify(doc.elems[id])) as Elem);
+    const bp: Blueprint = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, elems, thumb: blueprintThumb(ids), t: Date.now() };
+    blueprints = [bp, ...blueprints];
+    if (!saveBlueprints()) { blueprints = blueprints.slice(1); return; }
+    BP_TAB.items = bpItems();
+    prefs.tab = BP_TAB.id; savePrefs();
+    libSearch.value = '';
+    if (prefs.folded) toggleFold();
+    renderLib();
+    flash(`已存为蓝图「${name}」：在素材库的「蓝图」里，拖出来就能放`);
+  };
+  input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.isComposing) ok(); });
+  box.addEventListener('click', (e) => { const b = (e.target as Element).closest<HTMLButtonElement>('button'); if (!b) return; if (b.dataset.r === '1') ok(); else close(); });
+  input.focus();
+}
+/** 蓝图卡片的预览图：选中的东西现在的样子（路面按只有它们重新求解，免得带上相连的别的路面） */
+function blueprintThumb(ids: number[]): string {
+  const g = new THREE.Group();
+  const part: Doc = { elems: Object.fromEntries(ids.map((id) => [id, doc.elems[id]])), nextId: doc.nextId };
+  const solved = solve(part);
+  const own: THREE.BufferGeometry[] = [];
+  for (const m of solved.meshes.values()) for (const [mat, pt] of Object.entries(m.parts) as [MatName, { pos: number[]; uv: number[] }][]) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pt.pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(pt.uv, 2));
+    geo.computeVertexNormals();
+    own.push(geo);
+    g.add(new THREE.Mesh(geo, getMaterial(mat)));
+  }
+  for (const [, parts] of solved.assets) for (const pa of parts) {
+    for (const piece of getAsset(pa.kind, pa.name) ?? []) {
+      const c = new THREE.Mesh(piece.geometry, piece.material);
+      c.position.set(...pa.pos); c.rotation.z = (pa.rotZ * Math.PI) / 180;
+      g.add(c);
+    }
+  }
+  // 机关、木制件、钢轨、护栏：直接借场景里现成的网格（共用几何体，不释放）
+  for (const id of ids) {
+    const e = doc.elems[id];
+    if (!e || e.kind === 'box' || e.kind === 'piece' || e.kind === 'zone' || (e.kind === 'rail' && e.road)) continue;
+    for (const grp of elemGroups.get(id) ?? []) g.add(grp.clone());
+  }
+  const url = g.children.length ? renderThumb(g, true) : '';
+  for (const geo of own) geo.dispose();
+  return url;
+}
+function deleteBlueprint(bp: Blueprint) {
+  const { box, close } = openModal(`<h3>删除蓝图</h3><p></p><div class="row"><button data-r="0">取消</button><button data-r="1" class="danger">删除</button></div>`, '');
+  box.querySelector('p')!.textContent = `删除蓝图「${bp.name}」？删除后不能恢复，已经放进地图里的不受影响。`;
+  box.addEventListener('click', (e) => {
+    const b = (e.target as Element).closest<HTMLButtonElement>('button');
+    if (!b) return;
+    close();
+    if (b.dataset.r !== '1') return;
+    blueprints = blueprints.filter((x) => x !== bp);
+    saveBlueprints();
+    const t = `bp:${bp.id}`;
+    prefs.fav = prefs.fav.filter((x) => x !== t); prefs.recent = prefs.recent.filter((x) => x !== t); savePrefs();
+    BP_TAB.items = bpItems();
+    renderLib();
+    flash(`已删除蓝图「${bp.name}」`);
+  });
+}
+function renameBlueprint(bp: Blueprint) {
+  const { box, close } = openModal('<h3>蓝图改名</h3><input type="text" maxlength="40" spellcheck="false"><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary">确定</button></div>', 'bp-box');
+  const input = box.querySelector('input')!;
+  input.value = bp.name;
+  input.select();
+  const ok = () => { const n = input.value.trim(); close(); if (!n || n === bp.name) return; bp.name = n; saveBlueprints(); BP_TAB.items = bpItems(); renderLib(); };
+  input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.isComposing) ok(); });
+  box.addEventListener('click', (e) => { const b = (e.target as Element).closest<HTMLButtonElement>('button'); if (!b) return; if (b.dataset.r === '1') ok(); else close(); });
+  input.focus();
+}
+
 function startPlace(type: string) {
   if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
   // 死亡区正隐藏着：放下去也看不到，提醒一下，顶栏的「死亡区」按钮闪几下
@@ -2691,13 +2838,16 @@ function placeMove(e: PointerEvent) {
     snapshot();
     noteUsed(drag.type);
     const es = newElems(drag.type);
+    if (!es.length) { undo.pop(); document.body.classList.remove('placing'); drag = null; return; }
     for (const n of es) doc.elems[n.id] = n;
     drag.ids = es.map((n) => n.id);
     drag.orig = origOf(drag.ids);
+    if (drag.type.startsWith('bp:')) drag.bpBase = new Map(drag.orig);
     sel = new Set(drag.ids);
   }
   const ids = new Set(drag.ids);
   const orig = drag.orig!;
+  if (drag.bpBase) { placeBlueprintMove(drag as Extract<Drag, { t: 'place' }> & { ids: number[] }, e, ids); return; }
   // 鼠标下的路面顶面（或地面）
   // 鼠标下的路面：按每块平路面的顶面平面求交（不看网格，凹槽里被底座挖掉的洞也算在路面上）
   let h = pick(e, ids);
@@ -2825,6 +2975,16 @@ function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
     hint: `${a.group === 'wood' ? '木制' : tab === 'rail' ? '钢轨' : tab === 'deco' ? '装饰' : '特殊路块'} · ${a.name}${a.tile ? ' · Ctrl 拖可接长 / 截断' : a.stretch ? ' · Ctrl 拖可拉伸' : ''}`,
   }));
 }
+// ---------------- 蓝图：把选中的一组东西存进素材库，以后像素材一样拖出来放（存在这台电脑的浏览器里，所有地图共用） ----------------
+interface Blueprint { id: string; name: string; elems: Elem[]; thumb: string; t: number }
+const BP_STORE = 'bvm.box.blueprints';
+let blueprints: Blueprint[] = (() => { try { const v = JSON.parse(localStorage.getItem(BP_STORE) ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
+function saveBlueprints(): boolean {
+  try { localStorage.setItem(BP_STORE, JSON.stringify(blueprints)); return true; } catch { flash('浏览器的存储空间满了，蓝图没存上：删掉几个不用的蓝图再试', true); return false; }
+}
+const bpOf = (type: string) => (type.startsWith('bp:') ? blueprints.find((b) => b.id === type.slice(3)) ?? null : null);
+const bpItems = (): LibItem[] => blueprints.map((b) => ({ type: `bp:${b.id}`, label: b.name, hint: `蓝图 · ${b.elems.length} 个元素 · 拖动中 R 转 90° · 左上角改名、删除` }));
+
 /** 「常用」标签：收藏的（星标）在前，最近放过的在后 */
 const FAV_TAB = 'fav', RECENT_MAX = 12;
 function favItems(): LibItem[] {
@@ -2873,9 +3033,12 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
   },
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
   { id: 'deco', label: '装饰', items: [...OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })), ...assetItems('deco')] },
+  { id: 'bp', label: '蓝图', items: bpItems() },
 ];
+const BP_TAB = LIB[LIB.length - 1];
 /** 素材卡片悬停时按 F1 跳到哪一节教程 */
 function helpOf(type: string): string {
+  if (type.startsWith('bp:')) return '1.6';
   if (type === 'zone') return '2.5';
   if (type.startsWith('rail') || type.startsWith('side-') || /^asset:(Rail|Monorail)/.test(type)) return '2.2';
   if (type === 'start' || type === 'check' || type.startsWith('obj:')) return objType(type.slice(4))?.cat === 'deco' ? '2.4' : '2.3';
@@ -2910,13 +3073,14 @@ function renderLib() {
   palette.querySelectorAll<HTMLButtonElement>('.lib-tabs button').forEach((b) => {
     b.classList.toggle('on', !q && b.dataset.tab === prefs.tab);
     if (b.dataset.tab === FAV_TAB) b.querySelector('small')!.textContent = String(favItems().length);
+    else if (b.dataset.tab === BP_TAB.id) b.querySelector('small')!.textContent = String(BP_TAB.items.length);
   });
   const stars = new Set(prefs.fav);
   // 「常用」里先是收藏的，后面是最近放过的；两段之间隔一下
   const nFav = fav ? items.filter((it) => stars.has(it.type)).length : 0;
   libGrid.innerHTML = items.map((it, i) => `${fav && i === nFav && nFav > 0 ? '<div class="lib-sep">最近用过</div>' : ''}<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
-${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button></div>`).join('');
-  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : '没有匹配的素材';
+${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button>${it.type.startsWith('bp:') ? '<button type="button" class="lib-del" data-bp-del title="删除这个蓝图"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button><button type="button" class="lib-ren" data-bp-ren title="改名"><svg viewBox="0 0 16 16"><path d="M3 13l.6-2.8L10.8 3 13 5.2l-7.2 7.2z M9.4 4.4l2.2 2.2" /></svg></button>' : ''}</div>`).join('');
+  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : !q && prefs.tab === BP_TAB.id ? `还没有蓝图：选中一组东西，按 ${keyText('blueprint')} 或点选择条上的「蓝图」存进来` : '没有匹配的素材';
   libEmpty.hidden = items.length > 0;
   fillThumbs();
 }
@@ -2924,7 +3088,7 @@ function fillThumbs() {
   for (const c of libGrid.querySelectorAll<HTMLElement>('.lib-card')) {
     const t = c.dataset.type!;
     const box = c.querySelector<HTMLElement>('.thumb')!;
-    const url = ROAD_TYPES.has(t) || RAIL_TYPES.has(t) ? roadThumb(t) : t.startsWith('obj:') || t.startsWith('asset:') ? thumbnail(t.slice(t.indexOf(':') + 1), modelView ? 'model' : 'placeholder') : null;
+    const url = t.startsWith('bp:') ? bpOf(t)?.thumb || null : ROAD_TYPES.has(t) || RAIL_TYPES.has(t) ? roadThumb(t) : t.startsWith('obj:') || t.startsWith('asset:') ? thumbnail(t.slice(t.indexOf(':') + 1), modelView ? 'model' : 'placeholder') : null;
     // 已经是这张图就不动（改 DOM 会打断鼠标悬停的提示）
     if (url && box.dataset.img !== url) { box.dataset.img = url; box.innerHTML = ''; box.style.setProperty('--img', `url(${url})`); box.classList.add('loaded'); }
   }
@@ -2980,6 +3144,10 @@ palette.querySelector('.lib-tabs')!.addEventListener('click', (e) => {
 });
 libSearch.addEventListener('input', renderLib);
 libGrid.addEventListener('click', (e) => {
+  const del = (e.target as Element).closest<HTMLElement>('[data-bp-del]');
+  if (del) { const bp = bpOf(del.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''); if (bp) deleteBlueprint(bp); return; }
+  const ren = (e.target as Element).closest<HTMLElement>('[data-bp-ren]');
+  if (ren) { const bp = bpOf(ren.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''); if (bp) renameBlueprint(bp); return; }
   const st = (e.target as Element).closest<HTMLElement>('[data-star]'), type = st?.closest<HTMLElement>('.lib-card')?.dataset.type;
   if (!st || !type) return;
   prefs.fav = prefs.fav.includes(type) ? prefs.fav.filter((t) => t !== type) : [...prefs.fav, type];
@@ -2987,7 +3155,7 @@ libGrid.addEventListener('click', (e) => {
   renderLib();
 });
 libGrid.addEventListener('pointerdown', (e) => {
-  if ((e.target as Element).closest('[data-star]')) return; // 点星标不算拿起卡片
+  if ((e.target as Element).closest('[data-star], [data-bp-del], [data-bp-ren]')) return; // 点星标、删除不算拿起卡片
   const c = (e.target as Element).closest<HTMLElement>('.lib-card');
   if (!c || e.button !== 0) return;
   if (e.pointerType === 'touch') {
@@ -3482,6 +3650,7 @@ document.getElementById('focus-sel')!.addEventListener('click', () => frameSelec
 document.getElementById('mirror-x')!.addEventListener('click', () => doMirror(0));
 document.getElementById('mirror-y')!.addEventListener('click', () => doMirror(1));
 document.getElementById('isolate')!.addEventListener('click', () => enterIsolate());
+document.getElementById('bp-save')!.addEventListener('click', (e) => { (e.currentTarget as HTMLElement).blur(); saveBlueprint(); });
 document.getElementById('iso-exit')!.addEventListener('click', () => exitIsolate());
 document.getElementById('desel')!.addEventListener('click', () => { sel.clear(); drawOverlay(); syncProps(); updateStatus(); });
 const gridBtn = document.getElementById('grid')!;
@@ -3527,6 +3696,7 @@ window.addEventListener('keydown', (e) => {
   else if (act === 'mirror.x') doMirror(0);
   else if (act === 'mirror.y') doMirror(1);
   else if (act === 'isolate') (stash ? exitIsolate() : enterIsolate());
+  else if (act === 'blueprint') { e.preventDefault(); saveBlueprint(); } // 不拦的话，这个 B 会打进弹出来的名字输入框里
   else if (act === 'delete' && !drag) doDelete();
   else if (act === 'mode.select') selectTool();
   else if (act?.startsWith('mode.')) setPermMode(act.slice(5) as Mode);

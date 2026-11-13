@@ -36,6 +36,7 @@ export const KEY_DEFS: KeyDef[] = [
   { id: 'ungroup', label: '解除绑定', group: '编辑', def: 'ctrl+shift+g' },
   { id: 'mirror.x', label: '镜像（沿 X）', group: '编辑', def: 'ctrl+m', note: '路面、钢轨、护栏、死亡区' },
   { id: 'mirror.y', label: '镜像（沿另一条水平轴）', group: '编辑', def: 'ctrl+shift+m' },
+  { id: 'blueprint', label: '存为蓝图', group: '编辑', def: 'b', note: '选中的东西存进素材库的「蓝图」' },
   { id: 'vsnap', label: '顶点吸附', group: '编辑', def: 'v', single: true, note: '按住' },
   { id: 'split.dir', label: '切分换方向', group: '编辑', def: 'tab', note: '切分工具里' },
   { id: 'focus', label: '聚焦 / 看全部', group: '视图和开关', def: 'f' },
