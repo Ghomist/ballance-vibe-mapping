@@ -117,6 +117,10 @@
     </div>
 
     <div class="tb-right">
+      <button id="ai-btn" class="toggle" data-help="1.9" title="AI 制图（实验）：用自然语言让 AI 搭关卡、改关卡，每一步都看得到&#10;极其不稳定，效果不佳，仅供娱乐；需要自己的 API Key">
+        <svg viewBox="0 0 16 16"><path d="M8 1.5l1.6 4.2L14 7.3l-4.4 1.6L8 13.1 6.4 8.9 2 7.3l4.4-1.6z" /><path d="M12.6 11.2l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6z" /></svg><span>AI</span>
+      </button>
+      <div class="sep"></div>
       <div class="group" id="snaps">
         <button id="align" data-help="1.7" class="toggle active" title="对齐：边、中线、顶面靠近别的物体时自动贴齐（{align}）&#10;旋转时每 15° 吸附">
           <svg viewBox="0 0 16 16"><path d="M4 2v6a4 4 0 0 0 8 0V2M4 4.5h2.5M9.5 4.5H12M6.5 2v6a1.5 1.5 0 0 0 3 0V2" /></svg><span>对齐</span>
@@ -163,6 +167,7 @@
           <button data-more="align" class="check snap-more"><span>对齐</span></button>
           <button data-more="grid" class="check snap-more"><span>格栅</span></button>
           <div class="menu-sep snap-more"></div>
+          <button data-more="ai"><span>AI 制图</span><small>实验功能，仅供娱乐</small></button>
           <button data-more="help"><span>帮助</span><small>图文教程</small></button>
           <button data-more="settings"><span>设置</span></button>
           <button data-more="theme"><span>切换亮色 / 暗色</span></button>

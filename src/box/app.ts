@@ -29,6 +29,7 @@ import { decodeShare, encodeShare } from './share';
 import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
 import { ASSET_INFO, assetInfo, meshScale, tileOf } from './asset-info';
 import { checkLevel, type Issue } from './check';
+import { initAgentPanel } from './ai/panel';
 import { BVM_EXT, decodeBvm, encodeBvm } from './file';
 import { ASSET_SNAP } from './asset-snap';
 import { renderThumb, thumbnail } from '../view/thumbs';
@@ -139,9 +140,11 @@ interface Prefs {
   zonesShown: boolean;
   skyShown: boolean;
   gridShown: boolean;
+  /** AI 制图（实验功能）：默认关，在设置的「界面」里打开 */
+  aiOn: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H };
+  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H, aiOn: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 loadKeys(prefs.keys);
@@ -4292,6 +4295,7 @@ function renderSettings() {
     + `<label class="stack"><span>坐标系<small>游戏坐标系 Y 朝上，数字和 Ballance 里一致；数学坐标系 Z 朝上</small></span>${seg('coord', [['game', '游戏坐标系'], ['math', '数学坐标系']], prefs.coordSys === 'math' ? 'math' : 'game')}</label>`
     + '<div class="row"><button id="settings-reset-edit">恢复默认</button></div></section><section data-page="ui"><h1>界面</h1>'
     + `<label class="stack"><span>机关显示<small>只影响编辑器里的显示，导出仍用占位符</small></span>${seg('module-view', [['model', '机关模型'], ['placeholder', '占位符']], modelView ? 'model' : 'placeholder')}</label>`
+    + `<label class="stack"><span>AI 制图（实验）<small>极其不稳定，效果不佳，仅供娱乐。打开后顶栏多一个「AI」按钮，需要你自己的模型服务 API Key</small></span>${seg('ai-on', [['off', '关'], ['on', '开']], prefs.aiOn ? 'on' : 'off')}</label>`
     + `<label class="stack"><span>路面切分线<small>调试用：显示路面内部是怎么切的</small></span>${seg('wire', [['off', '关'], ['on', '开']], wireOn ? 'on' : 'off')}</label>`
     + `</section>${keysHtml()}<section data-page="about" class="about-panel">${aboutHtml}</section>`;
   enhanceFields(settingsPanel);
@@ -4312,6 +4316,10 @@ function renderSettings() {
   });
   const segClick = (id: string, fn: (v: string) => void) => settingsPanel.querySelectorAll<HTMLButtonElement>(`#${id} button`).forEach((b) => b.addEventListener('click', () => { fn(b.dataset.v!); renderSettings(); }));
   segClick('module-view', (v) => { modelView = v === 'model'; prefs.modelView = modelView; savePrefs(); renderLib(); rebuild(); });
+  segClick('ai-on', (v) => {
+    prefs.aiOn = v === 'on'; savePrefs(); syncAi();
+    if (prefs.aiOn) flash('AI 制图已打开：实验功能，极其不稳定，仅供娱乐', true);
+  });
   segClick('wire', (v) => { wireOn = v === 'on'; rebuild(); });
   segClick('follow', (v) => { prefs.followPick = v === 'on'; savePrefs(); });
   segClick('coord', (v) => { prefs.coordSys = v === 'math' ? 'math' : 'game'; savePrefs(); applyCoordSys(); });
@@ -4900,7 +4908,7 @@ async function fullscreenLandscape() {
 /** 顶栏放不下的按钮收在「⋯」里（窄窗口和触摸屏才有，哪些收进去见 app.css）：点菜单项就是点对应的按钮 */
 const moreBtn = document.getElementById('more-btn')!, moreMenu = document.getElementById('more-menu')!;
 moreMenu.querySelector<HTMLElement>('[data-more="fullscreen"]')!.hidden = !canFullscreen;
-const MORE_TARGET: Record<string, string> = { help: 'help', settings: 'settings', theme: 'theme', align: 'align', grid: 'grid' };
+const MORE_TARGET: Record<string, string> = { help: 'help', settings: 'settings', theme: 'theme', align: 'align', grid: 'grid', ai: 'ai-btn' };
 moreBtn.addEventListener('click', (ev) => {
   ev.stopPropagation();
   // 对齐、格栅（顶栏上放不下时才在菜单里）：开着的打个勾
@@ -5672,3 +5680,32 @@ function openCheck(forExport: boolean): Promise<boolean> {
   });
 }
 
+// ---------------- AI 制图（实验）：对话面板在 ai/panel.ts，这里把它需要的编辑器能力接过去 ----------------
+const aiBtn = document.getElementById('ai-btn')!;
+const agent = initAgentPanel(document.getElementById('work')!, {
+  // AI 看的、改的都是整张图：在孤立模式里先退出来
+  doc: () => { if (stash) exitIsolate(); return doc; },
+  busy: () => (drag ? '正在拖动，先放下再让 AI 动手' : fly ? '正在漫游，先退出漫游' : null),
+  beginEdit: () => { exitGuard(); clearModes(); snapshot(); },
+  cancelEdit: () => { undo.pop(); },
+  refresh: (changed, follow) => {
+    sel = new Set(changed.filter((id) => doc.elems[id]));
+    rebuild();
+    // 视角跟过去看；云层、死亡区这种铺满整张图的不跟（一跟就拉得老远）
+    const big = (e: Elem) => e.kind === 'zone' || (e.kind === 'asset' && !!assetInfo(e.name)?.sky);
+    if (follow && [...sel].some((id) => !big(doc.elems[id]))) frameSelection();
+  },
+  focus: (ids) => { sel = new Set(ids.filter((id) => doc.elems[id])); drawOverlay(); syncProps(); updateStatus(); if (sel.size) frameSelection(); },
+  selection: () => [...sel],
+  undoDepth: () => undo.length,
+  undo: () => undoOnce(),
+  flash,
+  layout: (open) => { document.getElementById('work')!.classList.toggle('with-agent', open); aiBtn.classList.toggle('active', open); },
+});
+aiBtn.addEventListener('click', () => { agent.toggle(); aiBtn.blur(); });
+/** 设置里的开关：关着时顶栏和「⋯」菜单里都没有 AI 入口（app.css 按 body.ai-on 显示），开着的面板也收起来 */
+function syncAi() {
+  document.body.classList.toggle('ai-on', prefs.aiOn);
+  if (!prefs.aiOn && agent.isOpen()) agent.toggle(false);
+}
+syncAi();

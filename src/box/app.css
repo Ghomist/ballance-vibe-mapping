@@ -741,3 +741,96 @@ body.isolated #viewport::after { content: ''; position: absolute; inset: 0; z-in
 #palette .lib-star.on { color: #ffcf4a; }
 #palette .lib-star.on svg { fill: currentColor; }
 #palette .lib-sep { grid-column: 1 / -1; margin-top: 4px; padding: 4px 2px 0; border-top: 1px solid var(--line); color: var(--text-3); font-size: 11px; }
+
+/* ================ AI 制图面板（实验，设置里打开）：在素材库的另一侧占一栏，不压在视图上；配色和素材库一致 ================ */
+body:not(.ai-on) :is(#ai-btn, #ai-btn + .sep, [data-more='ai']) { display: none !important; }
+@media (max-width: 1480px) { #toolbar #ai-btn { font-size: 0; gap: 0; padding: 0 9px; } }
+@media (max-width: 960px) { body:not(.touch-ui) :is(#ai-btn, #ai-btn + .sep) { display: none !important; } }
+body.phone :is(#ai-btn, #ai-btn + .sep) { display: none !important; }
+
+#agent { display: flex; flex-direction: column; min-height: 0; width: 340px; background: var(--panel); border-right: 1px solid var(--line); font-size: 13px; }
+#agent[hidden] { display: none; }
+body:not(.phone) #work.with-agent { grid-template-columns: auto minmax(0, 1fr) auto; }
+body:not(.phone) #work.with-agent > #agent { order: 0; }
+body:not(.phone) #work.with-agent.dock-left > #agent { order: 3; border-right: none; border-left: 1px solid var(--line); }
+/* 素材库停在底部时：面板占左边一整列 */
+body:not(.phone) #work.with-agent.dock-bottom { grid-template-columns: auto minmax(0, 1fr); }
+body:not(.phone) #work.with-agent.dock-bottom > #agent { grid-column: 1; grid-row: 1 / span 2; }
+body:not(.phone) #work.with-agent.dock-bottom > #viewport { grid-column: 2; grid-row: 1; }
+body:not(.phone) #work.with-agent.dock-bottom > #palette { grid-column: 2; grid-row: 2; }
+/* 手机：盖在视图左边 */
+body.phone #agent { position: absolute; z-index: 25; top: 0; bottom: 0; left: 0; width: min(320px, 78vw); box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35); }
+@media (max-width: 1100px) { body:not(.phone) #agent { width: 300px; } }
+
+/* 标题栏：和素材库的标题一样 */
+.ag-head { display: flex; align-items: center; gap: 2px; padding: 9px 8px 5px 14px; }
+.ag-title { display: flex; align-items: center; gap: 6px; margin-right: auto; color: var(--text-2); font-size: 12px; letter-spacing: 1px; }
+.ag-title i { padding: 0 5px; border: 1px solid var(--line-2); border-radius: 4px; color: var(--text-3); font-size: 10.5px; font-style: normal; letter-spacing: 0; line-height: 16px; }
+.ag-icon { width: 24px; height: 22px; padding: 0; justify-content: center; background: none; border: none; border-radius: 5px; color: var(--text-3); }
+.ag-icon:hover { background: var(--hover); color: var(--text); }
+.ag-icon svg { width: 15px; height: 15px; stroke-width: 1.2; }
+
+.ag-settings { display: flex; flex-direction: column; gap: 8px; margin: 4px 12px 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.ag-settings[hidden] { display: none; }
+.ag-settings label { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; color: var(--text-2); font-size: 12px; }
+.ag-settings input, .ag-settings select { height: 28px; min-width: 0; padding: 0 8px; background: var(--field); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; }
+.ag-settings input:focus, .ag-settings select:focus { outline: none; border-color: var(--accent); }
+.ag-settings p { margin: 2px 0 0; color: var(--text-3); font-size: 11.5px; line-height: 1.6; }
+.ag-settings a { color: var(--accent-2); }
+.ag-row { display: flex; justify-content: flex-end; gap: 6px; }
+.ag-row button { height: 26px; font-size: 12px; }
+
+.ag-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 6px 12px; overflow-y: auto; overscroll-behavior: contain; -webkit-user-select: text; user-select: text; }
+.ag-msg { max-width: 100%; line-height: 1.6; overflow-wrap: anywhere; }
+.ag-msg.user { align-self: flex-end; max-width: 88%; padding: 6px 10px; border-radius: 8px; background: var(--accent); color: #fff; }
+.ag-msg.ai { color: var(--text); }
+.ag-msg.ai code { padding: 0 4px; border-radius: 4px; background: var(--field); font: 12px ui-monospace, Consolas, monospace; }
+.ag-msg.note { color: var(--text-3); font-size: 12px; }
+.ag-msg.note b { color: var(--text-2); }
+/* 实验功能的提醒：和关卡检查的橙色提醒一个颜色 */
+.ag-msg.warn { padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 179, 92, 0.45); background: rgba(255, 179, 92, 0.08); color: var(--text-2); font-size: 12px; }
+.ag-msg.warn b { color: #ffb35c; }
+[data-theme='light'] .ag-msg.warn b { color: #c4700f; }
+.ag-msg.err { padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 106, 106, 0.5); background: rgba(255, 106, 106, 0.1); color: #ff9c9c; font-size: 12px; }
+[data-theme='light'] .ag-msg.err { color: #c62f2f; }
+.ag-msg.examples { display: flex; flex-direction: column; gap: 6px; }
+.ag-msg.examples small { color: var(--text-3); font-size: 11px; letter-spacing: 1px; }
+.ag-msg.examples button { height: auto; padding: 7px 10px; justify-content: flex-start; text-align: left; white-space: normal; line-height: 1.5; font: inherit; font-size: 12px; color: var(--text-2); }
+.ag-msg.examples button:hover { color: var(--text); }
+/* 一步工具调用：左边一个状态点，点一下选中这一步改动的东西，展开看参数和结果 */
+.ag-msg.step { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); font-size: 12px; }
+.ag-msg.step.go { cursor: var(--cur-pointer, pointer); }
+.ag-msg.step.go:hover { border-color: var(--line-2); }
+.ag-step-head { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.ag-step-head i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #6fe0a0; }
+.ag-msg.step[data-state='run'] .ag-step-head i { background: transparent; border: 2px solid var(--accent); border-top-color: transparent; width: 10px; height: 10px; box-sizing: border-box; animation: ag-spin 0.7s linear infinite; }
+.ag-msg.step[data-state='err'] .ag-step-head i { background: #ff6a6a; }
+.ag-msg.step[data-state='warn'] .ag-step-head i { background: #ffb35c; }
+.ag-msg.step[data-state='err'] .ag-step-head { color: #ff9c9c; }
+[data-theme='light'] .ag-msg.step[data-state='err'] .ag-step-head { color: #c62f2f; }
+@keyframes ag-spin { to { transform: rotate(360deg); } }
+.ag-msg.step details { margin-top: 2px; }
+.ag-msg.step summary { color: var(--text-3); font-size: 11px; cursor: var(--cur-pointer, pointer); }
+.ag-msg.step pre { margin: 4px 0 0; max-height: 180px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: var(--field); color: var(--text-2); font: 11px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+.ag-msg.turn { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 2px 6px; border-bottom: 1px solid var(--line); color: var(--text-3); font-size: 11.5px; cursor: var(--cur-pointer, pointer); }
+.ag-msg.turn button { flex: none; height: 22px; padding: 0 8px; font-size: 11.5px; }
+
+/* AI 的提问：问题 + 几个选项 */
+.ag-msg.ask { padding: 9px 11px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel-2); }
+.ag-msg.ask .ag-q { color: var(--text); font-weight: 600; }
+.ag-msg.ask .ag-opts { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.ag-msg.ask .ag-opts button { height: auto; padding: 6px 10px; justify-content: flex-start; text-align: left; white-space: normal; line-height: 1.5; font: inherit; font-size: 12.5px; }
+.ag-msg.ask .ag-opts button:hover:not(:disabled) { border-color: var(--accent); }
+.ag-msg.ask .ag-opts button.picked { border-color: var(--accent); color: var(--accent); opacity: 1; }
+.ag-msg.ask small { display: block; margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.ag-msg.ask.answered { border-color: var(--line); opacity: 0.75; }
+.ag-msg.ask.answered small { display: none; }
+.ag-compose { padding: 8px 12px 10px; border-top: 1px solid var(--line); }
+.ag-compose textarea { display: block; width: 100%; box-sizing: border-box; min-height: 52px; max-height: 160px; padding: 7px 9px; resize: vertical; background: var(--field); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; line-height: 1.5; }
+.ag-compose textarea:focus { outline: none; border-color: var(--accent); }
+.ag-bar { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--text-3); font-size: 11.5px; }
+.ag-bar label { display: flex; align-items: center; gap: 4px; }
+.ag-state { margin-left: auto; color: var(--accent); }
+.ag-bar button { height: 26px; padding: 0 14px; }
+.ag-bar button.danger { background: #d9534f; border-color: #d9534f; color: #fff; }
+html.demo #agent { display: none !important; }
