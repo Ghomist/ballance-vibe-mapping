@@ -1543,8 +1543,9 @@ const FLY_TAP_MS = 250, FLY_TAP_PX = 8;
 window.addEventListener('pointerdown', (e) => {
   if (!fly?.latched || e.button === 1) return;
   e.preventDefault(); e.stopImmediatePropagation();
+  // 右键：等松开再退出（见 pointerup）。按下就解除鼠标锁定的话，右键还按着、指针又能动了，浏览器自带的鼠标手势会被触发
+  if (e.button === 2) return;
   endFly();
-  gestureGuardUntil = performance.now() + 400;
 }, true);
 el.addEventListener('pointerdown', (e) => {
   if (e.button !== 2 || drag || fly) return;
@@ -1610,7 +1611,8 @@ function endFly() {
 window.addEventListener('pointerup', (e) => {
   if (e.button !== 2) return;
   gestureGuardUntil = performance.now() + 400;
-  if (!fly || fly.latched) return;
+  if (!fly) return;
+  if (fly.latched) { endFly(); return; } // 单击进来的漫游里再点右键：松开时退出
   // 单击（很快松开、鼠标几乎没动、也没按移动键）：留在漫游里；按住拖过的：松开就退出
   if (performance.now() - fly.downAt < FLY_TAP_MS && fly.moved < FLY_TAP_PX && !fly.keys.size) {
     fly.latched = true;
