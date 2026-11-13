@@ -80,7 +80,7 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 4000);
 camera.up.set(0, 0, 1);
 camera.position.set(-20, -45, 45);
 const controls = new OrbitControls(camera, renderer.domElement);
-// 中键环视、Shift+中键平移（OrbitControls 自带：按着 Shift 的旋转键就是平移）；右键按住是漫游（见下面的 fly）
+// 中键环视、Shift+中键平移（OrbitControls 自带：按着 Shift 的旋转键就是平移）；右键单击 / 按住是漫游（见下面的 fly）
 controls.mouseButtons = { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE };
 controls.target.set(20, 10, 0);
 controls.enableDamping = true;
@@ -744,7 +744,7 @@ function currentHints(): Hint[] {
     const d = drag;
     return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `换轴（绕 ${AXIS_NAME[d.axis]}）`), H(['Ctrl'], alignOn ? '按住自由旋转' : '按住每 15° 吸附'), H(K('align'), alignOn ? '对齐：开（每 15°）' : '对齐：关'), H(['0'], d.num ? `输入 ${d.num}°` : '输入角度')];
   }
-  if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), H(['RMB'], '松开退出漫游')];
+  if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), fly.latched ? H(['LMB', 'RMB', 'Esc'], '退出漫游') : H(['RMB'], '松开退出漫游')];
   if (drag?.t === 'splinePt') {
     const d = drag, e = doc.elems[d.id] as RailElem, split = e.curve!.pts[d.node].split;
     if (d.part === 'cp') return [H(['LMB'], '松开完成'), H(K('vsnap'), `按住：${curveEndAt(e, d.node) ? splineSnapText(e) : '吸附到别的物体'}`), H(K('grid'), gridOn ? '格栅：开' : '格栅：关')];
@@ -757,7 +757,7 @@ function currentHints(): Hint[] {
   const spl = selectedSpline();
   if (vHeld) return [H([...K('vsnap'), 'LMB'], spl ? `拖控制点吸到别的物体${spl.curve!.closed ? '' : `；端点${splineSnapText(spl)}`}` : '抓住顶点 / 边中点拖到别的物体上吸附')];
   const vh = H(K('vsnap'), spl && !spl.curve!.closed ? `按住拖端点：${splineSnapText(spl)}` : '按住：吸附顶点');
-  const hs = [H(['MMB'], '环视'), H(['Shift', 'MMB'], '平移'), H(['RMB'], '漫游'), H(['Wheel'], '缩放')];
+  const hs = [H(['MMB'], '环视'), H(['Shift', 'MMB'], '平移'), H(['RMB'], '单击 / 按住：漫游'), H(['Wheel'], '缩放')];
   const m = mode();
   if (m) return [...hs, H(['LMB'], modeHint(m)), ...(m === 'pattern' ? [] : [vh])];
   if (sel.size) hs.push(H(K('focus'), '聚焦'), H(K('dup'), '复制'), H(K('delete'), '删除'));
@@ -1525,16 +1525,30 @@ function liveUpdate() {
 
 const el = renderer.domElement;
 el.addEventListener('contextmenu', (e) => e.preventDefault());
-// ---------------- 漫游：右键按住时，鼠标转视角，WASD 前后左右，空格上升、Shift 下降 ----------------
-/** 漫游：vel 是当前速度（带缓动地追目标速度），look 是还没转完的鼠标视角（每帧转掉一部分，带一点缓动） */
-let fly: { keys: Set<string>; speed: number; dist: number; vel: THREE.Vector3; look: [number, number] } | null = null;
+// ---------------- 漫游：鼠标转视角，WASD 前后左右，空格上升、Shift 下降 ----------------
+// 两种进法：单击右键进入、再点一下（或 Esc）退出；或者按住右键拖着看、松开退出。
+// 单击那种不用按着右键移动鼠标，浏览器自带的鼠标手势（Edge 等，网页拦不住）就不会被触发
+/**
+ * 漫游：vel 是当前速度（带缓动地追目标速度），look 是还没转完的鼠标视角（每帧转掉一部分，带一点缓动）。
+ * latched：单击进来的，松开右键也不退出；downAt / moved：按下的时刻和按着时鼠标走了多远，用来分辨单击和按住
+ */
+let fly: { keys: Set<string>; speed: number; dist: number; vel: THREE.Vector3; look: [number, number]; latched: boolean; downAt: number; moved: number } | null = null;
 let flySpeed = prefs.flySpeed;
+/** 右键按下到松开不超过这么久、鼠标也几乎没动，算单击 */
+const FLY_TAP_MS = 250, FLY_TAP_PX = 8;
+// 单击进来的漫游里：再点一下左键或右键退出（鼠标锁定失败时指针可能在别处，所以挂在 window 上）
+window.addEventListener('pointerdown', (e) => {
+  if (!fly?.latched || e.button === 1) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  endFly();
+  gestureGuardUntil = performance.now() + 400;
+}, true);
 el.addEventListener('pointerdown', (e) => {
-  if (e.button !== 2 || drag) return;
+  if (e.button !== 2 || drag || fly) return;
   // 切分模式里右键：退出切分（不进漫游）
   if (splitMode) { e.preventDefault(); e.stopImmediatePropagation(); clearModes(); return; }
   e.preventDefault();
-  fly = { keys: new Set(), speed: flySpeed, dist: camera.position.distanceTo(controls.target), vel: new THREE.Vector3(), look: [0, 0] };
+  fly = { keys: new Set(), speed: flySpeed, dist: camera.position.distanceTo(controls.target), vel: new THREE.Vector3(), look: [0, 0], latched: false, downAt: performance.now(), moved: 0 };
   controls.enabled = false;
   zoomGoal = null; camAnim = null;
   el.setPointerCapture(e.pointerId);
@@ -1559,7 +1573,7 @@ flyHud.innerHTML = `
     </div>
     <div class="ud"><kbd data-a="fly.up" data-suffix=" 上升"></kbd><kbd data-a="fly.down" data-suffix=" 下降"></kbd></div>
     <div class="speed"><span>速度</span><div class="bar"><i></i></div><b></b></div>
-    <div class="tip">滚轮调速度 · 松开右键退出</div>
+    <div class="tip"></div>
   </div>`;
 host.appendChild(flyHud);
 function syncFlyHud() {
@@ -1574,6 +1588,7 @@ function syncFlyHud() {
   const f = Math.log(fly.speed / 2) / Math.log(200);
   flyHud.querySelector<HTMLElement>('.bar i')!.style.width = `${(f * 100).toFixed(1)}%`;
   flyHud.querySelector('.speed b')!.textContent = fly.speed.toFixed(0);
+  flyHud.querySelector('.tip')!.textContent = `滚轮调速度 · ${fly.latched ? '单击或 Esc 退出' : '松开右键退出'}`;
 }
 function endFly() {
   if (!fly) return;
@@ -1589,18 +1604,43 @@ function endFly() {
   if (document.pointerLockElement) document.exitPointerLock();
   updateStatus();
 }
-window.addEventListener('pointerup', (e) => { if (e.button === 2) endFly(); }, true);
+window.addEventListener('pointerup', (e) => {
+  if (e.button !== 2) return;
+  gestureGuardUntil = performance.now() + 400;
+  if (!fly || fly.latched) return;
+  // 单击（很快松开、鼠标几乎没动、也没按移动键）：留在漫游里；按住拖过的：松开就退出
+  if (performance.now() - fly.downAt < FLY_TAP_MS && fly.moved < FLY_TAP_PX && !fly.keys.size) {
+    fly.latched = true;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    syncFlyHud();
+    updateStatus();
+  } else endFly();
+}, true);
 window.addEventListener('blur', endFly);
+// 鼠标锁定被浏览器解除（按了 Esc、切走窗口）：跟着退出漫游
+document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement) endFly(); });
+// 挡住浏览器扩展的右键手势：漫游期间（以及松开右键后紧跟着的那次右键菜单）不让页面里的鼠标事件和右键菜单事件往下传。
+// 指针锁定后鼠标坐标不再变化，手势扩展也就认不出轨迹；这里再把它们可能监听的事件截在最外层。
+// 浏览器自带的手势（不经过页面事件）网页拦不住
+let gestureGuardUntil = 0;
+const gestureGuard = (e: Event) => {
+  if (!fly && performance.now() > gestureGuardUntil) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+};
+for (const t of ['mousedown', 'mousemove', 'mouseup', 'contextmenu', 'auxclick']) window.addEventListener(t, gestureGuard, true);
 window.addEventListener('pointermove', (e) => {
   if (!fly) return;
   // 鼠标转视角：先记下要转多少，每帧转掉一部分（tickFly）
   const k = 0.0025;
   fly.look[0] += -e.movementX * k;
   fly.look[1] += -e.movementY * k;
+  fly.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
 }, true);
-// 漫游时键盘只管移动（不触发别的快捷键）
+// 漫游时键盘只管移动（不触发别的快捷键）；Esc 退出
 window.addEventListener('keydown', (e) => {
   if (!fly) return;
+  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); endFly(); return; }
   const a = flyActionFor(keyName(e));
   if (a) { fly.keys.add(a); syncFlyHud(); }
   e.preventDefault(); e.stopImmediatePropagation();
@@ -3919,8 +3959,8 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'import') openImport();
   else if (act === 'copy') void copyMapCode();
   else if (act === 'nmo') void exportNmo();
-  else if (act === 'check') void openCheck(false);
   else if (act === 'obj' || act === 'glb') void exportModel(act);
+  else if (act === 'check') void openCheck(false);
   else if (act === 'save-file') void saveFile();
   else if (act === 'open-file') fileInput.click();
 });
@@ -4035,7 +4075,6 @@ async function exportNmo() {
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
   finally { exporting = false; }
 }
-
 /** 导出 .glb / .obj（zip）：和 NMO 一样是占位符；不进游戏，所以不先做关卡检查 */
 async function exportModel(fmt: 'obj' | 'glb') {
   if (exporting) return;
@@ -4051,6 +4090,7 @@ async function exportModel(fmt: 'obj' | 'glb') {
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
   finally { exporting = false; }
 }
+
 // ---------------- 主题、设置 ----------------
 
 function applyTheme(t: 'dark' | 'light') {
@@ -5631,3 +5671,4 @@ function openCheck(forExport: boolean): Promise<boolean> {
     });
   });
 }
+
