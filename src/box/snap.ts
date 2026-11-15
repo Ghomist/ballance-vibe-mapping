@@ -126,12 +126,15 @@ function localFeats(e: Elem): Feats {
     if (e.pieces.length === 1) out.mids.push(...railPoints(advance(s0, e.pieces[0], 0.5), e.pieces[0].kind));
     return out;
   }
-  // 机关只有预设的吸附点：每个对准方块（代表它所在的那一格路面，顶面就是路面）顶面的四角、四边中点和中心，没有边
+  // 机关只有预设的吸附点：每个对准方块（代表它所在的那一格路面，顶面就是路面）顶面、底面的四角、四边中点和中心，没有边
   const out: Feats = { verts: [], mids: [], edges: [] };
   for (const r of anchorRects(e)) {
     const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
-    out.verts.push([r.x0, r.y0, r.top], [r.x1, r.y0, r.top], [r.x1, r.y1, r.top], [r.x0, r.y1, r.top]);
-    out.mids.push([cx, r.y0, r.top], [r.x1, cy, r.top], [cx, r.y1, r.top], [r.x0, cy, r.top], [cx, cy, r.top]);
+    // 顶面和底面都能吸（底面对齐别的路面的底、叠在下面的东西）
+    for (const z of [r.top, r.top - r.depth]) {
+      out.verts.push([r.x0, r.y0, z], [r.x1, r.y0, z], [r.x1, r.y1, z], [r.x0, r.y1, z]);
+      out.mids.push([cx, r.y0, z], [r.x1, cy, z], [cx, r.y1, z], [r.x0, cy, z], [cx, cy, z]);
+    }
   }
   const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
   for (const [x, y, z] of objType(e.type)?.snapTops ?? []) out.verts.push([e.x + x * c - y * s, e.y + x * s + y * c, e.z + z]);

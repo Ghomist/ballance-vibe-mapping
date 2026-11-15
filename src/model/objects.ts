@@ -131,6 +131,8 @@ export const FAKE_FIX: Record<string, { rot?: number; dx?: number; dy?: number; 
   Fake_Modul_41: { rot: 180, dz: -1.35 },
   Fake_Modul_30: { pitch: -10, dz: 2.55 },
   Fake_Modul_19: { dx: -2.92, dy: -2.5, dz: -0.1 },
+  // 落石：模型以原点为中心，占位符那一格的对准方块在 x=-2.5
+  Fake_Modul_34: { dx: -2.5 },
 };
 /**
  * 机关模型之外再一起显示的模型（只影响编辑器里的显示，不导出）：
