@@ -31,6 +31,7 @@ import { tileMesh } from '../view/tilemesh';
 import { cutBoxes } from '../view/clipmesh';
 import { SCENES } from './scenes';
 import { decodeShare, encodeShare } from './share';
+import { initModelStore } from './model-store';
 import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
 import { ASSET_INFO, assetInfo, meshScale, tileOf } from './asset-info';
 import { checkLevel, type Issue } from './check';
@@ -248,7 +249,8 @@ async function flushMap() {
   const full = fullDoc();
   const id = mapId, json = JSON.stringify(full), name = doc.name ?? '', count = Object.keys(full.elems).length;
   if (!count || json === cleanDoc) return;
-  const code = await encodeShare(full);
+  // 历史地图只记模型编号，网格在 IndexedDB 里（localStorage 装不下）
+  const code = await encodeShare(full, { models: false });
   if (!putMap(localStorage, { id, name, code, count, updated: Date.now() })) flash('浏览器存储满了，历史地图没存上，删掉几张吧', true);
 }
 const scheduleMap = () => { clearTimeout(mapTimer); mapTimer = window.setTimeout(() => void flushMap(), 800); };
@@ -6287,4 +6289,16 @@ function openChangelog(first = false) {
   try { seen = localStorage.getItem(SEEN_KEY); } catch { /* 读不了当成没看过 */ }
   // 自动录制教程、测试时不弹
   if (seen !== LATEST && !navigator.webdriver) setTimeout(() => openChangelog(true), 400);
+})();
+
+// ---------------- 导入模型的持久化：刷新后先从 IndexedDB 读回来（地图里的元素只记 custom:编号） ----------------
+void (async () => {
+  await initModelStore((msg) => flash(msg, true));
+  const missing = () => Object.values(fullDoc().elems).some((e) => e.kind === 'asset' && isCustom(e.name) && !customModel(e.name));
+  // 以前的版本没存进 IndexedDB：这张图的历史记录里带着网格，解出来登记一下（登记时会顺带存进库）
+  if (missing()) {
+    const m = listMaps(localStorage).find((x) => x.id === mapId);
+    if (m) { try { await decodeShare(m.code); } catch { /* 解不开就算了 */ } }
+  }
+  if (missing()) flash('有导入的模型找不到网格数据，显示成占位盒子：重新导入一次，或者打开带着模型的地图文件 / 地图码', true);
 })();

@@ -258,9 +258,9 @@ const toB64 = (b: Uint8Array) => {
 const fromB64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 
 /** 地图 → 地图码 */
-export async function encodeShare(doc: Doc): Promise<string> {
-  // 带上用到的导入模型（没用到的不存）
-  const models = modelsUsed(Object.values(doc.elems));
+export async function encodeShare(doc: Doc, opt: { models?: boolean } = {}): Promise<string> {
+  // 带上用到的导入模型（没用到的不存）；本机的历史地图不带（模型存在 IndexedDB 里，见 model-store.ts）
+  const models = opt.models === false ? undefined : modelsUsed(Object.values(doc.elems));
   doc = { ...doc, models };
   if (!models) delete doc.models;
   let mode = MODE_BIN, body: Uint8Array;
