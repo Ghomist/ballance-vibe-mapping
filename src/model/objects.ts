@@ -65,6 +65,8 @@ export interface ObjType {
   prop?: boolean;
   /** 全图只能有一个 */
   unique?: boolean;
+  /** 起点 / 小节盘点的一部分（火焰、重生点）：不单独出现在素材库里，跟着盘点一起放 */
+  part?: boolean;
   /**
    * 从中间断开的机关（秋千、跷跷板等）：放在直路中间时，每对对准方块（下标，0 = anchor，1… = more）之间的那段路去掉，
    * 断开处是开放端点。T 型板是两个侧边方块之间（两个挡块中间）；双向挡板是两条平行的路各断一段。
@@ -74,6 +76,9 @@ export interface ObjType {
 
 /** 名称取自 Ballance Wiki「机关」词条 */
 export const OBJ_TYPES: ObjType[] = [
+  { type: 'PS_FourFlames', cat: 'module', label: '起点火焰', part: true, unique: true },
+  { type: 'PC_TwoFlames', cat: 'module', label: '小节火焰', part: true },
+  { type: 'PR_Resetpoint', cat: 'module', label: '重生点', part: true },
   { type: 'P_Extra_Point', cat: 'module', label: '分数球', anchor: [0, 0, -2.5], prop: true },
   { type: 'P_Extra_Life', cat: 'module', label: '生命球', anchor: [0, 0, -2.56], prop: true },
   { type: 'P_Box', cat: 'module', label: '箱子', anchor: [0, 0, -2.5], prop: true },

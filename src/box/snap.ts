@@ -1,4 +1,5 @@
 // 吸附用的几何特征：顶点、边的中点、边
+import { CHECK_FLAMES, CHECK_RESET_DZ, FLAME_CONE, START_FLAMES, START_RESET_DZ } from './sectors';
 import { assetInfo } from './asset-info';
 import { ASSET_PROF, ASSET_SNAP } from './asset-snap';
 import { meshScale, tileOf } from './asset-info';
@@ -55,6 +56,8 @@ function localFeats(e: Elem): Feats {
         if (alongX) { out.verts.push([t, f.y0, e.z], [t, f.y1, e.z]); out.mids.push([t, e.y, e.z]); }
         else { out.verts.push([f.x0, t, e.z], [f.x1, t, e.z]); out.mids.push([e.x, t, e.z]); }
       }
+      // 拆开的盘点：火焰、重生点该在的位置（它们的原点），V 吸过去就对齐回来
+      if (e.bare) out.verts.push([e.x, e.y, e.z - FLAME_CONE], [e.x, e.y, e.z - FLAME_CONE + (e.type === 'start' ? START_RESET_DZ : CHECK_RESET_DZ)]);
       return out;
     }
     const out = boxFeats(() => [e.z, 0], f.x0, f.y0, f.x1, f.y1, 5);
@@ -139,5 +142,7 @@ function localFeats(e: Elem): Feats {
   const c = [1, 0, -1, 0][e.rot], s = [0, 1, 0, -1][e.rot];
   for (const [x, y, z] of objType(e.type)?.snapTops ?? []) out.verts.push([e.x + x * c - y * s, e.y + x * s + y * c, e.z + z]);
   if (!out.verts.length) out.verts.push([e.x, e.y, e.z]);
+  // 火焰：再加一个盘点路面顶面中心的点（原点往上 FLAME_CONE），吸到任何盘点（包括旧式的）的圆盘中心就对齐
+  if (e.type === START_FLAMES || e.type === CHECK_FLAMES) out.mids.push([e.x, e.y, e.z + FLAME_CONE]);
   return out;
 }

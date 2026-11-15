@@ -13,17 +13,20 @@ export interface NmoReadMesh {
   mtls: (number | null)[];
 }
 export interface NmoReadMaterial { name: string; diffuse: [number, number, number, number]; texture: number | null; alphaTest: boolean; alphaBlend: boolean; twoSided: boolean }
-export interface NmoReadObject { name: string; mesh: number | null; matrix: number[]; visible: boolean }
+export interface NmoReadObject { name: string; mesh: number | null; matrix: number[]; visible: boolean; /** 文件里的下标（组里引用的就是它） */ index: number }
 export interface NmoReadDoc {
   objects: NmoReadObject[];
+  /** 组：名字和组里物体在文件里的下标 */
+  groups: { name: string; objects: number[] }[];
   meshes: Map<number, NmoReadMesh>;
   materials: Map<number, NmoReadMaterial>;
   /** 贴图：文件里的下标 → 文件名（没有外部文件名的不在里面） */
   textures: Map<number, string>;
 }
 
-const CID = { MATERIAL: 30, TEXTURE: 31, MESH: 32, ENTITY3D: 33, OBJECT3D: 41 };
+const CID = { GROUP: 23, MATERIAL: 30, TEXTURE: 31, MESH: 32, ENTITY3D: 33, OBJECT3D: 41 };
 const S = {
+  GROUPALL: 0x000fffff,
   ENTITY_MESHS: 0x00004000, ENTITY_DATA: 0x00100000,
   MESH_MATERIALS: 0x00100000, MESH_FACES: 0x00010000, MESH_VERTICES: 0x00020000,
   MAT_DATA: 0x00001000, TEX_FILENAMES: 0x00010000,
@@ -122,12 +125,17 @@ export async function readNmoFile(file: Uint8Array): Promise<NmoReadDoc> {
     q += 4 + size;
   }
 
-  const doc: NmoReadDoc = { objects: [], meshes: new Map(), materials: new Map(), textures: new Map() };
+  const doc: NmoReadDoc = { objects: [], groups: [], meshes: new Map(), materials: new Map(), textures: new Map() };
   entries.forEach((e, i) => {
     const c = chunks[i];
     if (!c) return;
     try {
-      if (e.cid === CID.TEXTURE) {
+      if (e.cid === CID.GROUP) {
+        if (!c.seek(S.GROUPALL)) return;
+        const n = c.dword(), objs: number[] = [];
+        for (let k = 0; k < n && k < 1e6; k++) { const o = c.obj(); if (o !== null) objs.push(o); }
+        doc.groups.push({ name: e.name, objects: objs });
+      } else if (e.cid === CID.TEXTURE) {
         if (c.seek(S.TEX_FILENAMES) && c.dword() > 0) { const f = c.string().split(/[\\/]/).pop()!; if (f) doc.textures.set(i, f); }
       } else if (e.cid === CID.MATERIAL) {
         if (!c.seek(S.MAT_DATA)) return;
@@ -151,7 +159,7 @@ export async function readNmoFile(file: Uint8Array): Promise<NmoReadDoc> {
         const moveable = c.dword();
         const m: number[] = [];
         for (let r = 0; r < 4; r++) { for (let k = 0; k < 3; k++) m.push(c.float()); m.push(r === 3 ? 1 : 0); }
-        doc.objects.push({ name: e.name, mesh, matrix: m, visible: !!(moveable & VX_MOVEABLE_VISIBLE) });
+        doc.objects.push({ name: e.name, mesh, matrix: m, visible: !!(moveable & VX_MOVEABLE_VISIBLE), index: i });
       }
     } catch (err) { if (!(err instanceof Fail)) throw err; /* 这一个对象读不了就跳过 */ }
   });

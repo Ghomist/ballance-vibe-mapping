@@ -18,9 +18,10 @@ import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_S
 import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zipStore } from '../export/model3d';
+import { CHECK_FLAMES, CHECK_RESET_DZ, CP_OBJ_TYPES, FLAME_CONE, RESET_POINT, START_FLAMES, START_RESET_DZ, checkpointSectors, newCheckpoint, nextCheckSector, sectorTotal, startsOf } from './sectors';
 import { CHANGELOG, LATEST } from './changelog';
-import { type CustomModel, customModel, isCustom, modelsUsed, onCustomModel, registerModel, registerModels, triCount } from './custom-model';
-import { MODEL_ACCEPT, importModelFile, isModelFile, isSideFile } from './model-import';
+import { type CustomModel, customModel, isCustom, modelsUsed, registerModels } from './custom-model';
+import { type ImportResult, MODEL_ACCEPT, buildImport, importBounds, importModelFile, importTris, isModelFile, isSideFile } from './model-import';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
 import { initHelp } from './help';
@@ -796,13 +797,19 @@ function syncOps() {
     group: es.length >= 2 && !(es.every((e) => e.group !== undefined && e.group === es[0].group)),
     ungroup: es.some((e) => e.group !== undefined),
   };
-  // 孤立模式里没选东西也留着这一条：上面有「退出孤立」，不会被困在里面
+  // 绑定 / 已绑定只显示一个：能绑的时候是「绑定」，已经整个绑在一起时是按下去的「已绑定」，点一下解绑
+  if (can.group) can.ungroup = false;
+  // 孤立模式里没选东西也留着这一条：上面有「孤立中」（点一下退出），不会被困在里面
   const iso = !!stash, mirror = es.some(canMirror);
   const shown = (es.length > 0 || iso) && !busy;
   const key = shown ? `${es.length}:${+can.merge}${+can.group}${+can.ungroup}${+mirror}${+iso}${iso ? Object.keys(doc.elems).length : ''}${prefs.coordSys}` : '';
   if (key === selbarKey) return;
   selbarKey = key;
-  selbar.hidden = !shown;
+  // 动效：出现、消失淡入淡出；按钮变了宽度缓动过去，新出现的按钮淡入
+  const wasShown = !selbar.hidden && selbar.classList.contains('shown');
+  const w0 = wasShown ? selbar.getBoundingClientRect().width : 0;
+  const before = new Set([...selbar.children].filter((c) => !(c as HTMLElement).hidden));
+  showEl(selbar, shown);
   if (!shown) return;
   selCount.textContent = es.length ? `已选 ${es.length}` : '';
   selCount.hidden = !es.length;
@@ -818,11 +825,28 @@ function syncOps() {
   const chip = document.getElementById('iso-chip')!;
   chip.hidden = !iso;
   chip.textContent = `孤立中 · ${Object.keys(doc.elems).length} 个`;
+  if (wasShown && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const w1 = selbar.getBoundingClientRect().width;
+    if (Math.abs(w1 - w0) > 0.5) {
+      // 内容贴着没变的那一边：变化（新出现 / 消失的按钮）在最左边没变的按钮之前（比如「孤立中 · N 个」）就贴右边，往左伸缩
+      const kids = [...selbar.children], vis = kids.filter((c) => !(c as HTMLElement).hidden);
+      const firstKept = kids.findIndex((c) => before.has(c) && vis.includes(c));
+      const leftSide = firstKept > 0 && kids.slice(0, firstKept).some((c) => before.has(c) !== vis.includes(c));
+      if (leftSide) selbar.style.justifyContent = 'flex-end';
+      const a = selbar.animate([{ width: `${w0}px` }, { width: `${w1}px` }], { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' });
+      a.onfinish = a.oncancel = () => { selbar.style.justifyContent = ''; };
+    }
+    for (const c of selbar.children) if (!(c as HTMLElement).hidden && !before.has(c)) (c as HTMLElement).animate([{ opacity: 0, transform: 'scale(0.9)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing: 'ease-out' });
+  }
 }
 // ---- 小节（和上一版一样：顶栏选当前小节，新放的机关归到这个小节；不自动推断）----
-const checksSorted = () => Object.values(fullDoc().elems).filter((e): e is Extract<Elem, { kind: 'piece' }> => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
-const sectorCount = () => 1 + checksSorted().length;
-const sectorOfCheck = (id: number) => { const c = checksSorted(); const p = c.find((x) => x.id === id); return p?.sector ?? c.indexOf(p!) + 2; };
+const sectorCount = () => sectorTotal(Object.values(fullDoc().elems));
+/** 小节盘点激活第几小节：旧式盘点按自己的编号；只有路面的盘点看同组的两火 */
+const sectorOfCheck = (id: number) => {
+  const all = Object.values(fullDoc().elems), e = all.find((x) => x.id === id);
+  const g = e && e.kind === 'piece' && e.bare && e.group !== undefined ? all.find((x) => x.kind === 'obj' && x.type === CHECK_FLAMES && x.group === e.group) : undefined;
+  return checkpointSectors(all).find((c) => c.e.id === (g ?? e)?.id)?.sector ?? 2;
+};
 const sectorBtn = document.getElementById('sector')!, sectorMenu = document.getElementById('sector-menu')!, sectorEye = document.getElementById('sector-eye')!;
 let lastSectorKey = '';
 function syncSector() {
@@ -1188,6 +1212,8 @@ function drawOverlayInner() {
     const hull = hullOf(e, c, 0.16);
     put(selLayer, `sel:${e.id}`, ...(hull ? [hull] : []), outlineOf(e, c));
   }
+  // 拖着拆开的盘点的火焰 / 重生点：盘点路面上它该在的位置
+  if (drag?.t === 'grab') cpGhosts.forEach((s, i) => put(overlay, `cpslot:${i}:${s.hot ? 1 : 0}`, cpGhostObj(s)));
   // 机关的对准方块、盘点路口的虚拟路面：悬停、选中、吸附时靠近的都画出来
   for (const id of new Set([...hoverGroup, ...sel, ...(drag ? nearVirtual : [])])) {
     const e = doc.elems[id];
@@ -1537,6 +1563,75 @@ let drag: Drag | null = null;
 const origOf = (ids: Iterable<number> = sel) => new Map([...ids].map((id) => [id, JSON.stringify(doc.elems[id])]));
 function restore(orig: Map<number, string>) { for (const [id, s] of orig) doc.elems[id] = JSON.parse(s); }
 /** 拖动整体平移：鼠标位置 dRaw，自动对齐给出 dSnap（和 dRaw 一样时表示没吸上） */
+// ---- 拆开的盘点：拖火焰 / 重生点时，附近的盘点路面上显示它该在的位置（虚影），靠近就吸进去，朝向也对上 ----
+interface CpSlot { pos: P3; rot: Dir; ang?: number; type: string; hot: boolean }
+/** 拖动中要画的虚影 */
+let cpGhosts: CpSlot[] = [], cpGhostKey = '';
+/** 吸进去的范围（水平、竖直） */
+const SLOT_R = 6, SLOT_DZ = 8, SLOT_SHOW = 60;
+/** 这种火焰 / 重生点在盘点路面上的位置：四火在起点上、两火在小节盘点上、重生点两种都行（高度不同）；已经有同类占着的不算 */
+function cpSlots(type: string, exclude: Set<number>): CpSlot[] {
+  const out: CpSlot[] = [];
+  const all = Object.values(doc.elems);
+  for (const p of all) {
+    if (p.kind !== 'piece' || !p.bare || p.q || exclude.has(p.id) || (p.type !== 'start' && p.type !== 'check')) continue;
+    if ((type === START_FLAMES && p.type !== 'start') || (type === CHECK_FLAMES && p.type !== 'check')) continue;
+    const dz = -FLAME_CONE + (type === RESET_POINT ? (p.type === 'start' ? START_RESET_DZ : CHECK_RESET_DZ) : 0);
+    const pos = toWorld(p, [p.x, p.y, p.z + dz]) as P3;
+    const turn = type === START_FLAMES ? 1 : type === RESET_POINT ? 2 : 0;
+    const taken = all.some((o) => o.kind === 'obj' && o.type === type && !exclude.has(o.id) && Math.hypot(...toWorld(o, [o.x, o.y, o.z]).map((v, i) => v - pos[i])) < 0.05);
+    if (!taken) out.push({ pos, rot: ((p.rot + turn) % 4) as Dir, ang: p.ang, type, hot: false });
+  }
+  return out;
+}
+/**
+ * 拖着的东西里有一个火焰 / 重生点：找离它最近的空位，够近就吸过去（顺带把朝向转成和盘点一致），返回吸住了没有。
+ * 同时更新要画的虚影（附近的空位，吸住的那个高亮）
+ */
+function slotMove(orig: Map<number, string>, raw: V3): boolean {
+  cpGhosts = [];
+  const parts = [...orig.values()].map((js) => JSON.parse(js) as Elem).filter((e): e is Obj => e.kind === 'obj' && CP_OBJ_TYPES.has(e.type) && !e.q);
+  if (parts.length !== 1) return false;
+  const o = parts[0], from = toWorld(o, [o.x, o.y, o.z]);
+  const at: P3 = [from[0] + raw[0], from[1] + raw[1], from[2] + raw[2]];
+  const slots = cpSlots(o.type, new Set(orig.keys()));
+  let best: CpSlot | null = null, bd = Infinity;
+  for (const s of slots) {
+    const h = Math.hypot(s.pos[0] - at[0], s.pos[1] - at[1]);
+    if (h < SLOT_SHOW) cpGhosts.push(s);
+    if (h < SLOT_R && Math.abs(s.pos[2] - at[2]) < SLOT_DZ && h < bd) { best = s; bd = h; }
+  }
+  if (!best) return false;
+  best.hot = true;
+  const v: V3 = [best.pos[0] - from[0], best.pos[1] - from[1], best.pos[2] - from[2]];
+  const slot = best;
+  drive(raw, v, (x) => {
+    moveSel(orig, x as V3);
+    // 吸住了：朝向也换成盘点的（朝向坐标系的角度变了，坐标跟着换算，世界位置不变）
+    const e = doc.elems[o.id];
+    if (e?.kind !== 'obj') return;
+    const w = toWorld(e, [e.x, e.y, e.z]);
+    e.rot = slot.rot;
+    if (slot.ang) e.ang = slot.ang; else delete e.ang;
+    const l = toLocal(e, w);
+    e.x = l[0]; e.y = l[1]; e.z = l[2];
+  }, [0, 0, 0], { ids: new Set(orig.keys()) });
+  dragInfo = `对齐到${o.type === RESET_POINT ? '盘点的重生点位置' : '盘点的火焰位置'}`;
+  return true;
+}
+/** 虚影：占位符模型的半透明副本，吸住的那个是绿色 */
+function cpGhostObj(s: CpSlot): THREE.Object3D {
+  const g = new THREE.Group();
+  for (const pc of getAsset('element', s.type) ?? []) {
+    const m = new THREE.Mesh(pc.geometry.clone(), new THREE.MeshBasicMaterial({ color: s.hot ? 0x4cff8a : 0xffffff, transparent: true, opacity: s.hot ? 0.45 : 0.28, depthWrite: false }));
+    g.add(m);
+  }
+  g.position.set(...s.pos);
+  g.rotation.z = ((s.rot * 90 + (s.ang ?? 0)) * Math.PI) / 180;
+  g.renderOrder = 5;
+  return g;
+}
+
 function moveWithSnap(orig: Map<number, string>, dRaw: V3, dSnap: V3) {
   const on = dSnap.some((v, i) => Math.abs(v - dRaw[i]) > 1e-6);
   drive(dRaw, on ? dSnap : null, (v) => moveSel(orig, v as V3), [0, 0, 0], { ids: new Set(orig.keys()) });
@@ -1952,7 +2047,7 @@ function startGrab(mouse: { clientX: number; clientY: number }, dup = false) {
 function grabMove(e: { clientX: number; clientY: number }) {
   const d = drag;
   if (d?.t !== 'grab') return;
-  guides = []; snapTarget = null; axisLine = null;
+  guides = []; snapTarget = null; axisLine = null; cpGhosts = [];
   const ax = d.axis, ex = d.excl;
   const n = parseFloat(d.num);
   // 打字输入：限制了轴向时就是沿这根轴的距离
@@ -2002,6 +2097,11 @@ function grabMove(e: { clientX: number; clientY: number }) {
     near = p;
   }
   raw = gridDelta(d.b, raw, axes);
+  const slotted = ax === null && ex === null && slotMove(d.orig, raw);
+  // 虚影变了（出现、消失、吸住的换了）要重画叠加层
+  const gk = cpGhosts.map((s) => `${s.pos.join()}:${+s.hot}`).join('|');
+  if (gk !== cpGhostKey) { cpGhostKey = gk; drawOverlay(); }
+  if (slotted) { liveUpdate(); return; }
   // 竖直移动：吸附到底下 / 旁边路面的顶面、凹槽槽底；其余按自动对齐
   const pz = ax === 2 ? planeSnap(d.b, raw[2], near) : null;
   moveWithSnap(d.orig, raw, pz !== null ? [0, 0, pz] : alignDelta(d.b, raw, axes, near));
@@ -2643,7 +2743,14 @@ function newElems(type: string): Elem[] {
   const bp = bpOf(type);
   if (bp) return blueprintElems(bp);
   const id = doc.nextId++;
-  if (type === 'transition' || type === 'transition-narrow' || type === 'start' || type === 'check') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
+  // 已经有起点了：只放起点的盘点路面，不再加四火和重生点（全图只能有一个起点）
+  if (type === 'start' && startsOf(Object.values(doc.elems)).length) return [{ id, kind: 'piece', type: 'start', x: 0, y: 0, z: 0, rot: 0, bare: true }];
+  if (type === 'start' || type === 'check') {
+    doc.nextId--;
+    const g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0)) + 1;
+    return newCheckpoint(type, () => doc.nextId++, g, nextCheckSector(doc));
+  }
+  if (type === 'transition' || type === 'transition-narrow') return [{ id, kind: 'piece', type: type as PieceType, x: 0, y: 0, z: 0, rot: 0 }];
   if (type.startsWith('obj:')) {
     const t = type.slice(4);
     return [{ id, kind: 'obj', type: t, x: 0, y: 0, z: 0, rot: 0, sector: objType(t)?.cat === 'module' && t !== 'PE_Balloon' ? placeSector : undefined }];
@@ -2676,9 +2783,13 @@ function handleOf(e: Elem): P3 {
 
 /** 蓝图放下时的元素：新编号，绑定组重新编号；地图里已经有起点时去掉蓝图里的起点 */
 function blueprintElems(bp: Blueprint): Elem[] {
-  const hasStart = Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start');
-  const src = bp.elems.filter((e) => !(hasStart && e.kind === 'piece' && e.type === 'start'));
-  if (src.length < bp.elems.length) flash('全图只能有一个起点：蓝图里的起点没有放', true);
+  // 起点连同和它绑在一起的火焰、重生点一起去掉
+  const hasStart = startsOf(Object.values(doc.elems)).length > 0;
+  const startGroups = new Set(bp.elems.filter((e) => (e.kind === 'piece' && e.type === 'start') || (e.kind === 'obj' && e.type === START_FLAMES)).map((e) => e.group).filter((g) => g !== undefined));
+  // 拆开的起点只去掉四火和重生点，路面照放；旧式起点（自带火焰）整个去掉
+  const isStartPart = (e: Elem) => (e.kind === 'piece' && e.type === 'start' && !e.bare) || (e.kind === 'obj' && e.type === START_FLAMES) || (e.group !== undefined && startGroups.has(e.group) && e.kind === 'obj' && e.type === RESET_POINT);
+  const src = bp.elems.filter((e) => !(hasStart && isStartPart(e)));
+  if (src.length < bp.elems.length) flash('全图只能有一个起点：蓝图里起点的四火和重生点没有放', true);
   let g = Math.max(0, ...Object.values(doc.elems).map((e) => e.group ?? 0));
   const remap = new Map<number, number>();
   return [...src].sort((a, b) => a.id - b.id).map((s) => {
@@ -2822,7 +2933,7 @@ function renameBlueprint(bp: Blueprint) {
 }
 
 function startPlace(type: string) {
-  if (type === 'start' && Object.values(doc.elems).some((e) => e.kind === 'piece' && e.type === 'start')) { flash('全图只能有一个起点', true); return; }
+  if (type === 'start' && startsOf(Object.values(doc.elems)).length) flash('已经有起点了：这次只放起点的盘点路面，不带四火和重生点');
   // 死亡区正隐藏着：放下去也看不到，提醒一下，顶栏的「死亡区」按钮闪几下
   if (type === 'zone' && !zonesOn) {
     flash('死亡区当前是隐藏的，放下后看不到——在顶栏的「显示」里打开', true);
@@ -2876,6 +2987,7 @@ function placeMove(e: PointerEvent) {
   const under = h ? doc.elems[h.id] : null;
   for (const [id, js] of orig) {
     const o = JSON.parse(js) as Elem;
+    if (drag.type === 'start' || drag.type === 'check') break;
     if (o.kind !== 'obj' && o.kind !== 'rail' && o.kind !== 'asset') continue;
     // 顺着鼠标下那块路面摆（转过的路面上也是顺着路）
     const axis = under?.kind === 'box' ? (under.slope ? under.slope.axis : under.sx >= under.sy ? 0 : 1) : 0;
@@ -2960,7 +3072,7 @@ function placeEnd(e: PointerEvent) {
     sel = new Set(ids);
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
   // 放了小节盘点：顶栏的小节切到它激活的那个小节
-  const placed = drag.ids?.map((id) => doc.elems[id]).find((x) => x?.kind === 'piece' && x.type === 'check');
+  const placed = drag.ids?.map((id) => doc.elems[id]).find((x) => (x?.kind === 'piece' && x.type === 'check') || (x?.kind === 'obj' && x.type === CHECK_FLAMES));
   if (placed) placeSector = sectorOfCheck(placed.id);
   anim = null; snapping = false;
   drag = null; snapTarget = null;
@@ -2993,62 +3105,7 @@ function saveBlueprints(): boolean {
   try { localStorage.setItem(BP_STORE, JSON.stringify(blueprints)); return true; } catch { flash('浏览器的存储空间满了，蓝图没存上：删掉几个不用的蓝图再试', true); return false; }
 }
 const bpOf = (type: string) => (type.startsWith('bp:') ? blueprints.find((b) => b.id === type.slice(3)) ?? null : null);
-// ---------------- 导入的模型：文件 → 导入模型，或者把模型文件拖进窗口；放进素材库的「模型」，所有地图共用（存在这台电脑的浏览器里） ----------------
-const MODEL_DB = 'bvm-models', MODEL_STORE = 'models';
-/** 素材库里的模型：编号（custom:编号）按导入顺序，最新的在前 */
-let libModels: string[] = [];
-function modelDb(): Promise<IDBDatabase> {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open(MODEL_DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore(MODEL_STORE);
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-}
-async function modelDbDo(fn: (s: IDBObjectStore) => IDBRequest | void): Promise<unknown> {
-  const db = await modelDb();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(MODEL_STORE, 'readwrite');
-    const r = fn(tx.objectStore(MODEL_STORE));
-    tx.oncomplete = () => { res(r ? r.result : undefined); db.close(); };
-    tx.onerror = () => { rej(tx.error); db.close(); };
-  });
-}
-const modelItems = (): LibItem[] => libModels.filter((n) => customModel(n)).map((n) => { const m = customModel(n)!; return { type: `asset:${n}`, label: m.label, hint: `导入的模型 · ${triCount(m)} 个三角形 · ${(m.max[0] - m.min[0]).toFixed(1)} × ${(m.max[1] - m.min[1]).toFixed(1)} × ${(m.max[2] - m.min[2]).toFixed(1)} · Ctrl 拖可缩放 · 属性里选导出成装饰 / 路面 / 钢轨` }; });
-function refreshModelTab() { MODEL_TAB.items = modelItems(); renderLib(); }
-// 启动时读出素材库里的模型
-void (async () => {
-  try {
-    const rows = (await modelDbDo((st) => st.getAll())) as { key: string; t: number; model: CustomModel }[];
-    rows.sort((a, b) => b.t - a.t);
-    for (const r of rows) registerModel(r.model, r.key);
-    libModels = rows.map((r) => `custom:${r.key}`);
-    refreshModelTab();
-  } catch { /* 浏览器不让用 IndexedDB（隐私模式等）：素材库里就没有模型，地图里的照常 */ }
-})();
-async function addLibModel(name: string) {
-  const m = customModel(name)!;
-  libModels = [name, ...libModels.filter((n) => n !== name)];
-  refreshModelTab();
-  try { await modelDbDo((st) => st.put({ key: name.slice(7), t: Date.now(), model: m }, name.slice(7))); }
-  catch { flash('浏览器不让存模型（存储空间满了或者是隐私模式）：这次能用，刷新后素材库里就没有了，已经放进地图里的不受影响', true); }
-}
-function removeLibModel(name: string) {
-  const m = customModel(name);
-  const { box, close } = openModal('<h3>移除模型</h3><p></p><div class="row"><button data-r="0">取消</button><button data-r="1" class="danger">移除</button></div>', '');
-  box.querySelector('p')!.textContent = `把「${m?.label ?? name}」从素材库里移除？已经放进地图里的不受影响（模型数据跟着地图存）。`;
-  box.querySelector('[data-r="0"]')!.addEventListener('click', close);
-  box.querySelector('[data-r="1"]')!.addEventListener('click', () => {
-    close();
-    libModels = libModels.filter((n) => n !== name);
-    prefs.fav = prefs.fav.filter((t) => t !== `asset:${name}`);
-    savePrefs();
-    refreshModelTab();
-    void modelDbDo((st) => st.delete(name.slice(7))).catch(() => {});
-  });
-}
-// 打开的地图、粘贴的蓝图带进来的模型也会登记，素材库卡片的预览图要跟着刷新
-onCustomModel(() => { try { if (prefs.tab === MODEL_TAB.id) renderLib(); } catch { /* 素材库还没建好 */ } });
+// ---------------- 导入模型：文件 → 导入模型，或者把模型文件拖进窗口；直接放进地图（一个物体一个元素） ----------------
 /** 导入一个或几个模型文件（其余的是 .mtl、贴图这些附属文件） */
 async function importModels(files: File[]) {
   const mains = files.filter((f) => isModelFile(f.name));
@@ -3062,28 +3119,23 @@ async function importModels(files: File[]) {
 }
 function importOne(f: File, side: File[]): Promise<void> {
   return new Promise((done) => {
-    const vt = /\.(nmo|cmo)$/i.test(f.name);
-    const { box, close: close0 } = openModal(`<h3>导入模型</h3><p class="mi-file"></p><div class="mi-info">正在读取…</div><label class="mi-scale">缩放 <input type="number" step="any" min="0.0001" value="1"> 倍<small></small></label><ul class="mi-notes"></ul><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary" disabled>导入</button></div>`, 'model-box');
+    const { box, close: close0 } = openModal('<h3>导入模型</h3><p class="mi-file"></p><div class="mi-info">正在读取…</div><ul class="mi-notes"></ul><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary" disabled>导入</button></div>', 'model-box');
     const close = () => { close0(); done(); };
     box.querySelector('.mi-file')!.textContent = f.name;
     const info = box.querySelector<HTMLElement>('.mi-info')!, notes = box.querySelector<HTMLElement>('.mi-notes')!;
-    const scaleIn = box.querySelector<HTMLInputElement>('.mi-scale input')!, hint = box.querySelector<HTMLElement>('.mi-scale small')!;
     const ok = box.querySelector<HTMLButtonElement>('[data-r="1"]')!;
     box.querySelector('[data-r="0"]')!.addEventListener('click', close);
-    let model: CustomModel | null = null;
+    let res: ImportResult | null = null;
     const show = () => {
-      if (!model) return;
-      const k = +scaleIn.value > 0 ? +scaleIn.value : 1;
-      const d = [0, 1, 2].map((i) => ((model!.max[i] - model!.min[i]) * k).toFixed(2));
-      info.textContent = `${triCount(model)} 个三角形 · ${model.parts.length} 种材质${model.textures.length ? ` · ${model.textures.length} 张贴图` : ''} · 尺寸 ${d[0]} × ${d[1]} × ${d[2]}（一格路宽 5）`;
+      if (!res) return;
+      const b = importBounds(res);
+      const d = [0, 1, 2].map((i) => (Number.isFinite(b.max[i] - b.min[i]) ? (b.max[i] - b.min[i]).toFixed(1) : '0'));
+      const machines = res.elems.filter((e) => e.kind === 'obj').length, zones = res.elems.filter((e) => e.kind === 'zone').length;
+      const what = [`${res.objects.length} 个物体`, machines ? `${machines} 个机关` : '', zones ? `${zones} 个死亡区` : ''].filter(Boolean).join('、');
+      info.textContent = `${what} · ${importTris(res)} 个三角形 · 范围 ${d[0]} × ${d[1]} × ${d[2]}（一格路宽 5）`;
     };
-    scaleIn.addEventListener('input', show);
     importModelFile(f, side).then((r) => {
-      model = r.model;
-      const big = Math.max(...[0, 1, 2].map((i) => model!.max[i] - model!.min[i]));
-      // 建模软件多半以米为单位、模型很小：建议放大到大概一格路宽
-      if (!vt && big < 2) { scaleIn.value = String(+(5 / big).toPrecision(2)); hint.textContent = '模型很小，已经建议放大到大约一格路宽'; }
-      else if (big > 2000) hint.textContent = '模型很大，可能要缩小';
+      res = r;
       notes.innerHTML = r.notes.map((n) => `<li>${escHtml(n)}</li>`).join('');
       show();
       ok.disabled = false;
@@ -3091,23 +3143,34 @@ function importOne(f: File, side: File[]): Promise<void> {
     }, (err) => {
       box.classList.add('mi-fail');
       info.textContent = `导入失败：${(err as Error).message}`;
-      scaleIn.closest('label')!.remove();
       ok.remove();
       box.querySelector<HTMLButtonElement>('[data-r="0"]')!.textContent = '知道了';
     });
     ok.addEventListener('click', () => {
-      if (!model) return;
-      const k = +scaleIn.value;
-      if (!(k > 0)) { scaleIn.focus(); return; }
-      // 按缩放重新整理一遍（原点仍在底面中心）
-      const m = k === 1 ? model : { ...model, parts: model.parts.map((p) => ({ ...p, pos: p.pos.map((v) => Math.round(v * k * 1e4) / 1e4) })), min: model.min.map((v) => v * k) as CustomModel['min'], max: model.max.map((v) => v * k) as CustomModel['max'] };
-      const name = registerModel(m);
-      void addLibModel(name);
-      if (prefs.tab !== MODEL_TAB.id) { prefs.tab = MODEL_TAB.id; savePrefs(); }
-      libSearch.value = '';
-      renderLib();
+      if (!res) return;
       close();
-      flash(`已导入「${m.label}」：在素材库的「模型」里，拖出来就能放`);
+      if (drag) return;
+      exitGuard(); clearModes();
+      // 建模软件的模型：几个物体绑成一组，一起拖；NMO 关卡里的东西各自独立
+      const src = buildImport(res, 1, res.absolute || res.objects.length + res.elems.length < 2 ? undefined : 1);
+      if (!src.length) { flash('文件里没有能放进地图的东西', true); return; }
+      snapshot();
+      const ids = pasteElems(doc, src);
+      sel = new Set(ids);
+      if (res.absolute) {
+        rebuild();
+        frameSelection();
+        flash(`已导入「${res.label}」：${ids.length} 个元素，按文件里的位置放好了`);
+        return;
+      }
+      // 和粘贴一样：放到视图中间，跟着鼠标走，左键放下、右键取消
+      const r = el.getBoundingClientRect(), at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      const b = boundsOf(doc, ids);
+      const p = planeHit(at, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0));
+      if (p) for (const id of ids) translateElem(doc.elems[id], [p.x - (b.x0 + b.x1) / 2, p.y - (b.y0 + b.y1) / 2, -b.z0]);
+      rebuild();
+      startGrab(at, true);
+      flash(`已导入「${res.label}」（${ids.length} 个元素）：移动鼠标，左键放下，右键 / Esc 取消`);
     });
   });
 }
@@ -3155,21 +3218,18 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
     id: 'module', label: '机关', items: [
       { type: 'start', label: '起点', hint: '四火，全图一个', icon: svgThumb('<ellipse cx="32" cy="34" rx="22" ry="12" fill="#a99a86"/><ellipse cx="32" cy="32" rx="14" ry="7" fill="#e3a35a"/><path d="M28 30 L32 10 L36 30 Z" fill="#f0b46e"/>') },
       { type: 'check', label: '小节', hint: '两火，按放置顺序编小节号', icon: svgThumb('<ellipse cx="32" cy="34" rx="20" ry="11" fill="#a99a86"/><ellipse cx="32" cy="32" rx="12" ry="6" fill="#e3a35a"/><path d="M14 32 L18 14 L22 32 Z M42 32 L46 14 L50 32 Z" fill="#f0b46e"/>') },
-      ...OBJ_TYPES.filter((t) => t.cat === 'module' && !PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })),
+      ...OBJ_TYPES.filter((t) => t.cat === 'module' && !PROP_TYPES.has(t.type) && !t.part).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })),
       { type: 'zone', label: '死亡区', hint: '球碰到就死 · 导出时自动隐藏（DepthTestCubes）', icon: ZONE_ICON },
     ],
   },
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
   { id: 'deco', label: '装饰', items: [...OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })), ...assetItems('deco')] },
-  { id: 'model', label: '模型', items: modelItems() },
   { id: 'bp', label: '蓝图', items: bpItems() },
 ];
-const MODEL_TAB = LIB[LIB.length - 2];
 const BP_TAB = LIB[LIB.length - 1];
 /** 素材卡片悬停时按 F1 跳到哪一节教程 */
 function helpOf(type: string): string {
   if (type.startsWith('bp:')) return '1.6';
-  if (type.startsWith('asset:custom:')) return '3.5';
   if (type === 'zone') return '2.5';
   if (type.startsWith('rail') || type.startsWith('side-') || /^asset:(Rail|Monorail)/.test(type)) return '2.2';
   if (type === 'start' || type === 'check' || type.startsWith('obj:')) return objType(type.slice(4))?.cat === 'deco' ? '2.4' : '2.3';
@@ -3205,14 +3265,13 @@ function renderLib() {
     b.classList.toggle('on', !q && b.dataset.tab === prefs.tab);
     if (b.dataset.tab === FAV_TAB) b.querySelector('small')!.textContent = String(favItems().length);
     else if (b.dataset.tab === BP_TAB.id) b.querySelector('small')!.textContent = String(BP_TAB.items.length);
-    else if (b.dataset.tab === MODEL_TAB.id) b.querySelector('small')!.textContent = String(MODEL_TAB.items.length);
   });
   const stars = new Set(prefs.fav);
   // 「常用」里先是收藏的，后面是最近放过的；两段之间隔一下
   const nFav = fav ? items.filter((it) => stars.has(it.type)).length : 0;
   libGrid.innerHTML = items.map((it, i) => `${fav && i === nFav && nFav > 0 ? '<div class="lib-sep">最近用过</div>' : ''}<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
-${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button>${it.type.startsWith('asset:custom:') ? '<button type="button" class="lib-del" data-model-del title="从素材库移除（已经放进地图里的不受影响）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button>' : ''}${it.type.startsWith('bp:') ? '<button type="button" class="lib-del" data-bp-del title="删除这个蓝图"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button><button type="button" class="lib-ren" data-bp-ren title="改名"><svg viewBox="0 0 16 16"><path d="M3 13l.6-2.8L10.8 3 13 5.2l-7.2 7.2z M9.4 4.4l2.2 2.2" /></svg></button>' : ''}</div>`).join('');
-  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : !q && prefs.tab === MODEL_TAB.id ? '还没有导入的模型：点「文件 → 导入模型」，或者把 .glb / .gltf / .fbx / .obj / .nmo 文件拖进窗口' : !q && prefs.tab === BP_TAB.id ? `还没有蓝图：选中一组东西，按 ${keyText('blueprint')} 或点选择条上的「蓝图」存进来` : '没有匹配的素材';
+${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button>${it.type.startsWith('bp:') ? '<button type="button" class="lib-del" data-bp-del title="删除这个蓝图"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button><button type="button" class="lib-ren" data-bp-ren title="改名"><svg viewBox="0 0 16 16"><path d="M3 13l.6-2.8L10.8 3 13 5.2l-7.2 7.2z M9.4 4.4l2.2 2.2" /></svg></button>' : ''}</div>`).join('');
+  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : !q && prefs.tab === BP_TAB.id ? `还没有蓝图：选中一组东西，按 ${keyText('blueprint')} 或点选择条上的「蓝图」存进来` : '没有匹配的素材';
   libEmpty.hidden = items.length > 0;
   fillThumbs();
 }
@@ -3276,8 +3335,6 @@ palette.querySelector('.lib-tabs')!.addEventListener('click', (e) => {
 });
 libSearch.addEventListener('input', renderLib);
 libGrid.addEventListener('click', (e) => {
-  const mdel = (e.target as Element).closest<HTMLElement>('[data-model-del]');
-  if (mdel) { const t = mdel.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''; removeLibModel(t.slice(6)); return; }
   const del = (e.target as Element).closest<HTMLElement>('[data-bp-del]');
   if (del) { const bp = bpOf(del.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''); if (bp) deleteBlueprint(bp); return; }
   const ren = (e.target as Element).closest<HTMLElement>('[data-bp-ren]');
@@ -3289,7 +3346,7 @@ libGrid.addEventListener('click', (e) => {
   renderLib();
 });
 libGrid.addEventListener('pointerdown', (e) => {
-  if ((e.target as Element).closest('[data-star], [data-bp-del], [data-bp-ren], [data-model-del]')) return; // 点星标、删除不算拿起卡片
+  if ((e.target as Element).closest('[data-star], [data-bp-del], [data-bp-ren]')) return; // 点星标、删除不算拿起卡片
   const c = (e.target as Element).closest<HTMLElement>('.lib-card');
   if (!c || e.button !== 0) return;
   if (e.pointerType === 'touch') {
@@ -3966,9 +4023,11 @@ function syncProps() {
   } else if (one.kind === 'guard') {
     h += `<div class="title">护栏（长 ${fmt(routeLen(one))}）</div>`;
     h += `<div class="row">在护栏工具（H）里拖护栏的端头改长度</div>`;
+  } else if (one.kind === 'piece' && isCheckpoint(one) && one.bare) {
+    h += `<div class="title">${one.type === 'start' ? '起点路面' : '小节盘点路面'}<small>火焰、重生点是单独的元素，和路面绑在一起</small></div>`;
+    h += pos() + num('yaw', '路口朝向 °', yawDeg(one), 15);
   } else if (one.kind === 'piece' && isCheckpoint(one)) {
-    const checks = Object.values(doc.elems).filter((e) => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
-    h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${one.sector ?? checks.indexOf(one) + 2} 小节）`}</div>`;
+    h += `<div class="title">${one.type === 'start' ? '起点' : `小节盘点（第 ${sectorOfCheck(one.id)} 小节）`}</div>`;
     h += pos() + num('yaw', '路口朝向 °', yawDeg(one), 15);
     const ARROW = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
     const base = one.ang ?? 0;
@@ -3990,7 +4049,7 @@ function syncProps() {
     h += pos() + orient();
     const extra: string[] = [];
     if (baseSpec(one.type)) extra.push(chip('noBase', '专属路块', !one.noBase));
-    if (t?.cat === 'module' && one.type !== 'PE_Balloon') h += `<label>小节</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
+    if (t?.cat === 'module' && one.type !== 'PE_Balloon' && one.type !== START_FLAMES) h += `<label>${one.type === CHECK_FLAMES ? '激活' : '小节'}</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
     if (extra.length) h += `<label>附带</label><div class="chips">${extra.join('')}</div>`;
     if (!one.q && stopperCount(one.type)) {
       const n = stopperCount(one.type), on = Array.from({ length: n }, (_, i) => !stopperOff(one, i)).filter(Boolean).length;
@@ -5965,7 +6024,7 @@ function enterIsolate() {
   for (const e of Object.values(doc.elems)) if (!keep.has(e.id)) { st[e.id] = e; delete doc.elems[e.id]; }
   stash = st;
   document.body.classList.add('isolated');
-  flash(`孤立模式：只显示这 ${keep.size} 个，其余 ${Object.keys(st).length} 个先藏起来。按 ${keyText('isolate')} 或点「退出孤立」放回来`);
+  flash(`孤立模式：只显示这 ${keep.size} 个，其余 ${Object.keys(st).length} 个先藏起来。按 ${keyText('isolate')} 或点选择条上的「孤立中」放回来`);
   frameSelection();
   rebuild();
 }

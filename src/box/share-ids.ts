@@ -10,4 +10,5 @@ export const SHARE_IDS: readonly string[] = [
   'Modul_15', 'Modul_16', 'Turnstile', 'Turnstile_Big', 'SkyLayer', 'SkyLayerVortex', 'RailCrossing',
   'MonorailCrossing', 'Level13_UWoodPath', 'Level13_UWoodPath_Single', 'Level13_WIngWood', 'Level2_TiltedWoodPlate',
   'Level2_WaveWood', 'Modul_27',
+  'PS_FourFlames', 'PC_TwoFlames', 'PR_Resetpoint',
 ];

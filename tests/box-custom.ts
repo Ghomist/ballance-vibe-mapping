@@ -3,7 +3,12 @@ import lib from '../public/nmo-lib.json';
 import { type CustomModel, customModel, finishModel, modelsUsed, registerModel } from '../src/box/custom-model';
 import { customAssets, exportBoxScene } from '../src/box/export';
 import { decodeShare, encodeShare } from '../src/box/share';
-import type { Doc } from '../src/box/types';
+import { type Doc, type Elem, type Obj, type ZoneElem, virtualCells } from '../src/box/types';
+import { buildImport, importModelFile } from '../src/box/model-import';
+import { newCheckpoint, nextCheckSector, sectorTotal, startsOf } from '../src/box/sectors';
+import { feats } from '../src/box/snap';
+
+const near = (a: number, b: number, e = 1e-3) => Math.abs(a - b) < e;
 import { assetInfo } from '../src/box/asset-info';
 import { buildNmoDoc } from '../src/export/nmo-scene';
 import { writeNmo } from '../src/export/nmo';
@@ -48,6 +53,58 @@ export function boxCustomScenarios(check: Check, scenario: Scenario) {
     const plain = await encodeShare({ elems: { 1: { id: 1, kind: 'asset', name: 'WoodPlate', x: 0, y: 0, z: 0, rot: 0 } }, nextId: 2 });
     check((await decodeShare(plain)).elems[1].kind === 'asset', '普通地图码照常');
     check(!!modelsUsed([e]) && !modelsUsed([{ kind: 'asset', name: 'WoodPlate' }]), '只收集用到的导入模型');
+  });
+
+  scenario('导入 NMO：机关按组认出来（类型、小节、朝向），死亡区、路面、钢轨分开', async () => {
+    const d: Doc = { elems: {}, nextId: 20 };
+    const es: Elem[] = [
+      { id: 1, kind: 'box', x: 0, y: 0, z: 0, sx: 10, sy: 5, depth: 1, style: 'normal' },
+      { id: 2, kind: 'obj', type: 'P_Box', x: 3, y: 2, z: 1, rot: 1, sector: 2 },
+      { id: 3, kind: 'obj', type: 'P_Modul_18', x: 7, y: 2, z: 0, rot: 0, ang: 30, sector: 1 },
+      { id: 4, kind: 'zone', x: -50, y: -40, z: -30, sx: 100, sy: 80, depth: 5 },
+      { id: 5, kind: 'rail', x: 0, y: 20, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] },
+      { id: 6, kind: 'piece', type: 'start', x: 1.25, y: 1.25, z: 0, rot: 0 },
+      { id: 7, kind: 'piece', type: 'check', x: 30, y: 1.25, z: 0, rot: 0 },
+    ];
+    for (const e of es) d.elems[e.id] = e;
+    const desc = exportBoxScene(d);
+    const data = await writeNmo(buildNmoDoc(desc, lib as unknown as NmoLib));
+    const r = await importModelFile(new File([data as BlobPart], 'level.nmo'));
+    const boxes = r.elems.filter((e): e is Obj => e.kind === 'obj' && e.type === 'P_Box');
+    check(boxes.length === 1 && boxes[0].sector === 2 && boxes[0].rot === 1 && near(boxes[0].x, 3) && near(boxes[0].y, 2) && near(boxes[0].z, 1), `木箱：类型、小节、朝向、位置 ${JSON.stringify(boxes[0])}`);
+    const fan = r.elems.find((e): e is Obj => e.kind === 'obj' && e.type === 'P_Modul_18');
+    check(!!fan && near(fan.ang ?? 0, 30) && fan.noBase === true && fan.noStopper === true, '风扇：任意角度，关掉专属路块和挡块');
+    const z = r.elems.find((e): e is ZoneElem => e.kind === 'zone');
+    check(!!z && near(z.x, -50) && near(z.sx, 100) && near(z.z, -30) && near(z.depth, 5), '死亡区按包围盒回来');
+    check(r.objects.some((o) => o.phys === 'rail') && r.objects.some((o) => o.phys === 'floor'), '钢轨、路面记下导出类型');
+    const pc = r.elems.find((e): e is Obj => e.kind === 'obj' && e.type === 'PC_TwoFlames');
+    const prs = r.elems.filter((e): e is Obj => e.kind === 'obj' && e.type === 'PR_Resetpoint').map((e) => e.sector).sort();
+    check(!!pc && pc.sector === 2 && prs.join() === '1,2' && r.elems.some((e) => e.kind === 'obj' && e.type === 'PS_FourFlames'), `火焰、重生点按小节号导入：两火 ${pc?.sector}，重生点 ${prs}`);
+    const built = buildImport(r);
+    check(built.filter((e) => e.kind === 'asset').length === r.objects.length && built.every((e, i) => e.id === i + 1), '一个物体一个元素');
+  });
+
+  scenario('拆开的起点 / 小节盘点：导出和旧式盘点完全一样', () => {
+    const at = (es: Elem[], dx: number, dy: number, rot: 0 | 1 | 2 | 3) => es.map((e) => ({ ...e, x: e.x + dx, y: e.y + dy, ...(e.kind === 'piece' ? { rot } : e.kind === 'obj' ? { rot: ((e.rot + rot) % 4) as 0 | 1 | 2 | 3 } : {}) }));
+    let n = 1;
+    const split = [...at(newCheckpoint('start', () => n++, 1, 1), 1.25, 1.25, 1), ...at(newCheckpoint('check', () => n++, 2, 2), 30, 1.25, 0)];
+    const old: Elem[] = [{ id: 1, kind: 'piece', type: 'start', x: 1.25, y: 1.25, z: 0, rot: 1 }, { id: 2, kind: 'piece', type: 'check', x: 30, y: 1.25, z: 0, rot: 0 }];
+    const docOf = (es: Elem[]): Doc => ({ elems: Object.fromEntries(es.map((e) => [e.id, e])), nextId: 20 });
+    const key = (d: Doc) => { const s = exportBoxScene(d); return JSON.stringify({ a: s.assets.map((a) => [a.asset, a.pos.map((v) => v.toFixed(3)), a.rotZ]).sort(), e: s.elements.map((e) => [e.type, e.sector, e.pos.map((v) => v.toFixed(3)), (((e.rotZ % 360) + 360) % 360).toFixed(1)]).sort(), n: s.sectors }); };
+    check(key(docOf(split)) === key(docOf(old)), `导出一致\n${key(docOf(split))}\n${key(docOf(old))}`);
+    check(sectorTotal(split) === 2 && startsOf(split).length === 1, '小节数、起点都认得出');
+    const d = docOf(split);
+    check(nextCheckSector(d) === 3, '再放一个小节盘点激活第 3 小节');
+    // 吸附点：盘点路面上有火焰、重生点原点的位置；火焰上有盘点圆盘中心的位置
+    for (const t of ['start', 'check'] as const) {
+      let k = 1;
+      const [p, f, r] = newCheckpoint(t, () => k++, 1, 2);
+      const pv = feats(p).verts, fp = feats(f);
+      const has = (vs: number[][], q: number[]) => vs.some((v) => v.every((x, i) => near(x, q[i])));
+      check(has(pv, [f.x, f.y, f.z]) && has(pv, [r.x, r.y, r.z]), `${t}：路面上能吸到火焰、重生点的原点`);
+      check(has(fp.mids, [p.x, p.y, p.z]), `${t}：火焰上能吸到圆盘中心`);
+      check(virtualCells(f).length === 0 && virtualCells(r).length === 0, `${t}：火焰、重生点自己不带虚线框`);
+    }
   });
 
   scenario('导入模型：导出进 NMO，读回来物体、网格、组都对', async () => {

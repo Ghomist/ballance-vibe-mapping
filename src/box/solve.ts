@@ -703,7 +703,8 @@ function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'lo
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
   const assets = new Map<number, AssetPart[]>();
-  const checks = pieces.filter((p) => p.type === 'check').sort((a, b) => a.id - b.id);
+  // 旧式盘点（自带火焰、重生点）按顺序编小节；只有路面的盘点不参与
+  const checks = pieces.filter((p) => p.type === 'check' && !p.bare).sort((a, b) => a.id - b.id);
   for (const p of pieces) {
     if (p.base) assets.set(p.id, [basePart(p, layers)]);
     else if (p.type === 'start' || p.type === 'check') assets.set(p.id, checkpointParts(p, layers, p.sector ?? checks.indexOf(p) + 2));
@@ -1907,6 +1908,8 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
   const floorZ = p.z - 2.5; // 资产模型原点在路块中心
   const deg = (d: Dir) => d * 90;
   const two = (v: number) => String(v).padStart(2, '0');
+  // 只有路面：火焰和重生点是单独的机关元素
+  if (p.bare) return checkpointParts({ ...p, bare: false }, layers, sector).slice(0, 1);
   if (p.type === 'start') {
     return [
       { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot), ...(joined(p.rot) ? { crop: CP_CROP.StartPoint_Extended_OpenEdge } : {}) },

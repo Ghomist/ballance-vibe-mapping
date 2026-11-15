@@ -14,6 +14,7 @@ import { assetInfo, meshScale, tileOf } from './asset-info';
 import { AssetElem, Doc, Obj, Piece, ZoneElem, toWorld, yawDeg } from './types';
 import { fromQuat, mul, rotZ } from './xform';
 import { customModel, isCustom } from './custom-model';
+import { CHECK_FLAMES, RESET_POINT, START_FLAMES, fullChecksOf, sectorTotal, startsOf } from './sectors';
 import { customGroups, customTextureFiles, physKind, withCustom } from './custom-export';
 import type { NmoLib } from '../export/nmo-lib';
 
@@ -46,13 +47,13 @@ const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
 export function exportBoxScene(doc: Doc): SceneDesc {
   const warnings: string[] = [];
   const elems = Object.values(doc.elems);
-  const start = elems.find((e): e is Piece => e.kind === 'piece' && e.type === 'start');
-  const checks = elems.filter((e): e is Piece => e.kind === 'piece' && e.type === 'check').sort((a, b) => a.id - b.id);
+  const start = startsOf(elems)[0];
+  const checks = fullChecksOf(elems);
   const objs = elems.filter((e): e is Obj => e.kind === 'obj');
   if (!start) warnings.push('没有起点：游戏里无法开始这一关');
   if (!objs.some((o) => o.type === 'PE_Balloon')) warnings.push('没有终点气球（PE_Balloon）');
   const sectorOf = (p: Piece) => (p.type === 'start' ? 1 : p.sector ?? checks.indexOf(p) + 2);
-  const sectors = 1 + checks.length;
+  const sectors = sectorTotal(elems);
 
   const solved = solve(doc);
 
@@ -136,6 +137,10 @@ export function exportBoxScene(doc: Doc): SceneDesc {
     if (!t) { warnings.push(`未知物件类型 ${o.type}`); continue; }
     const pl = placement(o);
     if (t.cat === 'deco') assets.push({ asset: o.type, kind: assetKind(o.type), ...pl });
+    // 盘点拆出来的火焰、重生点：两火导出成 PC_TwoFlames_{激活的小节 - 1}，四火不分小节
+    else if (o.type === START_FLAMES) elements.push({ type: o.type, ...pl });
+    else if (o.type === CHECK_FLAMES) elements.push({ type: o.type, sector: Math.max(1, (o.sector ?? 2) - 1), ...pl });
+    else if (o.type === RESET_POINT) elements.push({ type: o.type, sector: Math.max(1, o.sector ?? 1), ...pl });
     else elements.push({ type: o.type, sector: o.type === 'PE_Balloon' ? undefined : nearSector(o), ...pl });
   }
 
