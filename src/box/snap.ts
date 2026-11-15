@@ -6,7 +6,7 @@ import { meshScale, tileOf } from './asset-info';
 import { Elem, anchorRects, assetBounds, boxTopAt, footprint, isCheckpoint, toWorld, virtualCells } from './types';
 import { objType } from '../model/objects';
 import { roadRings } from '../geom/curve-road';
-import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, advance, type RailState, roadClosed, sampleRail, sideLowerSpan } from '../model/rail';
+import { DOUBLE_OFFSET, MONO_OFFSET, RAIL_RADIUS, RAIL_SPAN, type RailKind, railTopOffset, advance, type RailState, roadClosed, sampleRail, sideLowerSpan } from '../model/rail';
 
 export type P3 = [number, number, number];
 export interface Feats { verts: P3[]; mids: P3[]; edges: [P3, P3][] }
@@ -16,7 +16,8 @@ function railPoints(s: RailState, kind: RailKind): P3[] {
   const h = (s.heading * Math.PI) / 180, lx = -Math.sin(h) * (RAIL_SPAN / 2), ly = Math.cos(h) * (RAIL_SPAN / 2);
   const out: P3[] = [];
   if (kind !== 'mono') out.push([s.x, s.y, s.z], [s.x + lx, s.y + ly, s.z + DOUBLE_OFFSET], [s.x - lx, s.y - ly, s.z + DOUBLE_OFFSET]);
-  if (kind !== 'double') out.push([s.x, s.y, s.z + MONO_OFFSET]);
+  // 单轨：截面中心（接别的钢轨）和平顶（对齐路面顶面：单轨比双轨低，顶面和路面齐平球才不会卡）
+  if (kind !== 'double') out.push([s.x, s.y, s.z + MONO_OFFSET], [s.x, s.y, s.z + railTopOffset('mono')]);
   return out;
 }
 

@@ -418,9 +418,10 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     check(rf.verts.some((v) => near(v[1], RAIL_SPAN / 2) && near(v[2], 5 - RAIL_RADIUS)), '截面中心在路径两侧 RAIL_SPAN/2、比路径低一个钢轨半径');
 
     const mf = feats(railElem([{ ...line(10), kind: 'mono' }]));
-    check(mf.verts.length === 2 && mf.verts.every((v) => near(v[2], 5 + MONO_OFFSET)), '单轨只有两头的截面中心');
+    // 单轨：两头各有截面中心和平顶（平顶用来和路面顶面对齐：单轨比双轨低）
+    check(mf.verts.length === 4 && mf.verts.filter((v) => near(v[2], 5 + MONO_OFFSET)).length === 2 && mf.verts.filter((v) => near(v[2], 5 + railTopOffset('mono'))).length === 2, '单轨两头各有截面中心和平顶');
     const tf2 = feats(railElem([{ ...line(10), kind: 'transition' }]));
-    check(tf2.verts.length === 8, `单双转换的两头双轨、单轨的点都有，实际 ${tf2.verts.length}`);
+    check(tf2.verts.length === 10, `单双转换的两头双轨、单轨的点都有，实际 ${tf2.verts.length}`);
 
     // 侧轨：下轨截面中心 + 外接正方形靠上轨的顶点
     const sr: RailElem = { ...railElem([line(20)]), x: 0, y: 0, z: 0, heading: 0, side: { dir: -1, ends: [true, false] } };

@@ -14,7 +14,7 @@ import { stopperCount, stopperMesh, stopperOff, stopperTops } from '../model/sto
 import { type AssetPiece, fallbackBox, getAsset, getStopperMaterial, setAssetLoadedCallback } from '../view/assets';
 import { floorTexturesReady, getMaterial, getRailMaterial } from '../view/materials';
 import { buildRail } from '../geom/rail';
-import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
+import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState, railTopOffset } from '../model/rail';
 import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
 import { zipStore } from '../export/model3d';
@@ -131,6 +131,8 @@ interface Prefs {
   gizmo: boolean | null;
   /** 护栏工具点一下放整条直边时，两头各往里缩多少 */
   guardInset: number;
+  /** 自动对齐只看离选中的东西这么近（世界单位）的元素 */
+  alignRange: number;
   /** 自动追踪：点选时视图中心移到点中的东西上（只拉远不拉近），默认关；换过键名，之前存下的 follow / autoFollow 不沿用 */
   followPick: boolean;
   /** 改过的快捷键（只存和默认不同的） */
@@ -149,7 +151,7 @@ interface Prefs {
   aiOn: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 100, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H, aiOn: false };
+  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 100, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, alignRange: 20, libW: LIB_W, libH: LIB_H, aiOn: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 loadKeys(prefs.keys);
@@ -1093,7 +1095,8 @@ let thickHover = false;
 let handleAim: string | null = null;
 /** 拖动时要画的东西 */
 /** 对齐：沿 axis 在 value 处对齐；m 是正在操作的物体（对齐后的位置），o 是对齐到的物体 */
-let guides: { axis: 0 | 1 | 2; value: number; m: Bounds; o: Bounds }[] = [];
+/** 对齐参考线：按包围盒对齐的画辅助面；按吸附点对齐的（钢轨、机关）画两个对上的点和它们之间的连线（pts） */
+let guides: { axis: 0 | 1 | 2; value: number; m: Bounds; o: Bounds; pts?: [P3, P3] }[] = [];
 let axisLine: { p: THREE.Vector3; axis: 0 | 1 | 2 } | null = null;
 let snapTarget: { p: P3; kind: 'v' | 'm' | 'e' } | null = null;
 let snapGrab: P3 | null = null;
@@ -1337,12 +1340,21 @@ function drawOverlayInner() {
  *   两个物体在对齐面上的那条边画成实线（各自的高度），再用一条虚线把它们连起来、两头各伸出 1；
  *   高度对齐时，两个物体在那个高度的顶面轮廓画实线，中心之间连一条虚线。
  */
-function guideLines(gd: { axis: 0 | 1 | 2; value: number; m: Bounds; o: Bounds }): THREE.Object3D {
+function guideLines(gd: (typeof guides)[number]): THREE.Object3D {
   const g = new THREE.Group();
   const C = 0x4cff8a;
   const solid: THREE.Vector3[] = [], dashed: THREE.Vector3[] = [];
   const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
   const { m, o } = gd;
+  if (gd.pts) {
+    // 按吸附点对齐：两个对上的点之间连一条虚线（它们在这根轴上坐标相同），两头各一个点
+    const [a, b] = gd.pts;
+    const dl = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([V(a[0], a[1], a[2]), V(b[0], b[1], b[2])]), new THREE.LineDashedMaterial({ color: C, dashSize: 0.5, gapSize: 0.35, depthTest: false }));
+    dl.computeLineDistances();
+    dl.renderOrder = 7;
+    g.add(dl, marks([a, b], 'dot', C, 9));
+    return g;
+  }
   if (gd.axis === 2) {
     const z = gd.value + 0.04;
     for (const b of [m, o]) {
@@ -1484,7 +1496,7 @@ const unionB = (a: Bounds, b: Bounds): Bounds => ({ x0: Math.min(a.x0, b.x0), y0
 const shiftB = (b: Bounds, d: V3): Bounds => ({ x0: b.x0 + d[0], x1: b.x1 + d[0], y0: b.y0 + d[1], y1: b.y1 + d[1], z0: b.z0 + d[2], z1: b.z1 + d[2] });
 
 /** 自动对齐：选中整体的边 / 中线 / 顶面与别的元素足够近时对齐，返回修正后的移动量，并记下辅助面 */
-function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3): V3 {
+function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3, orig?: Map<number, string>): V3 {
   guides = [];
   if (!alignOn) return d;
   const thr = worldPerPx(near) * ALIGN_PX;
@@ -1496,31 +1508,61 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3):
     const x = elemBounds(e);
     return a === 0 ? [x.x0, x.x1, (x.x0 + x.x1) / 2] : a === 1 ? [x.y0, x.y1, (x.y0 + x.y1) / 2] : [x.z1, x.z0];
   };
-  const others = Object.values(doc.elems).filter((e) => !sel.has(e.id));
-  const selElems = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  // 只和附近的元素对齐：包围盒之间的距离不超过设置里的范围（远处的东西就算坐标碰巧接近也不算）
+  const mb = shiftB(b, d), R = prefs.alignRange > 0 ? prefs.alignRange : 20;
+  const gap = (o: Bounds) => Math.hypot(Math.max(0, o.x0 - mb.x1, mb.x0 - o.x1), Math.max(0, o.y0 - mb.y1, mb.y0 - o.y1), Math.max(0, o.z0 - mb.z1, mb.z0 - o.z1));
+  const others = Object.values(doc.elems).filter((e) => !sel.has(e.id) && !hiddenElem(e) && gap(elemBounds(e)) <= R);
+  // 选中的东西按拖动开始时的样子算（文档里的已经挪过了，再加 d 会算两遍）
+  const selElems = orig ? [...orig.values()].map((js) => JSON.parse(js) as Elem) : [...sel].map((id) => doc.elems[id]).filter(Boolean);
   const onlyPresets = selElems.length > 0 && selElems.every(presetOnly);
-  const hits: { a: 0 | 1 | 2; value: number; ob: Bounds }[] = [];
+  // 按吸附点对齐时记下是哪两个点对上的：选中的点（拖动开始时的位置）、对方的点
+  const myPts = onlyPresets ? selElems.flatMap((e) => { const f = feats(e); return [...f.verts, ...f.mids]; }) : [];
+  const otherPts = new Map<Elem, P3[]>();
+  const ptsOf = (e: Elem) => { let r = otherPts.get(e); if (!r) { const f = feats(e); r = [...f.verts, ...f.mids]; otherPts.set(e, r); } return r; };
+  const hits: { a: 0 | 1 | 2; value: number; ob: Bounds; mine?: P3; other?: P3 }[] = [];
   for (const a of axes) {
-    let best: { diff: number; value: number; ob: Bounds } | null = null;
-    const base = onlyPresets ? [...new Set(selElems.flatMap((e) => vals(e, a)))] : (a === 0 ? [b.x0, b.x1, (b.x0 + b.x1) / 2] : a === 1 ? [b.y0, b.y1, (b.y0 + b.y1) / 2] : [b.z1, b.z0]);
-    const mine = base.map((v) => v + d[a]);
-    for (const oe of others) for (const v of vals(oe, a)) for (const m of mine) {
-      const ob = elemBounds(oe);
-      const diff = v - m;
-      if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, value: v, ob };
+    let best: { diff: number; value: number; ob: Bounds; mine?: P3; other?: P3 } | null = null;
+    if (onlyPresets) {
+      for (const mp of myPts) {
+        const m = mp[a] + d[a];
+        for (const oe of others) {
+          const ob = elemBounds(oe);
+          // 对方也是按吸附点的：用它的点；按包围盒的：两边和中线，参考线连到包围盒上离这个点最近的地方
+          const cands: P3[] = presetOnly(oe) ? ptsOf(oe) : vals(oe, a).map((v) => { const q: P3 = [Math.min(Math.max(mp[0] + d[0], ob.x0), ob.x1), Math.min(Math.max(mp[1] + d[1], ob.y0), ob.y1), Math.min(Math.max(mp[2] + d[2], ob.z0), ob.z1)]; q[a] = v; return q; });
+          for (const q of cands) {
+            const diff = q[a] - m;
+            if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, value: q[a], ob, mine: mp, other: q };
+          }
+        }
+      }
+    } else {
+      const base = a === 0 ? [b.x0, b.x1, (b.x0 + b.x1) / 2] : a === 1 ? [b.y0, b.y1, (b.y0 + b.y1) / 2] : [b.z1, b.z0];
+      const mine = base.map((v) => v + d[a]);
+      for (const oe of others) for (const v of vals(oe, a)) for (const m of mine) {
+        const ob = elemBounds(oe);
+        const diff = v - m;
+        if (Math.abs(diff) < thr && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { diff, value: v, ob };
+      }
     }
     if (!best) continue;
     out[a] += best.diff;
-    hits.push({ a, value: best.value, ob: best.ob });
+    hits.push({ a, value: best.value, ob: best.ob, mine: best.mine, other: best.other });
   }
-  // 辅助面盖住正在操作的物体和对齐到的物体，一眼看出是和谁对齐
-  for (const h of hits) guides.push({ axis: h.a, value: h.value, m: shiftB(b, out), o: h.ob });
+  // 辅助面盖住正在操作的物体和对齐到的物体，一眼看出是和谁对齐；按吸附点对齐的画那两个点
+  for (const h of hits) {
+    const pts: [P3, P3] | undefined = h.mine && h.other ? [[h.mine[0] + out[0], h.mine[1] + out[1], h.mine[2] + out[2]], h.other] : undefined;
+    guides.push({ axis: h.a, value: h.value, m: shiftB(b, out), o: h.ob, ...(pts ? { pts } : {}) });
+  }
   return out;
 }
 
 /** 选中整体（顶面 b.z1 + dz）靠近的平面：和选中东西在平面上有重叠的路面的顶面、凹槽的槽底。返回吸附后的 dz */
 function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
-  const z = b.z1 + dz, thr = worldPerPx(near) * SIZE5_PX;
+  // 选中的全是单轨：贴顶面的是单轨的平顶（比路径高度低），不是路径高度（那是双轨的顶）
+  const es = [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  const off = es.length && es.every((e) => e.kind === 'rail' && !e.road && e.pieces.every((p) => p.kind === 'mono')) ? railTopOffset('mono') : 0;
+  const top = b.z1 + off;
+  const z = top + dz, thr = worldPerPx(near) * SIZE5_PX;
   let best: { v: number; d: number; ob: Bounds } | null = null;
   for (const e of Object.values(doc.elems)) {
     if (sel.has(e.id) || e.kind !== 'box' || e.slope || e.q) continue;
@@ -1532,8 +1574,8 @@ function planeSnap(b: Bounds, dz: number, near: THREE.Vector3): number | null {
     }
   }
   if (!best) { guides = []; return null; }
-  guides = [{ axis: 2, value: best.v, m: shiftB(b, [0, 0, best.v - b.z1]), o: best.ob }];
-  return best.v - b.z1;
+  guides = [{ axis: 2, value: best.v, m: shiftB(b, [0, 0, best.v - top]), o: best.ob }];
+  return best.v - top;
 }
 
 // ---------------- 拖动 ----------------
@@ -1553,7 +1595,7 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; /** 蓝图：没转过的原样（按 R 时从它转）；bpRot：orig 现在是转了几个 90° 的 */ bpBase?: Map<number, string>; bpRot?: number; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
+  | { t: 'place'; /** 鼠标下没东西时用的高度：这次拖动里最后一次落在东西上的高度，一开始是视角中心的高度 */ lastZ?: number; ids: number[] | null; orig?: Map<number, string>; /** 蓝图：没转过的原样（按 R 时从它转）；bpRot：orig 现在是转了几个 90° 的 */ bpBase?: Map<number, string>; bpRot?: number; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
   | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean }
   /** 样条线：拖控制点、方向手柄或高度抓点 */
@@ -2104,7 +2146,7 @@ function grabMove(e: { clientX: number; clientY: number }) {
   if (slotted) { liveUpdate(); return; }
   // 竖直移动：吸附到底下 / 旁边路面的顶面、凹槽槽底；其余按自动对齐
   const pz = ax === 2 ? planeSnap(d.b, raw[2], near) : null;
-  moveWithSnap(d.orig, raw, pz !== null ? [0, 0, pz] : alignDelta(d.b, raw, axes, near));
+  moveWithSnap(d.orig, raw, pz !== null ? [0, 0, pz] : alignDelta(d.b, raw, axes, near, d.orig));
   if (ax !== null) axisLine = { p: d.start.clone().add(new THREE.Vector3(...raw)), axis: ax };
   liveUpdate();
 }
@@ -2771,7 +2813,7 @@ function newElems(type: string): Elem[] {
 /** 新放的东西的「抓手」：机关是对准方块顶面中心，其余是顶面最小角 */
 function handleOf(e: Elem): P3 {
   if (e.kind === 'asset') { const b = elemBounds(e), st = assetInfo(e.name)?.snapTop; return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, st === undefined ? b.z1 : e.z + st]; }
-  if (e.kind === 'rail') return [e.x, e.y, e.z];
+  if (e.kind === 'rail') return [e.x, e.y, e.z + (!e.road && e.pieces[0]?.kind === 'mono' ? railTopOffset('mono') : 0)];
   if (isCheckpoint(e)) return toWorld(e, [e.x, e.y, e.z]);
   if (e.kind === 'obj') {
     const a = anchorRects(e)[0];
@@ -2821,7 +2863,15 @@ function placeBlueprintMove(d: Extract<Drag, { t: 'place' }> & { ids: number[] }
   }
   restore(orig);
   const h = pick(e, ids);
-  const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  // 鼠标下没有东西（悬空）：别掉回地面（z = 0），在刚才落过的高度 / 视角中心的高度上走，镜头很高、路面很高时也看得见、吸得上
+  const pd = drag as Extract<Drag, { t: 'place' }>;
+  if (h) pd.lastZ = h.p.z;
+  const z0 = pd.lastZ ?? controls.target.z;
+  let p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), -z0));
+  // 视线几乎平着、朝天，或者落点远得离谱（镜头很高、斜着看）：放在鼠标方向上、和视角中心一样远的地方，总在眼前
+  const focus = camera.position.distanceTo(controls.target);
+  if (!h && (!p || p.distanceTo(camera.position) > focus * 3)) { setRay(e); p = ray.ray.at(focus, new THREE.Vector3()); }
+  if (!p) p = new THREE.Vector3(controls.target.x, controls.target.y, z0);
   const hd = blueprintHandle(d.ids);
   let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
   if (gridOn) { const b = boundsOf(doc, d.ids); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
@@ -3040,7 +3090,14 @@ function placeMove(e: PointerEvent) {
   // 自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就吸过去（磁吸，松手对准）
   moveSel(orig, raw);
   let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
-  for (const id of ids) {
+  if (vHeld) {
+    // 按住 V：新元素上离鼠标最近的吸附点，吸到鼠标下的顶点 / 边中点 / 边上（不限高度，和移动时的 V 一样）
+    const at = new THREE.Vector2(e.clientX, e.clientY);
+    let from: P3 | null = null, fd = Infinity;
+    for (const id of ids) { const f = feats(doc.elems[id]); for (const v of [...f.verts, ...f.mids]) { const dd = toScreen(v).distanceTo(at); if (dd < fd) { fd = dd; from = v; } } }
+    const t = findTarget(e.clientX, e.clientY, ids, 16);
+    if (from && t) best = { from, to: t.p, d: t.d, kind: t.kind };
+  } else for (const id of ids) {
     const f = feats(doc.elems[id]);
     for (const v of [...f.verts, ...f.mids]) {
       const s = toScreen(v);
@@ -3068,7 +3125,7 @@ function placeEnd(e: PointerEvent) {
     const ids = es.map((n) => n.id);
     const b = boundsOf(doc, ids);
     const g = (v: number) => (gridOn ? snapG(v) : v);
-    for (const id of ids) translateElem(doc.elems[id], [g(controls.target.x - (b.x1 - b.x0) / 2) - b.x0, g(controls.target.y - (b.y1 - b.y0) / 2) - b.y0, 0]);
+    for (const id of ids) translateElem(doc.elems[id], [g(controls.target.x - (b.x1 - b.x0) / 2) - b.x0, g(controls.target.y - (b.y1 - b.y0) / 2) - b.y0, controls.target.z]);
     sel = new Set(ids);
   } else if (drag.ids !== null && !over) { for (const id of drag.ids) delete doc.elems[id]; undo.pop(); sel.clear(); }
   // 放了小节盘点：顶栏的小节切到它激活的那个小节
@@ -4777,6 +4834,7 @@ function renderSettings() {
     + '<div class="row"><button id="settings-reset-map">恢复默认</button></div></section><section data-page="edit"><h1>编辑</h1>'
     + `<label><span>格栅步长<small>打开格栅时位置和尺寸的步长（默认 1）</small></span><input type="number" id="grid-step" step="0.25" min="0.05" value="${prefs.gridStep}"></label>`
     + `<label><span>护栏端头内缩<small>点路边放整条直边时，两头各往里缩（默认 1.5）</small></span><input type="number" id="guard-inset" step="0.25" min="0" value="${prefs.guardInset}"></label>`
+    + `<label><span>自动对齐范围<small>拖动时只和这么近（离选中的东西）的元素对齐，太大容易对到远处不相干的东西（默认 20，一格路宽 5）</small></span><input type="number" id="align-range" step="5" min="1" value="${prefs.alignRange}"></label>`
     + `<label class="stack"><span>自动追踪<small>点选时视角移到它上面：不拉近，太近时按 F 的距离拉远</small></span>${seg('follow', [['off', '关'], ['on', '开']], prefs.followPick ? 'on' : 'off')}</label>`
     + `<label class="stack"><span>坐标系<small>游戏坐标系 Y 朝上，数字和 Ballance 里一致；数学坐标系 Z 朝上</small></span>${seg('coord', [['game', '游戏坐标系'], ['math', '数学坐标系']], prefs.coordSys === 'math' ? 'math' : 'game')}</label>`
     + '<div class="row"><button id="settings-reset-edit">恢复默认</button></div></section><section data-page="ui"><h1>界面</h1>'
@@ -4796,6 +4854,10 @@ function renderSettings() {
     const v = Number((e.target as HTMLInputElement).value);
     if (Number.isFinite(v) && v > 0) { prefs.gridStep = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.gridStep);
   });
+  settingsPanel.querySelector<HTMLInputElement>('#align-range')!.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v) && v > 0) { prefs.alignRange = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.alignRange);
+  });
   settingsPanel.querySelector<HTMLInputElement>('#guard-inset')!.addEventListener('change', (e) => {
     const v = Number((e.target as HTMLInputElement).value);
     if (Number.isFinite(v) && v >= 0) { prefs.guardInset = v; savePrefs(); } else (e.target as HTMLInputElement).value = String(prefs.guardInset);
@@ -4810,7 +4872,7 @@ function renderSettings() {
   segClick('follow', (v) => { prefs.followPick = v === 'on'; savePrefs(); });
   segClick('coord', (v) => { prefs.coordSys = v === 'math' ? 'math' : 'game'; savePrefs(); applyCoordSys(); });
   settingsPanel.querySelector('#settings-reset-map')!.addEventListener('click', () => { snapshot(); delete doc.settings; rebuild(); renderSettings(); });
-  settingsPanel.querySelector('#settings-reset-edit')!.addEventListener('click', () => { prefs.gridStep = 1; prefs.guardInset = 1.5; savePrefs(); renderSettings(); });
+  settingsPanel.querySelector('#settings-reset-edit')!.addEventListener('click', () => { prefs.gridStep = 1; prefs.guardInset = 1.5; prefs.alignRange = 20; savePrefs(); renderSettings(); });
   showSetPage(prefs.settingsPage, null);
   settingsBody.scrollTop = scrolled;
 }
