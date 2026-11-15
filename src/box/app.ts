@@ -1595,7 +1595,7 @@ type Drag =
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
-  | { t: 'place'; /** 鼠标下没东西时用的高度：这次拖动里最后一次落在东西上的高度，一开始是视角中心的高度 */ lastZ?: number; ids: number[] | null; orig?: Map<number, string>; /** 蓝图：没转过的原样（按 R 时从它转）；bpRot：orig 现在是转了几个 90° 的 */ bpBase?: Map<number, string>; bpRot?: number; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
+  | { t: 'place'; ids: number[] | null; orig?: Map<number, string>; /** 蓝图：没转过的原样（按 R 时从它转）；bpRot：orig 现在是转了几个 90° 的 */ bpBase?: Map<number, string>; bpRot?: number; type: string; moved: boolean; rotOff: number; /** 手指长按或横拖开始的：松手没拖进场景就什么都不放 */ touch?: boolean }
   /** 左键按下：没拖动就是点选（Shift 加选 / 减选），拖动了就变成框选 */
   | { t: 'click'; id: number | null; sx: number; sy: number; add: boolean }
   /** 样条线：拖控制点、方向手柄或高度抓点 */
@@ -2862,16 +2862,7 @@ function placeBlueprintMove(d: Extract<Drag, { t: 'place' }> & { ids: number[] }
     d.bpRot = n;
   }
   restore(orig);
-  const h = pick(e, ids);
-  // 鼠标下没有东西（悬空）：别掉回地面（z = 0），在刚才落过的高度 / 视角中心的高度上走，镜头很高、路面很高时也看得见、吸得上
-  const pd = drag as Extract<Drag, { t: 'place' }>;
-  if (h) pd.lastZ = h.p.z;
-  const z0 = pd.lastZ ?? controls.target.z;
-  let p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), -z0));
-  // 视线几乎平着、朝天，或者落点远得离谱（镜头很高、斜着看）：放在鼠标方向上、和视角中心一样远的地方，总在眼前
-  const focus = camera.position.distanceTo(controls.target);
-  if (!h && (!p || p.distanceTo(camera.position) > focus * 3)) { setRay(e); p = ray.ray.at(focus, new THREE.Vector3()); }
-  if (!p) p = new THREE.Vector3(controls.target.x, controls.target.y, z0);
+  const { p } = placeHit(e, ids);
   const hd = blueprintHandle(d.ids);
   let raw: V3 = [p.x - hd[0], p.y - hd[1], p.z - hd[2]];
   if (gridOn) { const b = boundsOf(doc, d.ids); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
@@ -2997,6 +2988,19 @@ function startPlace(type: string) {
   drag = { t: 'place', ids: null, type, moved: false, rotOff: 0 };
   document.body.classList.add('placing');
 }
+/**
+ * 拖素材进场景时的落点：鼠标下的东西（不算云层、死亡区这种铺在很低处的一大片，也不算远得离谱的）；
+ * 悬空时放在鼠标方向上、离相机和环绕中心一样远的地方，镜头多高都在眼前、大小一样
+ */
+function placeHit(e: { clientX: number; clientY: number }, ids: Set<number>): { h: { id: number; p: THREE.Vector3 } | null; p: THREE.Vector3 } {
+  const focus = camera.position.distanceTo(controls.target);
+  const noLand = new Set([...ids, ...Object.values(doc.elems).filter((x) => x.kind === 'zone' || isSky(x)).map((x) => x.id)]);
+  let h = pick(e, noLand);
+  if (h && h.p.distanceTo(camera.position) > focus * 3) h = null;
+  if (h) return { h, p: h.p };
+  setRay(e);
+  return { h: null, p: ray.ray.at(focus, new THREE.Vector3()) };
+}
 function placeMove(e: PointerEvent) {
   if (drag?.t !== 'place') return;
   const over = document.elementFromPoint(e.clientX, e.clientY) === el;
@@ -3020,7 +3024,7 @@ function placeMove(e: PointerEvent) {
   if (drag.bpBase) { placeBlueprintMove(drag as Extract<Drag, { t: 'place' }> & { ids: number[] }, e, ids); return; }
   // 鼠标下的路面顶面（或地面）
   // 鼠标下的路面：按每块平路面的顶面平面求交（不看网格，凹槽里被底座挖掉的洞也算在路面上）
-  let h = pick(e, ids);
+  let h: { id: number; p: THREE.Vector3 } | null = placeHit(e, ids).h;
   setRay(e);
   let top: { id: number; p: THREE.Vector3; d: number } | null = null;
   for (const x of Object.values(doc.elems)) {
@@ -3032,7 +3036,7 @@ function placeMove(e: PointerEvent) {
     if (!top || d < top.d) top = { id: x.id, p: q, d };
   }
   if (top && (!h || top.d <= h.p.distanceTo(camera.position) + 0.01)) h = { id: top.id, p: top.p };
-  const p = h?.p ?? planeHit(e, new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)) ?? new THREE.Vector3();
+  const p = h?.p ?? placeHit(e, ids).p;
   // 机关按鼠标下那条路的方向摆（沿路）；栅栏横跨路面；拖动中按 R 再转 90°
   const under = h ? doc.elems[h.id] : null;
   for (const [id, js] of orig) {
@@ -3102,8 +3106,8 @@ function placeMove(e: PointerEvent) {
     for (const v of [...f.verts, ...f.mids]) {
       const s = toScreen(v);
       const t = findTarget(s.x, s.y, ids, 16);
-      // 只吸差不多一样高的点：屏幕上挨着的点可能在路面底下（侧面、底边），吸过去会把东西埋进路里
-      if (t && Math.abs(t.p[2] - v[2]) > 1) continue;
+      // 落在路面上时只吸差不多一样高的点：屏幕上挨着的点可能在路面底下（侧面、底边），吸过去会把东西埋进路里；悬空时不限
+      if (t && h && Math.abs(t.p[2] - v[2]) > 1) continue;
       if (t && (!best || t.d < best.d)) best = { from: v, to: t.p, d: t.d, kind: t.kind };
     }
   }
