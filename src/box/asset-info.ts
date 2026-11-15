@@ -1,5 +1,7 @@
 // 素材库里的特殊路面（资产库模型，形状固定）：名称、分组、本地包围盒（以资产原点为准，Blender 坐标）
 // 由 BallanceAssets.blend 的物体信息整理
+import { customModel, isCustom } from './custom-model';
+
 export interface AssetInfo {
   name: string; label: string; group: 'wood' | 'special'; min: [number, number, number]; max: [number, number, number];
   /** 能按住 Ctrl 拉伸（沿本地 X / Y）：木板、木制斜坡、凹凸木轨道这类是直接缩放；有 tile 的沿长度方向是接长 / 截断 */
@@ -45,7 +47,16 @@ export const ASSET_INFO: AssetInfo[] = [
   { name: 'MonorailCrossing', label: '单轨交叉', group: 'special', min: [-2.5, -2.4999, -0.3234], max: [2.5, 2.5001, 0.3234], tab: 'rail' },
 ];
 
-export const assetInfo = (name: string) => ASSET_INFO.find((a) => a.name === name);
+/** 导入的自定义模型：包围盒来自模型本身，能按住 Ctrl 拉伸（缩放） */
+const customInfo = new Map<string, AssetInfo>();
+export const assetInfo = (name: string): AssetInfo | undefined => {
+  if (!isCustom(name)) return ASSET_INFO.find((a) => a.name === name);
+  const m = customModel(name);
+  if (!m) return undefined;
+  let a = customInfo.get(name);
+  if (!a || a.label !== m.label) { a = { name, label: m.label, group: 'special', min: m.min, max: m.max, stretch: true, tab: 'deco' }; customInfo.set(name, a); }
+  return a;
+};
 
 /** 接长 / 截断式拉伸的参数（模型本地、Blender 坐标） */
 export interface AssetTile { axis: 0 | 1; dir: 1 | -1; base: number; period: number; dz: number; len: number; off: number; cont: boolean }

@@ -154,6 +154,8 @@ export interface AssetElem extends ElemBase, Oriented {
   rot: Dir;
   /** 沿模型本地 X、Y 的缩放（Ctrl 拉伸木制件）；花纹重复的那类（asset-info 的 tile）沿长度方向是长度的倍数，模型接长 / 截断而不是缩放 */
   scale?: [number, number];
+  /** 导入的模型导出时算什么：floor 路面（石）、wood 木路面、rail 钢轨；不写是装饰（没有碰撞） */
+  phys?: 'floor' | 'wood' | 'rail';
   /** 花纹重复的木制件：从花纹的哪里开始（拉原点那一头时，那一头截掉 / 接上多少）；默认 0 */
   off?: number;
 }
@@ -204,6 +206,8 @@ export interface Doc {
   name?: string;
   /** 全图设置（护栏尺寸等）：只存改过的项，其余用默认值 */
   settings?: Partial<import('../model/types').MapSettings>;
+  /** 只在地图码 / 文件 / 蓝图里出现：用到的导入模型（custom:编号 → 网格），读进来后登记到 custom-model 的登记表，编辑中的文档里没有 */
+  models?: Record<string, import('./custom-model').CustomModel>;
 }
 
 export const emptyDoc = (): Doc => ({ elems: {}, nextId: 1 });

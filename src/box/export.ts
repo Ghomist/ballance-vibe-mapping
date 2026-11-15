@@ -13,6 +13,9 @@ import { DEFAULT_SETTINGS } from '../model/types';
 import { assetInfo, meshScale, tileOf } from './asset-info';
 import { AssetElem, Doc, Obj, Piece, ZoneElem, toWorld, yawDeg } from './types';
 import { fromQuat, mul, rotZ } from './xform';
+import { customModel, isCustom } from './custom-model';
+import { customGroups, customTextureFiles, physKind, withCustom } from './custom-export';
+import type { NmoLib } from '../export/nmo-lib';
 
 /** 机关 / 特殊路面的世界位置与朝向（倾斜或拉伸过的给出完整的矩阵，拉伸是模型本地 X、Y 的缩放） */
 function placement(e: Obj | AssetElem) {
@@ -116,7 +119,15 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   // 云层：游戏只处理叫 SkyLayer 的那一个物体，多出来的进了游戏是黑底，所以只导出第一个
   const skies = elems.filter((e): e is AssetElem => e.kind === 'asset' && !!assetInfo(e.name)?.sky);
   if (skies.length > 1) warnings.push(`一张图只能有一个云层，只导出第一个（${assetInfo(skies[0].name)!.label}），其余 ${skies.length - 1} 个不导出`);
-  for (const e of elems) if (e.kind === 'asset' && (e === skies[0] || !skies.includes(e))) assets.push({ asset: e.name, kind: assetKind(e.name), ...placement(e) });
+  for (const e of elems) {
+    if (e.kind !== 'asset' || !(e === skies[0] || !skies.includes(e))) continue;
+    if (!isCustom(e.name)) { assets.push({ asset: e.name, kind: assetKind(e.name), ...placement(e) }); continue; }
+    // 导入的模型：拉伸就是缩放，贴图不平铺；拆成几块的每块一个物体（块数在 withCustom 里定，这里先放第 0 块，见 customAssets）
+    if (!customModel(e.name)) { warnings.push(`导入的模型 #${e.id} 缺少网格数据，没有导出`); continue; }
+    const pl: Partial<SceneAsset> & ReturnType<typeof placement> = { ...placement(e) };
+    delete pl.uvStretch;
+    assets.push({ asset: e.name, kind: physKind(e.phys), groups: customGroups(e.phys), ...pl });
+  }
 
   // ---- 机关与装饰：小节按机关自己记的（放的时候取顶栏选的小节，属性面板里可改），超出就算最后一个小节 ----
   const nearSector = (o: Obj) => Math.min(Math.max(1, o.sector ?? 1), sectors);
@@ -131,11 +142,22 @@ export function exportBoxScene(doc: Doc): SceneDesc {
   return { format: 'bvm-scene', version: 1, sectors, meshes, assets, elements, warnings };
 }
 
-/** box 文档 → .nmo 文件内容 */
-export async function exportBoxNmo(doc: Doc): Promise<{ data: Uint8Array; warnings: string[] }> {
+/** 场景里的导入模型展开成素材库里的几块（custom:编号#块号），返回配套的素材库 */
+export function customAssets(desc: SceneDesc, lib: NmoLib): NmoLib {
+  const names = desc.assets.filter((a) => isCustom(a.asset)).map((a) => a.asset);
+  if (!names.length) return lib;
+  const { lib: out, split } = withCustom(lib, names);
+  desc.assets = desc.assets.flatMap((a) => (isCustom(a.asset) ? Array.from({ length: split.get(a.asset) ?? 0 }, (_, i) => ({ ...a, asset: `${a.asset}#${i}` })) : [a]));
+  return out;
+}
+const customNames = (doc: Doc) => Object.values(doc.elems).filter((e): e is AssetElem => e.kind === 'asset' && isCustom(e.name)).map((e) => e.name);
+
+/** box 文档 → .nmo 文件内容；textures：导入模型自带的贴图（要放进 Ballance/Textures） */
+export async function exportBoxNmo(doc: Doc): Promise<{ data: Uint8Array; warnings: string[]; textures: Map<string, Uint8Array> }> {
   const desc = exportBoxScene(doc);
-  const nmo = buildNmoDoc(desc, await loadNmoLib());
-  return { data: await writeNmo(nmo), warnings: desc.warnings };
+  const nmo = buildNmoDoc(desc, customAssets(desc, await loadNmoLib()));
+  const textures = customNames(doc).length ? await customTextureFiles(customNames(doc)) : new Map<string, Uint8Array>();
+  return { data: await writeNmo(nmo), warnings: desc.warnings, textures };
 }
 
 // ---- 通用 3D 模型（.obj / .glb）：和 .nmo 同一份文档，导出的也是占位符 ----
@@ -174,12 +196,13 @@ async function toPng(file: string, bytes: Uint8Array): Promise<Uint8Array | null
 /** box 文档 → .zip（.obj + .mtl + 贴图原文件） */
 export async function exportBoxObj(doc: Doc, base: string): Promise<{ data: Uint8Array; warnings: string[] }> {
   const desc = exportBoxScene(doc);
-  const nmo = buildNmoDoc(desc, await loadNmoLib());
+  const nmo = buildNmoDoc(desc, customAssets(desc, await loadNmoLib()));
+  const own = customNames(doc).length ? await customTextureFiles(customNames(doc)) : new Map<string, Uint8Array>();
   const { obj, mtl } = nmoDocToObj(nmo, base);
   const enc = new TextEncoder();
   const files = [{ name: `${base}.obj`, data: enc.encode(obj) }, { name: `${base}.mtl`, data: enc.encode(mtl) }];
   for (const f of textureFiles(nmo)) {
-    const b = await fetchTexture(f);
+    const b = own.get(f) ?? await fetchTexture(f);
     if (b) files.push({ name: `textures/${f}`, data: b });
   }
   return { data: zipStore(files), warnings: desc.warnings };
@@ -188,10 +211,11 @@ export async function exportBoxObj(doc: Doc, base: string): Promise<{ data: Uint
 /** box 文档 → .glb（贴图转成 PNG 嵌在里面） */
 export async function exportBoxGlb(doc: Doc): Promise<{ data: Uint8Array; warnings: string[] }> {
   const desc = exportBoxScene(doc);
-  const nmo = buildNmoDoc(desc, await loadNmoLib());
+  const nmo = buildNmoDoc(desc, customAssets(desc, await loadNmoLib()));
+  const own = customNames(doc).length ? await customTextureFiles(customNames(doc)) : new Map<string, Uint8Array>();
   const images = new Map<string, Uint8Array>();
   await Promise.all(textureFiles(nmo).map(async (f) => {
-    const b = await fetchTexture(f);
+    const b = own.get(f) ?? await fetchTexture(f);
     const png = b && (await toPng(f, b));
     if (png) images.set(f, png);
   }));

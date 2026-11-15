@@ -17,6 +17,10 @@ import { buildRail } from '../geom/rail';
 import { RAIL_RADIUS, type RailPiece, SIDE_SPIRAL_SCREW, SPIRAL_RADIUS, SPIRAL_SCREW, advance, type RailState } from '../model/rail';
 import { Bounds, V3, canMirror, mirrorElems, pasteElems, boundsOf, duplicate, elemBounds, expandGroups, groupElems, mergeBoxes, rotateElem, rotateWorld, splitBox, translateElem, ungroupElems, uprightElem } from './ops';
 import { type M3, I3, apply, fromQuat, mul, rotAxis, rotZ } from './xform';
+import { zipStore } from '../export/model3d';
+import { CHANGELOG, LATEST } from './changelog';
+import { type CustomModel, customModel, isCustom, modelsUsed, onCustomModel, registerModel, registerModels, triCount } from './custom-model';
+import { MODEL_ACCEPT, importModelFile, isModelFile, isSideFile } from './model-import';
 import { zoneTris } from './export';
 import { initTooltips } from '../view/tooltip';
 import { initHelp } from './help';
@@ -144,7 +148,7 @@ interface Prefs {
   aiOn: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 80, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H, aiOn: false };
+  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 100, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, libW: LIB_W, libH: LIB_H, aiOn: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 loadKeys(prefs.keys);
@@ -747,7 +751,7 @@ function currentHints(): Hint[] {
     const d = drag;
     return [H(['LMB'], '确定'), H(['RMB'], '取消'), H(['X', 'Y', 'Z'], `换轴（绕 ${AXIS_NAME[d.axis]}）`), H(['Ctrl'], alignOn ? '按住自由旋转' : '按住每 15° 吸附'), H(K('align'), alignOn ? '对齐：开（每 15°）' : '对齐：关'), H(['0'], d.num ? `输入 ${d.num}°` : '输入角度')];
   }
-  if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${fly.speed.toFixed(0)}`), fly.latched ? H(['LMB', 'RMB', 'Esc'], '退出漫游') : H(['RMB'], '松开退出漫游')];
+  if (fly) return [H([...K('fly.forward'), ...K('fly.left'), ...K('fly.back'), ...K('fly.right')], '移动'), H(K('fly.up'), '上升'), H(K('fly.down'), '下降'), H(['Wheel'], `速度 ${flyRate(fly.speed)}`), fly.latched ? H(['LMB', 'RMB', 'Esc'], '退出漫游') : H(['RMB'], '松开退出漫游')];
   if (drag?.t === 'splinePt') {
     const d = drag, e = doc.elems[d.id] as RailElem, split = e.curve!.pts[d.node].split;
     if (d.part === 'cp') return [H(['LMB'], '松开完成'), H(K('vsnap'), `按住：${curveEndAt(e, d.node) ? splineSnapText(e) : '吸附到别的物体'}`), H(K('grid'), gridOn ? '格栅：开' : '格栅：关')];
@@ -1562,7 +1566,8 @@ el.addEventListener('contextmenu', (e) => e.preventDefault());
  * latched：单击进来的，松开右键也不退出；downAt / moved：按下的时刻和按着时鼠标走了多远，用来分辨单击和按住
  */
 let fly: { keys: Set<string>; speed: number; dist: number; vel: THREE.Vector3; look: [number, number]; latched: boolean; downAt: number; moved: number } | null = null;
-let flySpeed = prefs.flySpeed;
+// 旧版默认 80（没调过的就是 80）：现在的默认是 100（显示 1.0x）
+let flySpeed = prefs.flySpeed === 80 ? 100 : prefs.flySpeed;
 /** 右键按下到松开不超过这么久、鼠标也几乎没动，算单击 */
 const FLY_TAP_MS = 250, FLY_TAP_PX = 8;
 // 单击进来的漫游里：再点一下左键或右键退出（鼠标锁定失败时指针可能在别处，所以挂在 window 上）
@@ -1606,6 +1611,8 @@ flyHud.innerHTML = `
     <div class="tip"></div>
   </div>`;
 host.appendChild(flyHud);
+/** 漫游速度显示成倍率：100 是 1.0x */
+const flyRate = (v: number) => `${(v / 100).toFixed(v < 100 ? 2 : 1)}x`;
 function syncFlyHud() {
   if (!fly) return;
   flyHud.querySelectorAll<HTMLElement>('kbd[data-a]').forEach((k) => {
@@ -1617,7 +1624,7 @@ function syncFlyHud() {
   // 速度条按对数刻度（2～400）
   const f = Math.log(fly.speed / 2) / Math.log(200);
   flyHud.querySelector<HTMLElement>('.bar i')!.style.width = `${(f * 100).toFixed(1)}%`;
-  flyHud.querySelector('.speed b')!.textContent = fly.speed.toFixed(0);
+  flyHud.querySelector('.speed b')!.textContent = flyRate(fly.speed);
   flyHud.querySelector('.tip')!.textContent = `滚轮调速度 · ${fly.latched ? '单击或 Esc 退出' : '松开右键退出'}`;
 }
 function endFly() {
@@ -2740,6 +2747,8 @@ function saveBlueprint() {
     close();
     const elems = ids.map((id) => JSON.parse(JSON.stringify(doc.elems[id])) as Elem);
     const bp: Blueprint = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, elems, thumb: blueprintThumb(ids), t: Date.now() };
+    const models = modelsUsed(elems);
+    if (models) bp.models = models;
     blueprints = [bp, ...blueprints];
     if (!saveBlueprints()) { blueprints = blueprints.slice(1); return; }
     BP_TAB.items = bpItems();
@@ -2976,13 +2985,132 @@ function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
   }));
 }
 // ---------------- 蓝图：把选中的一组东西存进素材库，以后像素材一样拖出来放（存在这台电脑的浏览器里，所有地图共用） ----------------
-interface Blueprint { id: string; name: string; elems: Elem[]; thumb: string; t: number }
+interface Blueprint { id: string; name: string; elems: Elem[]; thumb: string; t: number; /** 用到的导入模型 */ models?: Record<string, CustomModel> }
 const BP_STORE = 'bvm.box.blueprints';
 let blueprints: Blueprint[] = (() => { try { const v = JSON.parse(localStorage.getItem(BP_STORE) ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
+for (const b of blueprints) registerModels(b.models);
 function saveBlueprints(): boolean {
   try { localStorage.setItem(BP_STORE, JSON.stringify(blueprints)); return true; } catch { flash('浏览器的存储空间满了，蓝图没存上：删掉几个不用的蓝图再试', true); return false; }
 }
 const bpOf = (type: string) => (type.startsWith('bp:') ? blueprints.find((b) => b.id === type.slice(3)) ?? null : null);
+// ---------------- 导入的模型：文件 → 导入模型，或者把模型文件拖进窗口；放进素材库的「模型」，所有地图共用（存在这台电脑的浏览器里） ----------------
+const MODEL_DB = 'bvm-models', MODEL_STORE = 'models';
+/** 素材库里的模型：编号（custom:编号）按导入顺序，最新的在前 */
+let libModels: string[] = [];
+function modelDb(): Promise<IDBDatabase> {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(MODEL_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(MODEL_STORE);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function modelDbDo(fn: (s: IDBObjectStore) => IDBRequest | void): Promise<unknown> {
+  const db = await modelDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(MODEL_STORE, 'readwrite');
+    const r = fn(tx.objectStore(MODEL_STORE));
+    tx.oncomplete = () => { res(r ? r.result : undefined); db.close(); };
+    tx.onerror = () => { rej(tx.error); db.close(); };
+  });
+}
+const modelItems = (): LibItem[] => libModels.filter((n) => customModel(n)).map((n) => { const m = customModel(n)!; return { type: `asset:${n}`, label: m.label, hint: `导入的模型 · ${triCount(m)} 个三角形 · ${(m.max[0] - m.min[0]).toFixed(1)} × ${(m.max[1] - m.min[1]).toFixed(1)} × ${(m.max[2] - m.min[2]).toFixed(1)} · Ctrl 拖可缩放 · 属性里选导出成装饰 / 路面 / 钢轨` }; });
+function refreshModelTab() { MODEL_TAB.items = modelItems(); renderLib(); }
+// 启动时读出素材库里的模型
+void (async () => {
+  try {
+    const rows = (await modelDbDo((st) => st.getAll())) as { key: string; t: number; model: CustomModel }[];
+    rows.sort((a, b) => b.t - a.t);
+    for (const r of rows) registerModel(r.model, r.key);
+    libModels = rows.map((r) => `custom:${r.key}`);
+    refreshModelTab();
+  } catch { /* 浏览器不让用 IndexedDB（隐私模式等）：素材库里就没有模型，地图里的照常 */ }
+})();
+async function addLibModel(name: string) {
+  const m = customModel(name)!;
+  libModels = [name, ...libModels.filter((n) => n !== name)];
+  refreshModelTab();
+  try { await modelDbDo((st) => st.put({ key: name.slice(7), t: Date.now(), model: m }, name.slice(7))); }
+  catch { flash('浏览器不让存模型（存储空间满了或者是隐私模式）：这次能用，刷新后素材库里就没有了，已经放进地图里的不受影响', true); }
+}
+function removeLibModel(name: string) {
+  const m = customModel(name);
+  const { box, close } = openModal('<h3>移除模型</h3><p></p><div class="row"><button data-r="0">取消</button><button data-r="1" class="danger">移除</button></div>', '');
+  box.querySelector('p')!.textContent = `把「${m?.label ?? name}」从素材库里移除？已经放进地图里的不受影响（模型数据跟着地图存）。`;
+  box.querySelector('[data-r="0"]')!.addEventListener('click', close);
+  box.querySelector('[data-r="1"]')!.addEventListener('click', () => {
+    close();
+    libModels = libModels.filter((n) => n !== name);
+    prefs.fav = prefs.fav.filter((t) => t !== `asset:${name}`);
+    savePrefs();
+    refreshModelTab();
+    void modelDbDo((st) => st.delete(name.slice(7))).catch(() => {});
+  });
+}
+// 打开的地图、粘贴的蓝图带进来的模型也会登记，素材库卡片的预览图要跟着刷新
+onCustomModel(() => { try { if (prefs.tab === MODEL_TAB.id) renderLib(); } catch { /* 素材库还没建好 */ } });
+/** 导入一个或几个模型文件（其余的是 .mtl、贴图这些附属文件） */
+async function importModels(files: File[]) {
+  const mains = files.filter((f) => isModelFile(f.name));
+  const side = files.filter((f) => !isModelFile(f.name));
+  if (!mains.length) {
+    const names = files.map((f) => f.name).join('、');
+    fileError(names, side.length ? '图片、.mtl、.bin 不能单独导入：它们是模型用到的贴图和材质，要和模型文件（.glb .gltf .fbx .obj .nmo .cmo）一起多选（按住 Ctrl 点选）或一起拖进来' : '不支持这种文件：能导入的模型是 .glb .gltf .fbx .obj .nmo .cmo');
+    return;
+  }
+  for (const f of mains) await importOne(f, side);
+}
+function importOne(f: File, side: File[]): Promise<void> {
+  return new Promise((done) => {
+    const vt = /\.(nmo|cmo)$/i.test(f.name);
+    const { box, close: close0 } = openModal(`<h3>导入模型</h3><p class="mi-file"></p><div class="mi-info">正在读取…</div><label class="mi-scale">缩放 <input type="number" step="any" min="0.0001" value="1"> 倍<small></small></label><ul class="mi-notes"></ul><div class="row"><button data-r="0">取消</button><button data-r="1" class="primary" disabled>导入</button></div>`, 'model-box');
+    const close = () => { close0(); done(); };
+    box.querySelector('.mi-file')!.textContent = f.name;
+    const info = box.querySelector<HTMLElement>('.mi-info')!, notes = box.querySelector<HTMLElement>('.mi-notes')!;
+    const scaleIn = box.querySelector<HTMLInputElement>('.mi-scale input')!, hint = box.querySelector<HTMLElement>('.mi-scale small')!;
+    const ok = box.querySelector<HTMLButtonElement>('[data-r="1"]')!;
+    box.querySelector('[data-r="0"]')!.addEventListener('click', close);
+    let model: CustomModel | null = null;
+    const show = () => {
+      if (!model) return;
+      const k = +scaleIn.value > 0 ? +scaleIn.value : 1;
+      const d = [0, 1, 2].map((i) => ((model!.max[i] - model!.min[i]) * k).toFixed(2));
+      info.textContent = `${triCount(model)} 个三角形 · ${model.parts.length} 种材质${model.textures.length ? ` · ${model.textures.length} 张贴图` : ''} · 尺寸 ${d[0]} × ${d[1]} × ${d[2]}（一格路宽 5）`;
+    };
+    scaleIn.addEventListener('input', show);
+    importModelFile(f, side).then((r) => {
+      model = r.model;
+      const big = Math.max(...[0, 1, 2].map((i) => model!.max[i] - model!.min[i]));
+      // 建模软件多半以米为单位、模型很小：建议放大到大概一格路宽
+      if (!vt && big < 2) { scaleIn.value = String(+(5 / big).toPrecision(2)); hint.textContent = '模型很小，已经建议放大到大约一格路宽'; }
+      else if (big > 2000) hint.textContent = '模型很大，可能要缩小';
+      notes.innerHTML = r.notes.map((n) => `<li>${escHtml(n)}</li>`).join('');
+      show();
+      ok.disabled = false;
+      ok.focus();
+    }, (err) => {
+      box.classList.add('mi-fail');
+      info.textContent = `导入失败：${(err as Error).message}`;
+      scaleIn.closest('label')!.remove();
+      ok.remove();
+      box.querySelector<HTMLButtonElement>('[data-r="0"]')!.textContent = '知道了';
+    });
+    ok.addEventListener('click', () => {
+      if (!model) return;
+      const k = +scaleIn.value;
+      if (!(k > 0)) { scaleIn.focus(); return; }
+      // 按缩放重新整理一遍（原点仍在底面中心）
+      const m = k === 1 ? model : { ...model, parts: model.parts.map((p) => ({ ...p, pos: p.pos.map((v) => Math.round(v * k * 1e4) / 1e4) })), min: model.min.map((v) => v * k) as CustomModel['min'], max: model.max.map((v) => v * k) as CustomModel['max'] };
+      const name = registerModel(m);
+      void addLibModel(name);
+      if (prefs.tab !== MODEL_TAB.id) { prefs.tab = MODEL_TAB.id; savePrefs(); }
+      libSearch.value = '';
+      renderLib();
+      close();
+      flash(`已导入「${m.label}」：在素材库的「模型」里，拖出来就能放`);
+    });
+  });
+}
 const bpItems = (): LibItem[] => blueprints.map((b) => ({ type: `bp:${b.id}`, label: b.name, hint: `蓝图 · ${b.elems.length} 个元素 · 拖动中 R 转 90° · 左上角改名、删除` }));
 
 /** 「常用」标签：收藏的（星标）在前，最近放过的在后 */
@@ -3033,12 +3161,15 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
   },
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
   { id: 'deco', label: '装饰', items: [...OBJ_TYPES.filter((t) => t.cat === 'deco').map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: t.type })), ...assetItems('deco')] },
+  { id: 'model', label: '模型', items: modelItems() },
   { id: 'bp', label: '蓝图', items: bpItems() },
 ];
+const MODEL_TAB = LIB[LIB.length - 2];
 const BP_TAB = LIB[LIB.length - 1];
 /** 素材卡片悬停时按 F1 跳到哪一节教程 */
 function helpOf(type: string): string {
   if (type.startsWith('bp:')) return '1.6';
+  if (type.startsWith('asset:custom:')) return '3.5';
   if (type === 'zone') return '2.5';
   if (type.startsWith('rail') || type.startsWith('side-') || /^asset:(Rail|Monorail)/.test(type)) return '2.2';
   if (type === 'start' || type === 'check' || type.startsWith('obj:')) return objType(type.slice(4))?.cat === 'deco' ? '2.4' : '2.3';
@@ -3074,13 +3205,14 @@ function renderLib() {
     b.classList.toggle('on', !q && b.dataset.tab === prefs.tab);
     if (b.dataset.tab === FAV_TAB) b.querySelector('small')!.textContent = String(favItems().length);
     else if (b.dataset.tab === BP_TAB.id) b.querySelector('small')!.textContent = String(BP_TAB.items.length);
+    else if (b.dataset.tab === MODEL_TAB.id) b.querySelector('small')!.textContent = String(MODEL_TAB.items.length);
   });
   const stars = new Set(prefs.fav);
   // 「常用」里先是收藏的，后面是最近放过的；两段之间隔一下
   const nFav = fav ? items.filter((it) => stars.has(it.type)).length : 0;
   libGrid.innerHTML = items.map((it, i) => `${fav && i === nFav && nFav > 0 ? '<div class="lib-sep">最近用过</div>' : ''}<div class="lib-card" data-type="${it.type}" data-help="${helpOf(it.type)}" title="${it.label}
-${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button>${it.type.startsWith('bp:') ? '<button type="button" class="lib-del" data-bp-del title="删除这个蓝图"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button><button type="button" class="lib-ren" data-bp-ren title="改名"><svg viewBox="0 0 16 16"><path d="M3 13l.6-2.8L10.8 3 13 5.2l-7.2 7.2z M9.4 4.4l2.2 2.2" /></svg></button>' : ''}</div>`).join('');
-  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : !q && prefs.tab === BP_TAB.id ? `还没有蓝图：选中一组东西，按 ${keyText('blueprint')} 或点选择条上的「蓝图」存进来` : '没有匹配的素材';
+${keyHint(it.hint)}"><div class="thumb">${it.icon ?? ''}</div><span>${it.label}</span><button type="button" class="lib-star${stars.has(it.type) ? ' on' : ''}" data-star title="${stars.has(it.type) ? '取消收藏' : '收藏：放进「常用」'}"><svg viewBox="0 0 16 16"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" /></svg></button>${it.type.startsWith('asset:custom:') ? '<button type="button" class="lib-del" data-model-del title="从素材库移除（已经放进地图里的不受影响）"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button>' : ''}${it.type.startsWith('bp:') ? '<button type="button" class="lib-del" data-bp-del title="删除这个蓝图"><svg viewBox="0 0 16 16"><path d="M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.7 9h5.6l.7-9" /></svg></button><button type="button" class="lib-ren" data-bp-ren title="改名"><svg viewBox="0 0 16 16"><path d="M3 13l.6-2.8L10.8 3 13 5.2l-7.2 7.2z M9.4 4.4l2.2 2.2" /></svg></button>' : ''}</div>`).join('');
+  libEmpty.textContent = fav ? '还没有常用的素材：放过的素材会出现在这里，点卡片右上角的星标可以收藏' : !q && prefs.tab === MODEL_TAB.id ? '还没有导入的模型：点「文件 → 导入模型」，或者把 .glb / .gltf / .fbx / .obj / .nmo 文件拖进窗口' : !q && prefs.tab === BP_TAB.id ? `还没有蓝图：选中一组东西，按 ${keyText('blueprint')} 或点选择条上的「蓝图」存进来` : '没有匹配的素材';
   libEmpty.hidden = items.length > 0;
   fillThumbs();
 }
@@ -3144,6 +3276,8 @@ palette.querySelector('.lib-tabs')!.addEventListener('click', (e) => {
 });
 libSearch.addEventListener('input', renderLib);
 libGrid.addEventListener('click', (e) => {
+  const mdel = (e.target as Element).closest<HTMLElement>('[data-model-del]');
+  if (mdel) { const t = mdel.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''; removeLibModel(t.slice(6)); return; }
   const del = (e.target as Element).closest<HTMLElement>('[data-bp-del]');
   if (del) { const bp = bpOf(del.closest<HTMLElement>('.lib-card')?.dataset.type ?? ''); if (bp) deleteBlueprint(bp); return; }
   const ren = (e.target as Element).closest<HTMLElement>('[data-bp-ren]');
@@ -3155,7 +3289,7 @@ libGrid.addEventListener('click', (e) => {
   renderLib();
 });
 libGrid.addEventListener('pointerdown', (e) => {
-  if ((e.target as Element).closest('[data-star], [data-bp-del], [data-bp-ren]')) return; // 点星标、删除不算拿起卡片
+  if ((e.target as Element).closest('[data-star], [data-bp-del], [data-bp-ren], [data-model-del]')) return; // 点星标、删除不算拿起卡片
   const c = (e.target as Element).closest<HTMLElement>('.lib-card');
   if (!c || e.button !== 0) return;
   if (e.pointerType === 'touch') {
@@ -3843,8 +3977,13 @@ function syncProps() {
     h += `<div class="title">${one.type === 'transition' ? '平凹转换' : '窄转换'}（长 ${pieceLen(one)}）</div>`;
     h += pos() + orient();
   } else if (one.kind === 'asset') {
-    h += `<div class="title">${assetInfo(one.name)?.label ?? one.name}</div>`;
+    h += `<div class="title">${escHtml(assetInfo(one.name)?.label ?? one.name)}${isCustom(one.name) ? '<small>导入的模型</small>' : ''}</div>`;
     h += pos() + orient();
+    if (isCustom(one.name)) {
+      const PHYS: [string, string][] = [['', '装饰（没有碰撞）'], ['floor', '路面（石头的声音）'], ['wood', '木路面（木头的声音）'], ['rail', '钢轨']];
+      h += `<label>导出为</label><select data-k="phys">${PHYS.map(([v, n]) => `<option value="${v}"${(one.phys ?? '') === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+      if (!customModel(one.name)) h += '<div class="warn-note">缺少这个模型的网格数据（地图码不完整），显示成占位盒子，不会导出</div>';
+    }
   } else {
     const t = objType(one.type);
     h += `<div class="title">${t?.label ?? one.type}${one.q ? '<small>倾斜：没有专属路块和挡块</small>' : ''}</div>`;
@@ -3906,6 +4045,7 @@ props.addEventListener('change', (ev) => {
   }
   if ((e.kind === 'box' || e.kind === 'zone') && (k === 'sx' || k === 'sy' || k === 'depth')) e[k] = Math.max(0.1, +t.value);
   if (e.kind === 'obj' && k === 'sector') e.sector = +t.value;
+  if (e.kind === 'asset' && k === 'phys') e.phys = (t.value || undefined) as AssetElem['phys'];
   if (e.kind === 'piece' && k === 'spawn') e.spawn = t.value === '' ? undefined : ((+t.value - (e.ang ?? 0)) % 360 + 360) % 360;
   if (e.kind === 'rail') {
     if (k === 'heading') e.heading = +t.value;
@@ -4247,6 +4387,7 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'check') void openCheck(false);
   else if (act === 'save-file') void saveFile();
   else if (act === 'open-file') fileInput.click();
+  else if (act === 'import-model') modelInput.click();
 });
 /** 把当前地图的地图码放进剪贴板 */
 async function copyMapCode() {
@@ -4353,9 +4494,13 @@ async function exportNmo() {
   try {
     exporting = true;
     flash('正在生成 .nmo…');
-    const { data } = await exportBoxNmo(fullDoc());
+    const { data, textures } = await exportBoxNmo(fullDoc());
     download(file, data as BlobPart, 'application/octet-stream');
-    flash(`已导出 ${file}`);
+    if (textures.size) {
+      // 导入模型自带的贴图：游戏只从 Ballance/Textures 读外部贴图
+      download(file.replace(/\.nmo$/, '_textures.zip'), zipStore([...textures].map(([name, d]) => ({ name, data: d }))) as BlobPart, 'application/zip');
+      flash(`已导出 ${file}，导入模型的 ${textures.size} 张贴图在 _textures.zip 里：解压到 Ballance/Textures 才显示得出来`);
+    } else flash(`已导出 ${file}`);
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
   finally { exporting = false; }
 }
@@ -4442,6 +4587,7 @@ settingsModal.addEventListener('click', (e) => {
     showSetPage(go.dataset.set!, Math.sign(ids.indexOf(go.dataset.set!) - ids.indexOf(prefs.settingsPage)));
     return;
   }
+  if (t.closest('[data-changelog]')) { e.preventDefault(); openChangelog(); return; }
   if (t === settingsModal || t.closest('.help-close')) closeSettings();
 });
 
@@ -5927,9 +6073,19 @@ window.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault
 window.addEventListener('drop', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
-  const f = e.dataTransfer!.files[0];
-  if (f) void openFile(f);
+  const files = [...e.dataTransfer!.files];
+  // 拖进来的是模型（可以连同 .mtl、贴图一起拖）：导入模型；否则当地图文件打开
+  if (files.some((f) => isModelFile(f.name))) { void importModels(files); return; }
+  if (files.length && files.every((f) => isSideFile(f.name))) { void importModels(files); return; }
+  if (files[0]) void openFile(files[0]);
 });
+const modelInput = document.createElement('input');
+modelInput.type = 'file';
+modelInput.multiple = true;
+modelInput.accept = MODEL_ACCEPT;
+modelInput.hidden = true;
+document.body.appendChild(modelInput);
+modelInput.addEventListener('change', () => { const fs = [...(modelInput.files ?? [])]; modelInput.value = ''; if (fs.length) void importModels(fs); });
 
 // ---------------- 关卡检查：导出前、或者从文件菜单打开 ----------------
 /** 列出检查结果。forExport：底下是「取消 / 导出」，返回要不要接着导出；没有任何问题时不弹，直接返回 true */
@@ -5992,3 +6148,18 @@ function syncAi() {
   if (!prefs.aiOn && agent.isOpen()) agent.toggle(false);
 }
 syncAi();
+
+// ---------------- 更新日志：最新版本没看过就在打开网页时弹出来，点「知道了」之后这个版本不再弹 ----------------
+const SEEN_KEY = 'bvm.box.seenVersion';
+function openChangelog(first = false) {
+  const list = CHANGELOG.map((c, i) => `<section class="log-ver${i === 0 ? ' latest' : ''}"><h4>${c.version}${i === 0 ? '<span>最新</span>' : ''}</h4><ul>${c.items.map((t) => `<li>${escHtml(t)}</li>`).join('')}</ul></section>`).join('');
+  const { box, close } = openModal(`<h3>${first ? 'BVM 更新了' : '更新日志'}</h3><div class="log-list">${list}</div><div class="row"><button class="primary" data-r="1">知道了</button></div>`, 'log-box');
+  const ok = () => { try { localStorage.setItem(SEEN_KEY, LATEST); } catch { /* 存不了就下次再弹 */ } close(); };
+  box.querySelector('[data-r="1"]')!.addEventListener('click', ok);
+}
+(() => {
+  let seen: string | null = null;
+  try { seen = localStorage.getItem(SEEN_KEY); } catch { /* 读不了当成没看过 */ }
+  // 自动录制教程、测试时不弹
+  if (seen !== LATEST && !navigator.webdriver) setTimeout(() => openChangelog(true), 400);
+})();

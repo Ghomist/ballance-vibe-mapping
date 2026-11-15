@@ -308,11 +308,13 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
   for (const a of desc.assets) {
     const src = lib.assets[a.asset];
     if (!src) continue;
+    const fresh = !meshIdx.has(src.mesh);
     const mesh = a.tile ? tiledMesh(src.mesh, a.tile, a.uvStretch) : a.uvStretch ? stretchedMesh(src.mesh, a.uvStretch) : a.crop ? croppedMesh(src.mesh, a.crop) : libMesh(src.mesh);
+    if (src.meshName && fresh) doc.meshes[mesh].name = unique(src.meshName);
     // 云层和漩涡在原版里都叫 SkyLayer / SkyLayer_Mesh：材质本身不透明，游戏脚本按这个名字找到物体才加上混合，名字不对就是黑底
     const sky = a.asset.startsWith('SkyLayer');
     if (sky) doc.meshes[mesh].name = unique('SkyLayer_Mesh');
-    addObject({ name: unique(sky ? 'SkyLayer' : ASSET_PREFIX[a.kind] + a.asset), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, assetGroups(a.asset, src.groups));
+    addObject({ name: unique(sky ? 'SkyLayer' : ASSET_PREFIX[a.kind] + (src.name ?? a.asset)), mesh, matrix: vxMatrix(a.pos, a.rotZ, a.pitch, a.rot3) }, a.groups ?? assetGroups(a.asset, src.groups));
   }
   const counters = new Map<string, number>();
   for (const e of desc.elements) {

@@ -33,7 +33,7 @@ export interface NmoLib {
   materials: Record<string, NmoMaterial>;
   meshes: Record<string, NmoMesh>;
   /** 资产库物体：网格与组 */
-  assets: Record<string, { mesh: string; groups: string[] }>;
+  assets: Record<string, { mesh: string; groups: string[]; /** 导入的模型：物体名和网格名（不写就按资产名） */ name?: string; meshName?: string }>;
   /** 机关占位符：网格 */
   elements: Record<string, { mesh: string }>;
   /** 编辑器里的材质名（BME 材质名、Rail、Stopper）→ 导出的材质名 */

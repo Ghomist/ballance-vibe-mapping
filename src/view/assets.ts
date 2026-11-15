@@ -2,6 +2,7 @@
 // 文件由 `npm run assets` 生成到 public/assets、public/fakes 与 public/elements。
 import * as THREE from 'three';
 import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
+import { type CustomModel, customModel, isCustom, onCustomModel } from '../box/custom-model';
 
 export interface AssetPiece { geometry: THREE.BufferGeometry; material: THREE.Material; /** 模型里这一部分的名字 */ name?: string }
 
@@ -111,6 +112,7 @@ async function load(kind: AssetKind, name: string): Promise<AssetPiece[]> {
 
 /** 取模型；还没加载时发起加载并返回 null，加载完成后回调 */
 export function getAsset(kind: AssetKind, name: string): AssetPiece[] | null {
+  if (kind === 'asset' && isCustom(name)) return customPieces(name);
   const key = `${kind}:${name}`;
   const c = cache.get(key);
   if (Array.isArray(c)) return c;
@@ -135,4 +137,42 @@ export function getStopperMaterial(): THREE.Material {
 const boxMat = new THREE.MeshLambertMaterial({ color: 0xd8c8aa, transparent: true, opacity: 0.6 });
 export function fallbackBox(sx: number, sy: number, sz: number): AssetPiece {
   return { geometry: new THREE.BoxGeometry(sx, sy, sz), material: boxMat };
+}
+
+// ---- 导入的自定义模型：网格从登记表里的数据现建，贴图是模型自带的 dataURL 或游戏贴图 ----
+const customCache = new WeakMap<CustomModel, AssetPiece[]>();
+const dataTex = new Map<string, THREE.Texture>();
+function dataTexture(url: string) {
+  let t = dataTex.get(url);
+  if (!t) {
+    t = texLoader.load(url, (tex) => { texDone.add(tex); for (const f of texListeners) f(); });
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    dataTex.set(url, t);
+  }
+  return t;
+}
+// 新登记的模型：和加载完一个资产模型一样通知重建
+onCustomModel(() => { assetVersion++; for (const f of listeners) f(); });
+function customPieces(name: string): AssetPiece[] | null {
+  const m = customModel(name);
+  if (!m) return null;
+  let out = customCache.get(m);
+  if (out) return out;
+  out = m.parts.map((p) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(p.pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(p.uv, 2));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(p.nrm, 3));
+    const map = typeof p.tex === 'number' ? (m.textures[p.tex] ? dataTexture(m.textures[p.tex]) : null) : typeof p.tex === 'string' ? texture(p.tex) : null;
+    const mat = new THREE.MeshLambertMaterial({
+      color: new THREE.Color(...p.color), map,
+      transparent: !!p.alphaBlend, alphaTest: p.alphaTest ? 0.5 : 0, side: p.twoSided || p.alphaBlend ? THREE.DoubleSide : THREE.FrontSide,
+      ...(p.alphaBlend ? { depthWrite: false } : {}),
+    });
+    return { geometry: g, material: mat };
+  });
+  customCache.set(m, out);
+  return out;
 }

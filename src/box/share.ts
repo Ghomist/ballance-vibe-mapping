@@ -8,6 +8,7 @@
 // tests/box/share-codes.json 留着各个版本的地图码，测试保证它们一直能解开。
 import { SHARE_IDS } from './share-ids';
 import type { Doc, Elem } from './types';
+import { modelsUsed, registerModels } from './custom-model';
 
 const MODE_BIN = 1, MODE_JSON = 2;
 const ID_OF = new Map(SHARE_IDS.map((s, i) => [s, i]));
@@ -130,7 +131,7 @@ const F2 = <T>(kind: Elem['kind'], name: string, c: Codec<T>): [Elem['kind'], st
  * 后来加的可选字段：SPECS 是按列存的，往里插一列旧地图码就全错位了，所以新字段一律排在所有元素后面，只能往这里追加。
  * 旧地图码读到这里数据就结束了，这些字段就是没有。
  */
-const EXTRAS: [Elem['kind'], string, Codec<never>][] = [F2('rail', 'tips', bools), F2('rail', 'q', tuple(num, 4)), F2('obj', 'stopOff', uint), F2('rail', 'curve', splineCurve), F2('rail', 'road', curveRoad), F2('asset', 'off', num)];
+const EXTRAS: [Elem['kind'], string, Codec<never>][] = [F2('rail', 'tips', bools), F2('rail', 'q', tuple(num, 4)), F2('obj', 'stopOff', uint), F2('rail', 'curve', splineCurve), F2('rail', 'road', curveRoad), F2('asset', 'off', num), F2('asset', 'phys', str)];
 
 /** 可选的一列：先写哪些元素有（大多数地图整列都没有，一个 0 就结束），再写它们的值 */
 function writeColumn(o: Writer, es: Record<string, never>[], name: string, c: Codec) {
@@ -171,10 +172,33 @@ function encodeBin(doc: Doc): Uint8Array {
   head.uint(o.strings.length);
   const enc = new TextEncoder();
   for (const s of o.strings) { const b = enc.encode(s); head.uint(b.length); head.bytes.push(...b); }
-  return new Uint8Array([...head.bytes, ...o.bytes]);
+  const out = [...head.bytes, ...o.bytes];
+  // 导入的模型放在最末尾的尾巴里：JSON + 4 字节长度 + 'BVMM'。解码时先从末尾认出来切掉，所以以后 EXTRAS 照样往后加
+  if (doc.models && Object.keys(doc.models).length) {
+    const j = new TextEncoder().encode(JSON.stringify(doc.models));
+    const n = j.length;
+    return concat(new Uint8Array(out), j, new Uint8Array([n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255, 66, 86, 77, 77]));
+  }
+  return new Uint8Array(out);
+}
+function concat(...a: Uint8Array[]) {
+  const r = new Uint8Array(a.reduce((s, x) => s + x.length, 0));
+  let p = 0;
+  for (const x of a) { r.set(x, p); p += x.length; }
+  return r;
+}
+const MODELS_TAG = [66, 86, 77, 77];
+/** 切掉末尾的模型尾巴，返回 [前面的数据, 模型] */
+function splitModels(bytes: Uint8Array): [Uint8Array, Doc['models']] {
+  const L = bytes.length;
+  if (L < 8 || MODELS_TAG.some((b, k) => bytes[L - 4 + k] !== b)) return [bytes, undefined];
+  const n = bytes[L - 8] | (bytes[L - 7] << 8) | (bytes[L - 6] << 16) | (bytes[L - 5] << 24);
+  if (n < 0 || n + 8 > L) return [bytes, undefined];
+  try { return [bytes.subarray(0, L - 8 - n), JSON.parse(new TextDecoder().decode(bytes.subarray(L - 8 - n, L - 8)))]; } catch { return [bytes, undefined]; }
 }
 
-function decodeBin(bytes: Uint8Array): Doc {
+function decodeBin(all: Uint8Array): Doc {
+  const [bytes, models] = splitModels(all);
   const i = new Reader(bytes);
   const dec = new TextDecoder();
   const n = i.uint();
@@ -203,6 +227,7 @@ function decodeBin(bytes: Uint8Array): Doc {
     if (i.pos >= bytes.length) break; // 旧地图码到这里就结束了
     readColumn(i, byKind.get(kind)!, name, c as Codec);
   }
+  if (models) doc.models = models;
   return doc;
 }
 
@@ -234,6 +259,10 @@ const fromB64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace
 
 /** 地图 → 地图码 */
 export async function encodeShare(doc: Doc): Promise<string> {
+  // 带上用到的导入模型（没用到的不存）
+  const models = modelsUsed(Object.values(doc.elems));
+  doc = { ...doc, models };
+  if (!models) delete doc.models;
   let mode = MODE_BIN, body: Uint8Array;
   try {
     body = encodeBin(doc);
@@ -252,5 +281,7 @@ export async function decodeShare(text: string): Promise<Doc> {
   const body = await pipe(raw.slice(1), new DecompressionStream('deflate-raw'));
   const doc = raw[0] === MODE_BIN ? decodeBin(body) : raw[0] === MODE_JSON ? JSON.parse(new TextDecoder().decode(body)) as Doc : null;
   if (!doc || typeof doc.elems !== 'object' || !doc.elems) throw new Error('不认识的地图码');
+  registerModels(doc.models);
+  delete doc.models;
   return doc;
 }

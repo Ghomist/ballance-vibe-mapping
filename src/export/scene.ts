@@ -34,6 +34,8 @@ export interface SceneAsset {
   uvStretch?: [number, number];
   /** 花纹重复的木制件接长 / 截断（模型本地、Blender 坐标；见 view/tilemesh.ts）：网格要重新生成 */
   tile?: { axis: 0 | 1; dir: 1 | -1; base: number; period: number; dz: number; len: number; off: number; cont: boolean };
+  /** 导入的模型：导出的组（不写就按资产库） */
+  groups?: string[];
   /** 挖掉模型本地的这些矩形 [x0, x1, y0, y1]（盘点路面去掉自带的延伸路） */
   crop?: [number, number, number, number][];
 }
