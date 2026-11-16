@@ -11,4 +11,5 @@ export const SHARE_IDS: readonly string[] = [
   'MonorailCrossing', 'Level13_UWoodPath', 'Level13_UWoodPath_Single', 'Level13_WIngWood', 'Level2_TiltedWoodPlate',
   'Level2_WaveWood', 'Modul_27',
   'PS_FourFlames', 'PC_TwoFlames', 'PR_Resetpoint',
+  'LevelEnd_Stick_Column', 'LevelEnd_Ring', 'LevelEnd_RingTip',
 ];

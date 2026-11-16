@@ -84,6 +84,28 @@ export function boxCustomScenarios(check: Check, scenario: Scenario) {
     check(built.filter((e) => e.kind === 'asset').length === r.objects.length && built.every((e, i) => e.id === i + 1), '一个物体一个元素');
   });
 
+  scenario('隐形挡块：隐藏、只归挡块组、排在普通挡块后面；地图码和 NMO 都能回来', async () => {
+    const es: Elem[] = [
+      { id: 1, kind: 'box', x: -20, y: -2.5, z: 0, sx: 40, sy: 5, depth: 5, style: 'normal' },
+      { id: 2, kind: 'zone', x: 0, y: 3, z: 3, sx: 5, sy: 1, depth: 3, stop: true },
+      { id: 3, kind: 'obj', type: 'P_Modul_25', x: 2.5, y: 0, z: 0, rot: 0 },
+      { id: 4, kind: 'zone', x: -100, y: -100, z: -30, sx: 200, sy: 200, depth: 5 },
+      { id: 5, kind: 'zone', x: 10, y: 3, z: 3, sx: 5, sy: 1, depth: 3, stop: true },
+    ];
+    const d: Doc = { elems: Object.fromEntries(es.map((e) => [e.id, e])), nextId: 10 };
+    const nmo = buildNmoDoc(exportBoxScene(d), lib as unknown as NmoLib);
+    const g = (n: string) => nmo.groups.find((x) => x.name === n)?.objects.map((i) => nmo.objects[i]) ?? [];
+    const st = g('Phys_FloorStopper');
+    check(st.length === 3 && st[0].name === 'A_Stopper_BVM_01' && st[0].visible !== false, `挡块组：普通挡块排第一（${st.map((o) => o.name)}）`);
+    check(st.slice(1).every((o) => o.name.startsWith('A_Stopper_Invisible_') && o.visible === false), '隐形挡块都隐藏');
+    check(g('DepthTestCubes').length === 1 && !nmo.groups.some((x) => x.name !== 'Phys_FloorStopper' && x.objects.some((i) => nmo.objects[i].name.startsWith('A_Stopper_Invisible_'))), '隐形挡块只在挡块组，不算死亡区');
+    const back = await decodeShare(await encodeShare(d));
+    check(back.elems[2].kind === 'zone' && back.elems[2].stop === true && back.elems[4].kind === 'zone' && !back.elems[4].stop, '地图码里 stop 原样回来');
+    const r = await importModelFile(new File([await writeNmo(nmo) as BlobPart], 'istop.nmo'));
+    const zs = r.elems.filter((e): e is ZoneElem => e.kind === 'zone');
+    check(zs.filter((z) => z.stop).length === 2 && zs.filter((z) => !z.stop).length === 1, `NMO 导入：隐藏的挡块变回隐形挡块（${zs.map((z) => !!z.stop)}）`);
+  });
+
   scenario('拆开的起点 / 小节盘点：导出和旧式盘点完全一样', () => {
     const at = (es: Elem[], dx: number, dy: number, rot: 0 | 1 | 2 | 3) => es.map((e) => ({ ...e, x: e.x + dx, y: e.y + dy, ...(e.kind === 'piece' ? { rot } : e.kind === 'obj' ? { rot: ((e.rot + rot) % 4) as 0 | 1 | 2 | 3 } : {}) }));
     let n = 1;

@@ -17,7 +17,7 @@ export interface KeyDef {
 }
 
 // 顺序和顶栏的工具按钮一样（数字键 1～6 从左到右）
-const MODES: [string, string][] = [['move', '移动'], ['rotate', '旋转'], ['stretch', '拉伸'], ['slope', '坡面'], ['split', '切分'], ['pattern', '花纹']];
+const MODES: [string, string][] = [['move', '移动'], ['rotate', '旋转'], ['stretch', '拉伸'], ['slope', '坡面'], ['split', '切分'], ['pattern', '衔接']];
 const HOLD_DEF: Record<string, string> = { move: 'g', stretch: 'control', slope: 'alt', rotate: 'r', split: 'k', pattern: 'p' };
 const HOLD_NOTE: Record<string, string> = { move: '轻按是自由移动', rotate: '轻按是自由旋转；拖素材卡片时用来转向', split: '轻按是永久切换', pattern: '轻按是永久切换', stretch: '按着拖就是改尺寸', slope: '按着拖就是拉坡' };
 

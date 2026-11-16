@@ -81,7 +81,7 @@
     </div>
 
     <div class="tb-center">
-      <!-- 工具：总有一个在用（蓝色），默认是「选择」。分三组：选择 ｜ 变换选中的东西（移动、旋转、拉伸、坡面）｜ 在路面上点的工具（切分、花纹、护栏）。
+      <!-- 工具：总有一个在用（蓝色），默认是「选择」。分三组：选择 ｜ 变换选中的东西（移动、旋转、拉伸、坡面）｜ 在路面上点的工具（切分、衔接、护栏）。
            点按钮或按数字键切换，再点一次、按 Esc 或点「选择」回到选择；按住字母 / 修饰键是临时切换（橙色），松开回到原来的工具 -->
       <div class="seg" id="tools">
         <button id="tool-select" class="active" data-help="1.3" title="选择：点选、框选，Shift 加选；别的工具用完回到这里（{mode.select} / Esc）">
@@ -104,8 +104,8 @@
         <button data-mode="split" data-help="1.5" title="切分：点路面在鼠标处切成两段，{split.dir} 换方向（{mode.split}）&#10;按住 {hold.split} 临时切换">
           <svg viewBox="0 0 16 16"><circle cx="4.5" cy="11.5" r="2" /><circle cx="11.5" cy="11.5" r="2" /><path d="M6 10L12.5 2.5M10 10L3.5 2.5" /></svg><span>切分</span><kbd></kbd>
         </button>
-        <button data-mode="pattern" data-help="1.4" title="花纹：点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（{mode.pattern}）&#10;按住 {hold.pattern} 临时切换">
-          <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg><span>花纹</span><kbd></kbd>
+        <button data-mode="pattern" data-help="1.4" title="衔接：路和路、路和机关怎么接——点路面边上的圆圈切换自动 / 开口 / 封口，点机关挡块上的圆圈开关挡块（{mode.pattern}）&#10;按住 {hold.pattern} 临时切换">
+          <svg viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M5 2.5v2M8 2.5v2M11 2.5v2M5 13.5v-2M8 13.5v-2M11 13.5v-2" /></svg><span>衔接</span><kbd></kbd>
         </button>
         <button id="guard-btn" data-tool="guard" data-help="2.4" title="护栏：点路边放整条直边，沿路边拖放一段（{guard}）">
           <svg viewBox="0 0 16 16"><path d="M3 13V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v7 M1.5 13h13" /></svg><span>护栏</span><kbd></kbd>
@@ -144,6 +144,7 @@
             <button id="sector-eye" class="toggle" title="在机关和盘点上显示所属小节，终点气球显示「终点」"><svg viewBox="0 0 16 16"><path d="M2.5 13.5v-11M2.5 3h9l-2 2.8 2 2.7h-9" /></svg><span>小节</span></button>
             <button id="sky-eye" class="toggle" title="只影响编辑器，导出时总是显示"><svg viewBox="0 0 16 16"><path d="M4.5 12.5a3 3 0 0 1-.4-6A4 4 0 0 1 11.8 6a3.3 3.3 0 0 1-.3 6.5z" /></svg><span>云层</span></button>
             <button id="zone-eye" class="toggle" title="导出时总是隐藏"><svg viewBox="0 0 16 16"><path d="M8 1.8l5.6 3.1v6.2L8 14.2 2.4 11.1V4.9z M2.4 4.9L8 8l5.6-3.1 M8 8v6.2" /><path d="M6.3 9.6l3.4 2 M9.7 9.6l-3.4 2" class="x" /></svg><span>死亡区</span></button>
+            <button id="istop-eye" class="toggle" title="隐形挡块：导出时总是隐藏"><svg viewBox="0 0 16 16"><path d="M8 1.8l5.6 3.1v6.2L8 14.2 2.4 11.1V4.9z M2.4 4.9L8 8l5.6-3.1 M8 8v6.2" /></svg><span>隐形挡块</span></button>
           </div>
         </span>
       </div>

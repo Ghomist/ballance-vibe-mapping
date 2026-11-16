@@ -16,8 +16,8 @@ import { Model } from '../model/types';
 export interface SceneMeshPart { mat: string; pos: number[]; uv?: number[] }
 export interface SceneMesh {
   name: string;
-  /** floor：Phys_Floors 等；rail：Phys_FloorRails 等；zone：死亡区（DepthTestCubes，隐藏） */
-  kind: 'floor' | 'rail' | 'stopper' | 'zone';
+  /** floor：Phys_Floors 等；rail：Phys_FloorRails 等；zone：死亡区（DepthTestCubes，隐藏）；istop：隐形挡块（Phys_FloorStopper，隐藏） */
+  kind: 'floor' | 'rail' | 'stopper' | 'zone' | 'istop';
   parts: SceneMeshPart[];
   /** 平滑着色（钢轨） */
   smooth?: boolean;

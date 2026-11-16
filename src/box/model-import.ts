@@ -252,14 +252,15 @@ async function loadNmo(main: File, notes: string[]): Promise<{ objects: RawObjec
     if (!m || !m.faces.length) continue;
     const M = o.matrix;
     const W = (x: number, y: number, z: number) => [x * M[0] + y * M[4] + z * M[8] + M[12], x * M[1] + y * M[5] + z * M[9] + M[13], x * M[2] + y * M[6] + z * M[10] + M[14]];
-    if (has('DepthTestCubes')) {
-      // 死亡区：取网格的世界包围盒（Blender 坐标）
+    // 死亡区，或者隐藏的挡块（隐形挡块）：取网格的世界包围盒（Blender 坐标）
+    const istop = !o.visible && has('Phys_FloorStopper') && !has('DepthTestCubes');
+    if (has('DepthTestCubes') || istop) {
       const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
       for (let i = 0; i * 3 < m.pos.length; i++) {
         const p = W(m.pos[i * 3], m.pos[i * 3 + 1], m.pos[i * 3 + 2]), b = [p[0], p[2], p[1]];
         for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], b[k]); mx[k] = Math.max(mx[k], b[k]); }
       }
-      const z: ZoneElem = { id: nextId++, kind: 'zone', x: mn[0], y: mn[1], z: mx[2], sx: Math.max(0.1, mx[0] - mn[0]), sy: Math.max(0.1, mx[1] - mn[1]), depth: Math.max(0.1, mx[2] - mn[2]) };
+      const z: ZoneElem = { id: nextId++, kind: 'zone', x: mn[0], y: mn[1], z: mx[2], sx: Math.max(0.1, mx[0] - mn[0]), sy: Math.max(0.1, mx[1] - mn[1]), depth: Math.max(0.1, mx[2] - mn[2]), ...(istop ? { stop: true } : {}) };
       elems.push(z);
       continue;
     }
@@ -304,9 +305,10 @@ async function loadNmo(main: File, notes: string[]): Promise<{ objects: RawObjec
   if (tris > MAX_TRIS) throw new Error(`模型有 ${tris} 个三角形，太多了（最多 ${MAX_TRIS}）`);
   if (!objects.length && !elems.length) throw new Error(doc.objects.length ? '文件里的物体都没有网格（或者都是隐藏的）' : '文件里没有 3D 物体');
   if (objects.some((o) => o.parts.some((p) => typeof p.tex === 'string'))) notes.push('贴图用游戏自带的同名贴图（Ballance/Textures 里有的才显示得出来）');
-  const machines = elems.filter((e) => e.kind === 'obj').length, zones = elems.length - machines;
+  const machines = elems.filter((e) => e.kind === 'obj').length, istops = elems.filter((e) => e.kind === 'zone' && e.stop).length, zones = elems.length - machines - istops;
   if (machines - flames) notes.push(`认出了 ${machines - flames} 个机关（按组和名字），已经关掉自动生成的专属路块和挡块，免得和文件里的路面重复`);
   if (zones) notes.push(`${zones} 个死亡区按包围盒导入`);
+  if (istops) notes.push(`${istops} 个隐藏的挡块按包围盒导入成隐形挡块`);
   return { objects, elems };
 }
 

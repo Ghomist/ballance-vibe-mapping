@@ -146,13 +146,14 @@ interface Prefs {
   libW: number; libH: number;
   /** 显示死亡区（换了键名：之前默认隐藏时存下的 zones 不再沿用，默认显示） */
   zonesShown: boolean;
+  istopShown: boolean;
   skyShown: boolean;
   gridShown: boolean;
   /** AI 制图（实验功能）：默认关，在设置的「界面」里打开 */
   aiOn: boolean;
 }
 const prefs: Prefs = (() => {
-  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, skyShown: true, gridShown: true, flySpeed: 100, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, alignRange: 20, libW: LIB_W, libH: LIB_H, aiOn: false };
+  const d: Prefs = { fav: [], recent: [], keys: {}, settingsPage: 'map', side: 'right', gridStep: 1, modelView: true, theme: 'dark', tab: 'road', grid: false, align: true, sectors: false, sector: 1, zonesShown: true, istopShown: true, skyShown: true, gridShown: true, flySpeed: 100, folded: false, followPick: false, coordSys: 'game', gizmo: null, guardInset: 1.5, alignRange: 20, libW: LIB_W, libH: LIB_H, aiOn: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem('bvm.box.prefs') ?? '{}') }; } catch { return d; }
 })();
 loadKeys(prefs.keys);
@@ -199,7 +200,7 @@ const addPick = (e: PointerEvent) => e.shiftKey || (touchMarquee && e.pointerTyp
  */
 type Mode = 'move' | 'stretch' | 'slope' | 'rotate' | 'split' | 'pattern';
 const MODES: Mode[] = ['move', 'rotate', 'stretch', 'slope', 'split', 'pattern'];
-const MODE_NAME: Record<Mode, string> = { move: '移动', stretch: '拉伸', slope: '坡面', rotate: '旋转', split: '切分', pattern: '花纹' };
+const MODE_NAME: Record<Mode, string> = { move: '移动', stretch: '拉伸', slope: '坡面', rotate: '旋转', split: '切分', pattern: '衔接' };
 let permMode: Mode | null = null;
 let tempMode: Mode | null = null;
 const mode = (): Mode | null => tempMode ?? permMode;
@@ -322,12 +323,16 @@ function xfGroup(e: Elem): THREE.Group {
 }
 /** 死亡区是否显示（顶栏的开关；导出时总是隐藏） */
 let zonesOn = prefs.zonesShown; // 死亡区默认显示
+let istopOn = prefs.istopShown; // 隐形挡块默认显示
 let skyOn = prefs.skyShown; // 云层默认显示
 const isSky = (e: Elem) => e.kind === 'asset' && !!assetInfo(e.name)?.sky;
 /** 顶栏关掉显示的东西：不画、不能选、不参与吸附 */
-const hiddenElem = (e: Elem) => (e.kind === 'zone' && !zonesOn) || (!skyOn && isSky(e));
+const hiddenElem = (e: Elem) => (e.kind === 'zone' && (e.stop ? !istopOn : !zonesOn)) || (!skyOn && isSky(e));
 const ZONE_MAT = new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide });
 const ZONE_EDGE = new THREE.LineBasicMaterial({ color: 0xff6a6a, transparent: true, opacity: 0.85 });
+/** 隐形挡块：紫色 */
+const ISTOP_MAT = new THREE.MeshBasicMaterial({ color: 0xa860ff, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide });
+const ISTOP_EDGE = new THREE.LineBasicMaterial({ color: 0xc08cff, transparent: true, opacity: 0.9 });
 
 /** 灯塔 / 柱子的长柱子：只做视觉效果，选不到，F 聚焦、包围盒都不算它 */
 const COLUMN_PARTS = new Set(['Colums_blue', 'Colums_beige', 'Columns_beige_fade']);
@@ -607,16 +612,16 @@ function rebuildInner() {
     const sb = solidBox(outer);
     if (!sb.isEmpty()) objBoxes.set(e.id, sb);
   }
-  // 死亡区：半透明的红色长方体（顶栏可以一键隐藏）
-  if (zonesOn) for (const e of Object.values(doc.elems)) {
-    if (e.kind !== 'zone') continue;
+  // 死亡区：半透明的红色长方体；隐形挡块：紫色（「显示」菜单里各自一键隐藏）
+  for (const e of Object.values(doc.elems)) {
+    if (e.kind !== 'zone' || hiddenElem(e)) continue;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(zoneTris(e), 3));
-    const mesh = new THREE.Mesh(geo, ZONE_MAT);
+    const mesh = new THREE.Mesh(geo, e.stop ? ISTOP_MAT : ZONE_MAT);
     mesh.userData.id = e.id;
     mesh.userData.own = true;
     mesh.renderOrder = 2;
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), ZONE_EDGE);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), e.stop ? ISTOP_EDGE : ZONE_EDGE);
     edges.userData.own = true;
     const g = new THREE.Group();
     g.add(mesh, edges);
@@ -901,8 +906,20 @@ zoneEye.addEventListener('click', () => {
   prefs.zonesShown = zonesOn; savePrefs();
   zoneEye.classList.toggle('active', zonesOn);
   zoneEye.blur();
-  if (!zonesOn) for (const id of [...sel]) if (doc.elems[id]?.kind === 'zone') sel.delete(id);
+  if (!zonesOn) for (const id of [...sel]) { const z = doc.elems[id]; if (z?.kind === 'zone' && !z.stop) sel.delete(id); }
   flash(zonesOn ? '显示死亡区' : '隐藏死亡区（导出时总是隐藏）');
+  rebuild();
+});
+const istopEye = document.getElementById('istop-eye')!;
+istopEye.classList.toggle('active', istopOn);
+istopEye.addEventListener('click', () => {
+  viewBtn.classList.remove('attn');
+  istopOn = !istopOn;
+  prefs.istopShown = istopOn; savePrefs();
+  istopEye.classList.toggle('active', istopOn);
+  istopEye.blur();
+  if (!istopOn) for (const id of [...sel]) { const z = doc.elems[id]; if (z?.kind === 'zone' && z.stop) sel.delete(id); }
+  flash(istopOn ? '显示隐形挡块' : '隐藏隐形挡块（导出时总是隐藏）');
   rebuild();
 });
 const skyEye = document.getElementById('sky-eye')!;
@@ -1226,7 +1243,8 @@ function drawOverlayInner() {
   }
   // 按住 V：显示鼠标下元素的顶点和边中点
   // 按住 V：有选中的东西时只显示选中物体的顶点 / 边中点（不管鼠标移到哪），否则显示鼠标下的物体
-  const vIds = vHeld && !drag ? (sel.size ? [...sel] : hoverId !== null ? [hoverId] : []) : [];
+  // 悬停的是绑定组里的一个（比如盘点的火焰盖在路面上面）：整组的点都显示，盘点路面的点才看得到
+  const vIds = vHeld && !drag ? (sel.size ? [...sel] : hoverId !== null ? [...expandGroups(doc, [hoverId])] : []) : [];
   for (const id of vIds) {
     if (!doc.elems[id]) continue;
     const f = feats(doc.elems[id]);
@@ -2801,6 +2819,7 @@ function newElems(type: string): Elem[] {
   }
   if (type.startsWith('asset:')) return [{ id, kind: 'asset', name: type.slice(6), x: 0, y: 0, z: 0, rot: 0 }];
   if (type === 'zone') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 10, sy: 10, depth: 5 }];
+  if (type === 'istop') return [{ id, kind: 'zone', x: 0, y: 0, z: 0, sx: 5, sy: 1, depth: 3, stop: true }];
   if (type === 'rail') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 10, radius: 0, angle: 0, dz: 0 }] }];
   if (type === 'road-arc') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 15, angle: 90, dz: 0 }], road: { style: 'normal', depth: 5 } }];
   if (type === 'road-spline') return [{ id, kind: 'rail', x: 0, y: 0, z: 0, heading: 0, pieces: [{ kind: 'double', len: 0, radius: 0, angle: 0, dz: 0 }], curve: defaultCurve(), road: { style: 'normal', depth: 5 } }];
@@ -2978,6 +2997,10 @@ function renameBlueprint(bp: Blueprint) {
 function startPlace(type: string) {
   if (type === 'start' && startsOf(Object.values(doc.elems)).length) flash('已经有起点了：这次只放起点的盘点路面，不带四火和重生点');
   // 死亡区正隐藏着：放下去也看不到，提醒一下，顶栏的「死亡区」按钮闪几下
+  if (type === 'istop' && !istopOn) {
+    flash('隐形挡块当前是隐藏的，放下后看不到——在顶栏的「显示」里打开', true);
+    viewAttn();
+  }
   if (type === 'zone' && !zonesOn) {
     flash('死亡区当前是隐藏的，放下后看不到——在顶栏的「显示」里打开', true);
     viewAttn();
@@ -3151,6 +3174,7 @@ const ROAD_TOP = '#c9b48a', ROAD_SIDE = '#8a7558', SINK = '#9c8665', RAIL = '#aa
 const slab = (top: string, inner?: string) => svgThumb(`<path d="M8 30 L32 18 L56 30 L32 42 Z" fill="${top}"/><path d="M8 30 L32 42 L32 52 L8 40 Z" fill="${ROAD_SIDE}"/><path d="M56 30 L32 42 L32 52 L56 40 Z" fill="#76634a"/>${inner ?? ''}`);
 /** 道具：分数球、生命球、箱子、道具球 */
 const PROP_TYPES = new Set(['P_Extra_Point', 'P_Extra_Life', 'P_Box', 'P_Ball_Paper', 'P_Ball_Stone', 'P_Ball_Wood']);
+const ISTOP_ICON = svgThumb('<path d="M32 10 L54 22 L54 44 L32 56 L10 44 L10 22 Z" fill="rgba(168,96,255,0.28)" stroke="#c08cff" stroke-width="2" stroke-linejoin="round"/><path d="M10 22 L32 34 L54 22 M32 34 V56" fill="none" stroke="#c08cff" stroke-width="1.6" opacity="0.8"/>');
 const ZONE_ICON = svgThumb('<path d="M32 10 L54 22 L54 44 L32 56 L10 44 L10 22 Z" fill="rgba(255,64,64,0.28)" stroke="#ff6a6a" stroke-width="2" stroke-linejoin="round"/><path d="M10 22 L32 34 L54 22 M32 34 V56" fill="none" stroke="#ff6a6a" stroke-width="1.6" opacity="0.8"/><path d="M26 39 l12 7 M38 39 l-12 7" stroke="#ff8a8a" stroke-width="2.4" stroke-linecap="round"/>');
 /** 资产库里的特殊路面：tab 指定了放在哪个标签（特殊路块、旋转门放路面，交叉轨放钢轨），其余（木制件）在「木制」 */
 function assetItems(tab?: 'road' | 'rail' | 'deco'): LibItem[] {
@@ -3283,6 +3307,7 @@ const LIB: { id: string; label: string; items: LibItem[] }[] = [
       { type: 'check', label: '小节', hint: '两火，按放置顺序编小节号', icon: svgThumb('<ellipse cx="32" cy="34" rx="20" ry="11" fill="#a99a86"/><ellipse cx="32" cy="32" rx="12" ry="6" fill="#e3a35a"/><path d="M14 32 L18 14 L22 32 Z M42 32 L46 14 L50 32 Z" fill="#f0b46e"/>') },
       ...OBJ_TYPES.filter((t) => t.cat === 'module' && !PROP_TYPES.has(t.type) && !t.part).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })),
       { type: 'zone', label: '死亡区', hint: '球碰到就死 · 导出时自动隐藏（DepthTestCubes）', icon: ZONE_ICON },
+      { type: 'istop', label: '隐形挡块', hint: '看不见的挡板，挡住球 · 导出时自动隐藏，只归挡块组（Phys_FloorStopper），没有撞击声', icon: ISTOP_ICON },
     ],
   },
   { id: 'prop', label: '道具', items: OBJ_TYPES.filter((t) => PROP_TYPES.has(t.type)).map((t) => ({ type: `obj:${t.type}`, label: t.label, hint: `${t.type}${baseSpec(t.type) ? ' · 自带专属路块' : ''}` })) },
@@ -3293,7 +3318,7 @@ const BP_TAB = LIB[LIB.length - 1];
 /** 素材卡片悬停时按 F1 跳到哪一节教程 */
 function helpOf(type: string): string {
   if (type.startsWith('bp:')) return '1.6';
-  if (type === 'zone') return '2.5';
+  if (type === 'zone' || type === 'istop') return '2.5';
   if (type.startsWith('rail') || type.startsWith('side-') || /^asset:(Rail|Monorail)/.test(type)) return '2.2';
   if (type === 'start' || type === 'check' || type.startsWith('obj:')) return objType(type.slice(4))?.cat === 'deco' ? '2.4' : '2.3';
   if (type.startsWith('asset:') && assetInfo(type.slice(6))?.tab === 'deco') return '2.4';
@@ -3962,7 +3987,7 @@ window.addEventListener('keydown', (e) => {
   if (arrows[k] && !drag) { e.preventDefault(); nudge(arrows[k]); }
 });
 window.addEventListener('keyup', (e) => { if (hasKey('vsnap', keyName(e))) { vHeld = false; drawOverlay(); if (drag?.t === 'grab') grabMove(lastMouse); } updateStatus(); });
-// 松开按住的模式键：按住过就回到原来的模式；只是轻按的话，移动 / 旋转键是自由移动 / 旋转，切分 / 花纹键是永久切换
+// 松开按住的模式键：按住过就回到原来的模式；只是轻按的话，移动 / 旋转键是自由移动 / 旋转，切分 / 衔接键是永久切换
 window.addEventListener('keyup', (e) => {
   const k = keyName(e);
   if (!held || held.key !== k) return;
@@ -4029,7 +4054,7 @@ function syncProps() {
     h += `<div class="sub">四边<small>自动：贴着同样的路面就连成一片</small></div>`;
     h += (['+长', '+宽', '-长', '-宽'] as const).map((n, i) => `<label>${n}</label>${seg(`side-${i}`, [['auto', '自动'], ['open', '开口'], ['closed', '封口']], sideMode(one, i as Dir))}`).join('');
   } else if (one.kind === 'zone') {
-    h += `<div class="title">死亡区<small>球碰到包围盒就死；导出时隐藏</small></div>`;
+    h += one.stop ? '<div class="title">隐形挡块<small>挡住球、没有撞击声；导出时隐藏，只归挡块组</small></div>' : `<div class="title">死亡区<small>球碰到包围盒就死；导出时隐藏</small></div>`;
     h += pos() + num('sx', '长', one.sx) + num('sy', '宽', one.sy) + num('depth', '高', one.depth) + orient();
   } else if (one.kind === 'rail' && one.curve) {
     const c = one.curve, nI = Math.min(splineNode, c.pts.length - 1), nd = c.pts[nI], w = splineToWorld(one, nd.p);
@@ -4115,8 +4140,9 @@ function syncProps() {
     if (t?.cat === 'module' && one.type !== 'PE_Balloon' && one.type !== START_FLAMES) h += `<label>${one.type === CHECK_FLAMES ? '激活' : '小节'}</label><select data-k="sector">${Array.from({ length: sectorCount() }, (_, i) => `<option value="${i + 1}"${i + 1 === Math.min(one.sector ?? 1, sectorCount()) ? ' selected' : ''}>第 ${i + 1} 小节</option>`).join('')}</select>`;
     if (extra.length) h += `<label>附带</label><div class="chips">${extra.join('')}</div>`;
     if (!one.q && stopperCount(one.type)) {
-      const n = stopperCount(one.type), on = Array.from({ length: n }, (_, i) => !stopperOff(one, i)).filter(Boolean).length;
-      h += `<label>挡块</label><div class="muted">${on} / ${n} 块生成 · 点场景里的圆圈开关</div>`;
+      // 每块挡块一个开关（和点场景里的圆圈一样）
+      const n = stopperCount(one.type);
+      h += `<label>挡块</label><div class="chips">${Array.from({ length: n }, (_, i) => chip(`stop:${i}`, n > 1 ? `挡块 ${i + 1}` : '生成挡块', !stopperOff(one, i))).join('')}</div>`;
     }
   }
   props.innerHTML = h;
@@ -4385,6 +4411,8 @@ props.addEventListener('click', (ev) => {
     const d = +m[1] as Dir, mode = segBtn.dataset.v as SideMode;
     if (sideMode(e, d) === mode) return;
     snapshot(); setSideMode(e, d, mode);
+  } else if (chipBtn && e.kind === 'obj' && chipBtn.dataset.flag!.startsWith('stop:')) {
+    snapshot(); toggleStopper(e, +chipBtn.dataset.flag!.slice(5));
   } else if (chipBtn && e.kind === 'obj') {
     const f = chipBtn.dataset.flag as 'noStopper' | 'noBase';
     snapshot(); e[f] = e[f] ? undefined : true;
@@ -6033,7 +6061,7 @@ function syncMultiProps() {
   const common = <T,>(vs: T[]): T | null => (vs.length && vs.every((v) => v === vs[0]) ? vs[0] : null);
   const num = (k: string, label: string, v: number | null, step = 0.5, extra = '') => `<label>${label}</label><input data-mk="${k}" type="number" step="${step}"${extra} value="${v === null ? '' : +v.toFixed(4)}" placeholder="多个值">`;
   const pick = (k: string, label: string, opts: [string, string][], v: string | null) => `<label>${label}</label><select data-mk="${k}">${v === null ? '<option value="" selected>多个值</option>' : ''}${opts.map(([o, n]) => `<option value="${o}"${o === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
-  const NAMES: [string, (e: Elem) => boolean][] = [['路面', (e) => !!roadOf(e) || (e.kind === 'piece' && !isCheckpoint(e))], ['钢轨', (e) => e.kind === 'rail' && !e.road], ['机关', isModule], ['护栏', (e) => e.kind === 'guard'], ['死亡区', (e) => e.kind === 'zone']];
+  const NAMES: [string, (e: Elem) => boolean][] = [['路面', (e) => !!roadOf(e) || (e.kind === 'piece' && !isCheckpoint(e))], ['钢轨', (e) => e.kind === 'rail' && !e.road], ['机关', isModule], ['护栏', (e) => e.kind === 'guard'], ['死亡区', (e) => e.kind === 'zone' && !e.stop], ['隐形挡块', (e) => e.kind === 'zone' && !!e.stop]];
   const counts = NAMES.map(([n, f]) => [n, es.filter(f).length] as const).filter(([, c]) => c > 0);
   const rest = es.length - counts.reduce((s, [, c]) => s + c, 0);
   const roads = es.map(roadOf).filter((r): r is NonNullable<ReturnType<typeof roadOf>> => !!r), mods = es.filter(isModule), rails = es.filter(plainRail);

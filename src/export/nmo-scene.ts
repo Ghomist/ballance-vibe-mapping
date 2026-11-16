@@ -16,8 +16,10 @@ const MESH_GROUPS: Record<SceneMesh['kind'], string[]> = {
   rail: ['Phys_FloorRails', 'Sound_HitID_03', 'Sound_RollID_03'],
   stopper: ['Phys_FloorStopper'],
   zone: ['DepthTestCubes'],
+  // 隐形挡块：只归挡块组。游戏只给组里第一个物体配挡块的撞击声，所以普通挡块（合成一个物体）一定排在它们前面
+  istop: ['Phys_FloorStopper'],
 };
-const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_', zone: 'DepthTestCubes_' };
+const MESH_PREFIX: Record<SceneMesh['kind'], string> = { floor: 'A_Floor_', rail: 'A_Rail_', stopper: 'A_Stopper_', zone: 'DepthTestCubes_', istop: 'A_Stopper_Invisible_' };
 const ASSET_PREFIX = { floor: 'A_Floor_', rail: 'A_Rail_', deco: 'D_' } as const;
 
 /** 不投影子的资产库物体：特殊路块 15、木制 U 形槽（原版里就不在 Shadow 组） */
@@ -238,7 +240,7 @@ export function buildNmoDoc(desc: SceneDesc, lib: NmoLib): NmoDoc {
     const mi = doc.meshes.length;
     doc.meshes.push({ ...baked, name, litMode: 1, mtls: baked.mtls.map((k) => material(lib.floorMaterials[k] ?? null)) });
     // 死亡区：导出时隐藏（游戏只看它的包围盒）
-    addObject({ name, mesh: mi, matrix: identity, ...(m.kind === 'zone' ? { visible: false } : {}) }, MESH_GROUPS[m.kind]);
+    addObject({ name, mesh: mi, matrix: identity, ...(m.kind === 'zone' || m.kind === 'istop' ? { visible: false } : {}) }, MESH_GROUPS[m.kind]);
   }
   /** 拉伸过的木制件：复制一份网格，UV 按三角形补偿成平铺（顶点拆开不共用；Virtools 坐标里 Blender 的 Y 是第 3 个分量） */
   const stretchedMesh = (name: string, s: [number, number]) => {

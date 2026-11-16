@@ -217,7 +217,7 @@ export const DEMOS: Demo[] = [
     props: true,
     async setup(a) { await a.setDoc([box(0, 0, 10, 5), box(10, 0, 10, 5)]); await a.view([6, -15, 13], [10, 2.5, 0]); await a.select([1]); await a.center([10, 2.5, 0]); },
     async act(a) {
-      // 按 6 进入花纹模式，四条边的中点出现圆圈
+      // 按 6 进入衔接模式，四条边的中点出现圆圈
       await a.press('6', [], { ms: 1000 }); await a.wait(400);
       for (let i = 0; i < 3; i++) {
         await a.at([10, 2.5, 0.05], 500); await a.wait(250);
@@ -416,7 +416,7 @@ export const DEMOS: Demo[] = [
       await a.view([-2, -24, 16], [4, 0, 0]); await a.center([0, 0, 0]); await a.select([3]);
     },
     async act(a) {
-      // 按 6 进入花纹模式；推板只有一块挡块，顶面中心在本地 (-9.558, 0, -0.5)
+      // 按 6 进入衔接模式；推板只有一块挡块，顶面中心在本地 (-9.558, 0, -0.5)
       await a.press('6', [], { ms: 900 }); await a.wait(300);
       await a.at([-9.558, 0, -0.45], 500); await a.keysShow(['左键'], 500); await a.click(); await a.wait(900);
       await a.keysShow(['左键'], 500); await a.click(); await a.wait(500);

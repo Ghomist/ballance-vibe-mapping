@@ -109,6 +109,10 @@ export const OBJ_TYPES: ObjType[] = [
   { type: 'LaternColumn_Full', cat: 'deco', label: '灯塔（带长柱）', anchor: [0, 0, 95.74, 5, 5, 2.23] },
   // 柱子：对准方块是柱子顶上的那一格路面（顶面 = 路面），柱头顶在这一格路面的底下作为支撑
   { type: 'LaternColumn', cat: 'deco', label: '柱子（支撑）', anchor: [0, 0, 98.51] },
+  // 彩柱（LevelEnd 系列，和灯柱对应）：终点附近的红绿条纹柱子和圆环，纯装饰，没有对准方块，按模型原点摆
+  { type: 'LevelEnd_Stick_Column', cat: 'deco', label: '彩柱' },
+  { type: 'LevelEnd_Ring', cat: 'deco', label: '彩柱圆环' },
+  { type: 'LevelEnd_RingTip', cat: 'deco', label: '彩柱环顶' },
 ];
 
 export const objType = (type: string) => OBJ_TYPES.find((t) => t.type === type);

@@ -44,7 +44,7 @@ export function checkLevel(doc: Doc): Issue[] {
   const skies = elems.filter((e) => e.kind === 'asset' && !!assetInfo(e.name)?.sky);
   if (!skies.length) out.push({ level: 'warn', text: '没有云层', hint: '没有云层的关卡下面是空的。素材库 → 装饰里有云层和漩涡云层' });
   if (skies.length > 1) out.push({ level: 'warn', text: `有 ${skies.length} 个云层`, hint: '一张图只能有一个云层，只导出最早放的那个', ids: skies.map((e) => e.id) });
-  if (!elems.some((e) => e.kind === 'zone')) out.push({ level: 'warn', text: '没有死亡区', hint: '没有死亡区，球掉下去以后不会死，会一直往下掉。素材库 → 机关里有死亡区，一般在整张图下面放一大片' });
+  if (!elems.some((e) => e.kind === 'zone' && !e.stop)) out.push({ level: 'warn', text: '没有死亡区', hint: '没有死亡区，球掉下去以后不会死，会一直往下掉。素材库 → 机关里有死亡区，一般在整张图下面放一大片' });
   const near = stoppersNearGuards(doc);
   if (near.objs.length) out.push({
     level: 'warn', text: `${near.objs.length} 个机关的挡块附近有护栏`,

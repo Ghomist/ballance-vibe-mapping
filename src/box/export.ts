@@ -99,7 +99,11 @@ export function exportBoxScene(doc: Doc): SceneDesc {
 
   // ---- 死亡区：一个一个物体，导出时隐藏 ----
   let zi = 0;
-  for (const z of elems) if (z.kind === 'zone') meshes.push({ name: `DepthTestCubes_${String(++zi).padStart(2, '0')}`, kind: 'zone', parts: [{ mat: 'Zone', pos: zoneTris(z).map(r5) }] });
+  for (const z of elems) if (z.kind === 'zone' && !z.stop) meshes.push({ name: `DepthTestCubes_${String(++zi).padStart(2, '0')}`, kind: 'zone', parts: [{ mat: 'Zone', pos: zoneTris(z).map(r5) }] });
+
+  // ---- 隐形挡块：一个一个物体，导出时隐藏，只归挡块组；放在普通挡块后面（组里第一个物体才有撞击声，要留给普通挡块） ----
+  let ii = 0;
+  for (const z of elems) if (z.kind === 'zone' && z.stop) meshes.push({ name: `A_Stopper_Invisible_${String(++ii).padStart(2, '0')}`, kind: 'istop', parts: [{ mat: 'Zone', pos: zoneTris(z).map(r5) }] });
 
   // ---- 资产（盘点路面、专属路块）与占位符（火焰、重生点） ----
   const assets: SceneAsset[] = [...nails];

@@ -162,9 +162,13 @@ export interface AssetElem extends ElemBase, Oriented {
   off?: number;
 }
 
-/** 死亡区：半透明的长方体，球碰到它的包围盒就死；导出时隐藏，归到 DepthTestCubes 组 */
+/**
+ * 死亡区：半透明的长方体，球碰到它的包围盒就死；导出时隐藏，归到 DepthTestCubes 组。
+ * stop：隐形挡块——同样是一个长方体，导出时隐藏，只归 Phys_FloorStopper（挡住球，没有撞击声），不和普通挡块合并
+ */
 export interface ZoneElem extends ElemBase, Oriented {
   kind: 'zone';
+  stop?: boolean;
   /** 最小角与顶面高度，和路面一样 */
   x: number;
   y: number;
