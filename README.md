@@ -179,6 +179,22 @@ npm run dev
 
 只有上一版能用的功能：导出 .blend 和场景描述 JSON（.blend 要在开发服务器上跑），以及 `npm run export`、`npm run nmo-check`（读上一版的 .bvm 文件）。
 
+## 调试
+
+开发服务器（`npm run dev`）打开的页面里，浏览器控制台能直接用这些：
+
+- `window.__proto`：编辑器的调试接口（`src/box/app.ts` 末尾）
+  - `doc`：当前地图文档；`sel`：选中的元素编号；`select([id…])`：选中
+  - `pickAt(x, y)`：屏幕坐标（CSS 像素，相对页面）下面点中的前几个网格。每项是 `{ owner, byFace, id, p, d }`：`owner` 是点选实际会选中的元素，`byFace` 是三角形上记的元素，`p` 是落点（世界坐标），`d` 是距离。点选「飘」到别的元素上时，看 `p` 落在哪块元素里、和 `owner` 对不对得上
+  - `project([x, y, z])`：世界坐标 → 屏幕坐标；`view(pos, target)`：摆相机；`camState()`：相机中心和距离
+  - `wire(true)`：显示路面切分线；`solveStats`、`rebuildTimes`：求解和重建的耗时
+- 模块可以直接 import 进来调用，例如：
+  - `const { solve } = await import('/src/box/solve.ts'); solve(__proto.doc)`：看求解结果（盘点用了哪个模型在 `assets` 里）
+  - `const { decodeShare } = await import('/src/box/share.ts'); await decodeShare('地图码')`：解开地图码看元素
+  - `const { feats } = await import('/src/box/snap.ts'); feats(__proto.doc.elems[id])`：元素的吸附点
+- 截图工具给的坐标常常是缩放过的：传给 `pickAt` 之前乘上 `innerWidth / 截图宽度`
+- 复现问题：用户给的地图码在「文件 → 地图码 → 导入地图码」里贴进去（当前地图留在历史里）
+
 ## 致谢
 
 - [Ballance](https://zh.wikipedia.org/wiki/Ballance)（Cyparade / Atari）：原版游戏。贴图、机关文件、关卡里的挡块等素材都来自原版，版权归原作者所有，本仓库只在编辑器里预览用。

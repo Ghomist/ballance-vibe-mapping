@@ -1435,6 +1435,13 @@ function hitOwner(h: THREE.Intersection): number {
       if (x >= e.x - 1e-4 && x <= e.x + e.sx + 1e-4 && y >= e.y - 1e-4 && y <= e.y + e.sy + 1e-4 && (best === null || o < best)) best = o;
     }
     if (best !== null) return best;
+    // 网格上记的 owners 不全（合并网格的缓存可能是旧的）：在所有路面里找包含落点、顶面就在这个高度的，取 id 最小的
+    for (const e of Object.values(doc.elems)) {
+      if (e.kind !== 'box' || e.q) continue;
+      const [x, y] = toLocal(e, [h.point.x, h.point.y, h.point.z]);
+      if (x >= e.x - 1e-4 && x <= e.x + e.sx + 1e-4 && y >= e.y - 1e-4 && y <= e.y + e.sy + 1e-4 && h.point.z <= boxTopAt(e, x, y) + 0.05 && h.point.z >= boxTopAt(e, x, y) - e.depth - 0.05 && (best === null || e.id < best)) best = e.id;
+    }
+    if (best !== null) return best;
   }
   return byFace ?? (h.object.userData.id as number);
 }
@@ -5336,6 +5343,11 @@ renderer.setAnimationLoop(() => {
   setScene,
   view: (pos: number[], target: number[]) => { camera.position.set(pos[0], pos[1], pos[2]); controls.target.set(target[0], target[1], target[2]); controls.update(); },
   project: (p: number[]) => { const s = toScreen([p[0], p[1], p[2]]); return { x: s.x, y: s.y }; },
+  /** 调试点选：屏幕点下面打到的前几个网格（落点、按位置判断的元素、三角形记下的元素） */
+  pickAt: (x: number, y: number) => {
+    setRay({ clientX: x, clientY: y });
+    return ray.intersectObjects(pickables, false).slice(0, 4).map((h) => ({ owner: hitOwner(h), byFace: (h.object.userData.faceOwner as number[] | undefined)?.[h.faceIndex ?? -1], id: h.object.userData.id, p: h.point.toArray().map((v) => +v.toFixed(2)), d: +h.distance.toFixed(2) }));
+  },
   wire: (on: boolean) => { wireOn = on; rebuild(); },
   select: (ids: number[]) => { sel = new Set(ids); drawOverlay(); syncProps(); updateStatus(); },
   toggle: (k: 'grid' | 'align') => (k === 'grid' ? toggleGrid() : toggleAlign()),

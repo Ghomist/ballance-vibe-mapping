@@ -144,6 +144,19 @@ export function boxCustomScenarios(check: Check, scenario: Scenario) {
     }
   });
 
+  scenario('NMO 写入：很大的网格不爆栈（6 万个顶点）', async () => {
+    const n = 60000, pos: number[] = [], nml: number[] = [], uv: number[] = [], faces: number[] = [], faceMtl: number[] = [];
+    for (let i = 0; i < n; i++) { pos.push(i % 300, Math.floor(i / 300), (i * 7) % 13); nml.push(0, 1, 0); uv.push((i % 17) / 17, (i % 5) / 5); }
+    for (let i = 0; i + 2 < n; i += 3) { faces.push(i, i + 1, i + 2); faceMtl.push(0); }
+    let err = '';
+    try {
+      const data = await writeNmo({ groups: [], objects: [{ name: 'Big', mesh: 0, matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }], meshes: [{ name: 'Big_Mesh', litMode: 1, pos, nml, uv, faces, faceMtl, mtls: [] }], materials: [], textures: [] });
+      const r = await readNmoFile(data);
+      check(r.meshes.get(1)?.pos.length === n * 3, '读回来顶点数对');
+    } catch (e) { err = (e as Error).message; }
+    check(!err, `大网格写入出错：${err}`);
+  });
+
   scenario('导入模型：导出进 NMO，读回来物体、网格、组都对', async () => {
     const name = registerModel(boxModel('Crate'));
     const doc: Doc = { elems: { 1: { id: 1, kind: 'asset', name, x: 10, y: 0, z: 0, rot: 0, phys: 'floor' }, 2: { id: 2, kind: 'asset', name, x: -10, y: 0, z: 0, rot: 2 } }, nextId: 3 };

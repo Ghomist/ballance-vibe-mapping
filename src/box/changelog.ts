@@ -4,6 +4,13 @@ export interface ChangeEntry { version: string; date: string; items: string[] }
 
 export const CHANGELOG: ChangeEntry[] = [
   {
+    version: '2026.11.17', date: '2026-11-17', items: [
+      '修复导出 NMO 时大地图报错「Maximum call stack size exceeded」（很大的网格写不进去）',
+      '修复点选飘移：一长串拼在一起的路面，点哪块有时会选到另一块',
+      '拆开的盘点接上路面（包括坡）时换成带开口的模型，不再留缺口；移动盘点时按路面对齐',
+    ],
+  },
+  {
     version: '2026.11.16', date: '2026-11-16', items: [
       '素材库「装饰」加上彩柱系列：彩柱、彩柱圆环、彩柱环顶（原版的 LevelEnd 系列，导出 NMO 也带着）',
       '拆开的盘点：悬停时按住 V，整组（路面、火焰、重生点）的吸附点都显示，盘点路面的点不再被火焰挡住',

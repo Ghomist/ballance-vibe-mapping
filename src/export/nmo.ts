@@ -103,7 +103,7 @@ class Chunk {
     this.bytes(z);
   }
   /** 带长度的缓冲区（WriteBuffer） */
-  buffer(dwords: number[]) { this.dword(dwords.length * 4); this.data.push(...dwords); }
+  buffer(dwords: number[]) { this.dword(dwords.length * 4); for (const v of dwords) this.data.push(v); }
 
   /** ConvertToBuffer：4 字节头（数据版本、类 ID、块版本、选项）+ 长度 + 数据 */
   toBytes(): Uint8Array {
@@ -199,7 +199,7 @@ function saveMesh(c: Chunk, m: NmoDocMesh, mtlBase: number) {
     if (flags & VSF.SingleUV) body.push(floatBits(m.uv[0] ?? 0), floatBits(m.uv[1] ?? 0));
     else for (let i = 0; i < vtx * 2; i++) body.push(floatBits(m.uv[i]));
     c.dword(body.length + 1); // 长度（含长度本身）
-    c.data.push(...body);
+    for (const v of body) c.data.push(v); // 不能 push(...body)：大网格的数据有几十万个，展开成参数会爆栈
   }
   c.classId = CKCID.MESH;
 }
