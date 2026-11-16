@@ -1904,19 +1904,30 @@ const spawnRot = (p: Piece) => ((p.spawn ?? p.rot * 90) + 180) % 360;
 /** 盘点路面由哪些模型组成：路面（按接了哪几侧选延伸段版本）+ 火焰占位符 + 重生点占位符 */
 function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[] {
   const fp = footprint(p);
-  const joined = (d: Dir) => layers.some((L) => L.pieces.includes(p) && L.boxes.some((b) => faceContact(fp, d, footprint(b))));
+  // 路口这一侧接了路：同一层里贴着这一面的平路，或者坡（坡单独一层）贴着这一面、在路口那里的顶面和盘点一样高
+  const portMid = (d: Dir): [number, number] => [d === 0 ? fp.x1 : d === 2 ? fp.x0 : (fp.x0 + fp.x1) / 2, d === 1 ? fp.y1 : d === 3 ? fp.y0 : (fp.y0 + fp.y1) / 2];
+  const joined = (d: Dir) => layers.some((L) => {
+    if (L.slope) {
+      const s = L.slope;
+      if (s.q || (s.ang ?? 0) !== (p.ang ?? 0) || !faceContact(fp, d, footprint(s))) return false;
+      const [mx, my] = portMid(d);
+      return Math.abs(boxTopAt(s, mx, my) - p.z) < EPS_TOUCH * 4;
+    }
+    return L.pieces.includes(p) && L.boxes.some((b) => faceContact(fp, d, footprint(b)));
+  });
   const floorZ = p.z - 2.5; // 资产模型原点在路块中心
   const deg = (d: Dir) => d * 90;
   const two = (v: number) => String(v).padStart(2, '0');
-  // 只有路面：火焰和重生点是单独的机关元素
-  if (p.bare) return checkpointParts({ ...p, bare: false }, layers, sector).slice(0, 1);
+  // 只有路面（bare）：火焰和重生点是单独的机关元素，这里只出路面那一个模型。
+  // 注意不能拿 p 的副本去算：上面 joined 按 L.pieces.includes(p) 认这块盘点，副本认不出来，就总当成没接路
+  const bare = <T>(parts: T[]) => (p.bare ? parts.slice(0, 1) : parts);
   if (p.type === 'start') {
-    return [
+    return bare([
       { name: joined(p.rot) ? 'StartPoint_Extended_OpenEdge' : 'StartPoint_NoExtended', kind: 'asset', pos: [p.x, p.y, floorZ], rotZ: deg(p.rot), ...(joined(p.rot) ? { crop: CP_CROP.StartPoint_Extended_OpenEdge } : {}) },
       // 四火比资产模型多转 90°（与 BBP 的小节对一致）；重生点抬高 3.65
       { name: 'PS_FourFlames', kind: 'element', objName: 'PS_FourFlames_01', pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) + 90 },
       { name: 'PR_Resetpoint', kind: 'element', objName: 'PR_Resetpoint_01', pos: [p.x, p.y, p.z - FLAME_CONE + 3.65], rotZ: spawnRot(p) },
-    ];
+    ] as AssetPart[]);
   }
   const a = joined(p.rot), b = joined(opp(p.rot));
   const [name, r] = a && b ? ['CheckPoint_DoubleExtended_OpenEdge', p.rot] : a ? ['CheckPoint_Extended_OpenEdge', p.rot]
@@ -1924,9 +1935,9 @@ function checkpointParts(p: Piece, layers: Layer[], sector: number): AssetPart[]
   const f = CP_FIX[name] ?? [0, 0];
   const rr = (deg(r as Dir) * Math.PI) / 180;
   const fx = p.x + f[0] * Math.cos(rr) - f[1] * Math.sin(rr), fy = p.y + f[0] * Math.sin(rr) + f[1] * Math.cos(rr);
-  return [
+  return bare([
     { name, kind: 'asset', pos: [fx, fy, floorZ], rotZ: deg(r as Dir), ...(CP_CROP[name] ? { crop: CP_CROP[name] } : {}) },
     { name: 'PC_TwoFlames', kind: 'element', objName: `PC_TwoFlames_${two(sector - 1)}`, pos: [p.x, p.y, p.z - FLAME_CONE], rotZ: deg(p.rot) },
     { name: 'PR_Resetpoint', kind: 'element', objName: `PR_Resetpoint_${two(sector)}`, pos: [p.x, p.y, p.z - FLAME_CONE + 3.3258], rotZ: spawnRot(p) },
-  ];
+  ] as AssetPart[]);
 }

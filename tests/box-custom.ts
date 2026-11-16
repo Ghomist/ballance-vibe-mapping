@@ -3,7 +3,7 @@ import lib from '../public/nmo-lib.json';
 import { type CustomModel, customModel, finishModel, modelsUsed, registerModel } from '../src/box/custom-model';
 import { customAssets, exportBoxScene } from '../src/box/export';
 import { decodeShare, encodeShare } from '../src/box/share';
-import { type Doc, type Elem, type Obj, type ZoneElem, virtualCells } from '../src/box/types';
+import { CP_PORT, type Doc, type Elem, type Obj, type ZoneElem, virtualCells } from '../src/box/types';
 import { buildImport, importModelFile } from '../src/box/model-import';
 import { newCheckpoint, nextCheckSector, sectorTotal, startsOf } from '../src/box/sectors';
 import { feats } from '../src/box/snap';
@@ -115,6 +115,21 @@ export function boxCustomScenarios(check: Check, scenario: Scenario) {
     const key = (d: Doc) => { const s = exportBoxScene(d); return JSON.stringify({ a: s.assets.map((a) => [a.asset, a.pos.map((v) => v.toFixed(3)), a.rotZ]).sort(), e: s.elements.map((e) => [e.type, e.sector, e.pos.map((v) => v.toFixed(3)), (((e.rotZ % 360) + 360) % 360).toFixed(1)]).sort(), n: s.sectors }); };
     check(key(docOf(split)) === key(docOf(old)), `导出一致\n${key(docOf(split))}\n${key(docOf(old))}`);
     check(sectorTotal(split) === 2 && startsOf(split).length === 1, '小节数、起点都认得出');
+    // 接了路：拆开的盘点路面也要换成带延伸的模型（和旧式一样），路口才接得上
+    const roads: Elem[] = [
+      { id: 50, kind: 'box', x: 1.25 - 2.5, y: 1.25 + CP_PORT.start, z: 0, sx: 5, sy: 10, depth: 5, style: 'normal' },
+      { id: 51, kind: 'box', x: 30 + CP_PORT.check, y: 1.25 - 2.5, z: 0, sx: 10, sy: 5, depth: 5, style: 'normal' },
+      { id: 52, kind: 'box', x: 30 - CP_PORT.check - 10, y: 1.25 - 2.5, z: 0, sx: 10, sy: 5, depth: 5, style: 'normal' },
+    ];
+    const withRoads = (es: Elem[]) => docOf([...es, ...roads]);
+    check(key(withRoads(split)) === key(withRoads(old)), `接了路的导出一致\n${key(withRoads(split))}\n${key(withRoads(old))}`);
+    const floors = exportBoxScene(withRoads(split)).assets.map((a) => a.asset);
+    check(floors.includes('StartPoint_Extended_OpenEdge') && floors.includes('CheckPoint_DoubleExtended_OpenEdge'), `拆开的盘点接了路换成带延伸的模型：${floors}`);
+    // 坡接在路口上（坡低的那头和盘点一样高）也算接上；坡那头高度不对就不算
+    const slopeAt = (dz: number, z: number): Elem => ({ id: 60, kind: 'box', x: CP_PORT.start, y: -2.5, z, sx: 10, sy: 5, depth: 5, style: 'normal', slope: { axis: 0, dz } });
+    const st = (s: Elem) => exportBoxScene(docOf([{ id: 61, kind: 'piece', type: 'start', x: 0, y: 0, z: 0, rot: 0, bare: true }, s])).assets.map((a) => a.asset);
+    check(st(slopeAt(-4, 0)).includes('StartPoint_Extended_OpenEdge') && st(slopeAt(4, 0)).includes('StartPoint_Extended_OpenEdge'), '坡接在起点路口上：换成带延伸的模型');
+    check(st(slopeAt(-4, -2)).includes('StartPoint_NoExtended'), '坡在路口那里的高度和起点不一样：不算接上');
     const d = docOf(split);
     check(nextCheckSector(d) === 3, '再放一个小节盘点激活第 3 小节');
     // 吸附点：盘点路面上有火焰、重生点原点的位置；火焰上有盘点圆盘中心的位置

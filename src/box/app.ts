@@ -1533,7 +1533,8 @@ function alignDelta(b: Bounds, d: V3, axes: (0 | 1 | 2)[], near: THREE.Vector3, 
   const gap = (o: Bounds) => Math.hypot(Math.max(0, o.x0 - mb.x1, mb.x0 - o.x1), Math.max(0, o.y0 - mb.y1, mb.y0 - o.y1), Math.max(0, o.z0 - mb.z1, mb.z0 - o.z1));
   const others = Object.values(doc.elems).filter((e) => !sel.has(e.id) && !hiddenElem(e) && gap(elemBounds(e)) <= R);
   // 选中的东西按拖动开始时的样子算（文档里的已经挪过了，再加 d 会算两遍）
-  const selElems = orig ? [...orig.values()].map((js) => JSON.parse(js) as Elem) : [...sel].map((id) => doc.elems[id]).filter(Boolean);
+  const keep = new Set(alignIds(sel));
+  const selElems = (orig ? [...orig.values()].map((js) => JSON.parse(js) as Elem) : [...sel].map((id) => doc.elems[id]).filter(Boolean)).filter((e) => keep.has(e.id));
   const onlyPresets = selElems.length > 0 && selElems.every(presetOnly);
   // 按吸附点对齐时记下是哪两个点对上的：选中的点（拖动开始时的位置）、对方的点
   const myPts = onlyPresets ? selElems.flatMap((e) => { const f = feats(e); return [...f.verts, ...f.mids]; }) : [];
@@ -2095,11 +2096,21 @@ function nearestSelPoint(at: THREE.Vector2): P3 | null {
 /** 内部的轴（0、1 水平，2 竖直）显示成什么名字；游戏坐标系里竖直的是 Y */
 const axisNames = (game: boolean) => (game ? ['X', 'Z', 'Y'] : ['X', 'Y', 'Z']);
 let AXIS_NAME = axisNames(prefs.coordSys !== 'math');
+/**
+ * 拖动、对齐时代表这一组东西的元素：选中里有盘点路面时，去掉和它一起的火焰、重生点——
+ * 重生点比路面高 2.4，算进包围盒的话顶面对齐、吸附都会按重生点的高度来，路面就接不上路
+ */
+function alignIds(ids: Iterable<number>): number[] {
+  const list = [...ids].filter((id) => doc.elems[id]);
+  const hasFloor = list.some((id) => isCheckpoint(doc.elems[id]));
+  const out = hasFloor ? list.filter((id) => { const e = doc.elems[id]; return !(e.kind === 'obj' && CP_OBJ_TYPES.has(e.type)); }) : list;
+  return out.length ? out : list;
+}
 /** G：进入移动模式。dup：刚复制出来的（取消就删掉；复制时已经记过撤销） */
 function startGrab(mouse: { clientX: number; clientY: number }, dup = false) {
   if (!sel.size || drag) return;
   if (!dup) snapshot();
-  const b = boundsOf(doc, sel);
+  const b = boundsOf(doc, alignIds(sel));
   const start = planeHit(mouse, new THREE.Plane(new THREE.Vector3(0, 0, 1), -b.z1)) ?? new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.z1);
   drag = { t: 'grab', orig: origOf(), b, start, axis: null, excl: null, grab: nearestSelPoint(new THREE.Vector2(mouse.clientX, mouse.clientY)), num: '', dup };
   hoverId = null;
@@ -3115,7 +3126,8 @@ function placeMove(e: PointerEvent) {
   let pz = p.z;
   if (first.kind === 'obj' && baseSpec(first.type)?.kind !== 'fence' && baseSpec(first.type) && under?.kind === 'box' && under.style !== 'normal' && !under.slope) pz = under.z - SINK_DEPTH;
   let raw: V3 = [p.x - hd[0], p.y - hd[1], pz - hd[2]];
-  if (gridOn) { const b = boundsOf(doc, ids); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
+  const snapIds = alignIds(ids);
+  if (gridOn) { const b = boundsOf(doc, snapIds); raw = [snapG(b.x0 + raw[0]) - b.x0, snapG(b.y0 + raw[1]) - b.y0, raw[2]]; }
   // 自动吸附：新元素的顶点 / 边中点靠近别的元素的顶点、边中点或边就吸过去（磁吸，松手对准）
   moveSel(orig, raw);
   let best: { from: P3; to: P3; d: number; kind: 'v' | 'm' | 'e' } | null = null;
@@ -3123,10 +3135,10 @@ function placeMove(e: PointerEvent) {
     // 按住 V：新元素上离鼠标最近的吸附点，吸到鼠标下的顶点 / 边中点 / 边上（不限高度，和移动时的 V 一样）
     const at = new THREE.Vector2(e.clientX, e.clientY);
     let from: P3 | null = null, fd = Infinity;
-    for (const id of ids) { const f = feats(doc.elems[id]); for (const v of [...f.verts, ...f.mids]) { const dd = toScreen(v).distanceTo(at); if (dd < fd) { fd = dd; from = v; } } }
+    for (const id of snapIds) { const f = feats(doc.elems[id]); for (const v of [...f.verts, ...f.mids]) { const dd = toScreen(v).distanceTo(at); if (dd < fd) { fd = dd; from = v; } } }
     const t = findTarget(e.clientX, e.clientY, ids, 16);
     if (from && t) best = { from, to: t.p, d: t.d, kind: t.kind };
-  } else for (const id of ids) {
+  } else for (const id of snapIds) {
     const f = feats(doc.elems[id]);
     for (const v of [...f.verts, ...f.mids]) {
       const s = toScreen(v);
