@@ -470,3 +470,100 @@ function embeddedCells(m: Model, n: MNode): string[] {
   const own = cellSet(n);
   return Object.values(m.nodes).flatMap((b) => (b.kind === 'base' && b.hole ? b.hole.cells.filter((c) => own.has(c)) : []));
 }
+
+/**
+ * 去掉 T 形接口：一个网格里（所有材质一起看）有顶点正好落在某条三角形边的中间时，把这个三角形在那个顶点处劈成两个，
+ * UV 按边上的位置插值。合并小块时会去掉边上的共线点，相邻部分接上来的顶点就落在了长边中间，
+ * 两边的边在同一条线上重叠（导出到 Blender、游戏里会有接缝和闪烁）。
+ */
+export function fixTJunctions(parts: Partial<Record<MatName, MeshPart>>) {
+  const EPS = 1e-4, CELL_T = 4;
+  // 所有顶点（去重）放进网格桶里，找落在边上的点时只看边的包围盒覆盖的桶；键都用数字（字符串键太慢）
+  const q = (v: number) => Math.round(v / EPS);
+  const hash3 = (x: number, y: number, z: number) => ((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) | 0;
+  const seen = new Map<number, V3[]>();
+  const verts: V3[] = [];
+  for (const part of Object.values(parts)) {
+    const p = part!.pos;
+    for (let i = 0; i < p.length; i += 3) {
+      const x = p[i], y = p[i + 1], z = p[i + 2], h = hash3(q(x), q(y), q(z));
+      const l = seen.get(h);
+      if (l?.some((v) => Math.abs(v[0] - x) < EPS && Math.abs(v[1] - y) < EPS && Math.abs(v[2] - z) < EPS)) continue;
+      const v: V3 = [x, y, z];
+      if (l) l.push(v); else seen.set(h, [v]);
+      verts.push(v);
+    }
+  }
+  if (verts.length < 4) return;
+  const cellOf = (v: number) => Math.floor(v / CELL_T);
+  const grid = new Map<number, V3[]>();
+  for (const v of verts) { const k = hash3(cellOf(v[0]), cellOf(v[1]), cellOf(v[2])); (grid.get(k) ?? grid.set(k, []).get(k)!).push(v); }
+  /** 落在 a→b 中间（不含两头）的顶点里离 a 最近的那个，返回它和它在边上的比例 */
+  const onEdge = (ax: number, ay: number, az: number, bx: number, by: number, bz: number): { v: V3; t: number } | null => {
+    const dx = bx - ax, dy = by - ay, dz = bz - az, L2 = dx * dx + dy * dy + dz * dz;
+    if (L2 < 4 * EPS * EPS) return null;
+    const L = Math.sqrt(L2);
+    let best: { v: V3; t: number } | null = null;
+    const x0 = cellOf(Math.min(ax, bx) - EPS), x1 = cellOf(Math.max(ax, bx) + EPS);
+    const y0 = cellOf(Math.min(ay, by) - EPS), y1 = cellOf(Math.max(ay, by) + EPS);
+    const z0 = cellOf(Math.min(az, bz) - EPS), z1 = cellOf(Math.max(az, bz) + EPS);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+      const vs = grid.get(hash3(x, y, z));
+      if (!vs) continue;
+      for (const v of vs) {
+        const t = ((v[0] - ax) * dx + (v[1] - ay) * dy + (v[2] - az) * dz) / L2;
+        if (t * L <= EPS || (1 - t) * L <= EPS) continue;
+        const ex = ax + dx * t - v[0], ey = ay + dy * t - v[1], ez = az + dz * t - v[2];
+        if (ex * ex + ey * ey + ez * ez > EPS * EPS) continue;
+        if (!best || t < best.t) best = { v, t };
+      }
+    }
+    return best;
+  };
+  for (const part of Object.values(parts)) {
+    const src = part!, P = src.pos;
+    // 先看有没有要劈的三角形：大多数网格一个都没有，不用重建数组
+    let any = false;
+    for (let i = 0; i < P.length && !any; i += 9) {
+      for (let e = 0; e < 3; e++) {
+        const a = i + e * 3, b = i + ((e + 1) % 3) * 3;
+        if (onEdge(P[a], P[a + 1], P[a + 2], P[b], P[b + 1], P[b + 2])) { any = true; break; }
+      }
+    }
+    if (!any) continue;
+    const pos: number[] = [], uv: number[] = [], own: number[] | undefined = src.own ? [] : undefined;
+    const emit = (p: V3[], u: V2[], o: number | undefined) => { for (let k = 0; k < 3; k++) { pos.push(p[k][0], p[k][1], p[k][2]); uv.push(u[k][0], u[k][1]); } if (own) own.push(o ?? -1); };
+    let guard = 0;
+    for (let i = 0, t = 0; i < P.length; i += 9, t++) {
+      const U = src.uv, ui = (i / 3) * 2;
+      const stack: { p: V3[]; u: V2[] }[] = [{
+        p: [[P[i], P[i + 1], P[i + 2]], [P[i + 3], P[i + 4], P[i + 5]], [P[i + 6], P[i + 7], P[i + 8]]],
+        u: [[U[ui], U[ui + 1]], [U[ui + 2], U[ui + 3]], [U[ui + 4], U[ui + 5]]],
+      }];
+      const o = src.own?.[t];
+      // 劈出来的两个按顺序处理（先处理靠前的那个），三角形的先后和原来一致
+      const out: { p: V3[]; u: V2[] }[] = [];
+      while (stack.length) {
+        const tr = stack.pop()!;
+        let split = false;
+        if (guard < 200000) for (let e = 0; e < 3; e++) {
+          const j = (e + 1) % 3, A = tr.p[e], B = tr.p[j];
+          const hit = onEdge(A[0], A[1], A[2], B[0], B[1], B[2]);
+          if (!hit) continue;
+          const mu: V2 = [tr.u[e][0] + (tr.u[j][0] - tr.u[e][0]) * hit.t, tr.u[e][1] + (tr.u[j][1] - tr.u[e][1]) * hit.t];
+          // 绕序不变：一个把 j 换成新点，另一个把 e 换成新点
+          const a = { p: tr.p.slice(), u: tr.u.slice() }, b = { p: tr.p.slice(), u: tr.u.slice() };
+          a.p[j] = hit.v; a.u[j] = mu;
+          b.p[e] = hit.v; b.u[e] = mu;
+          stack.push(b, a);
+          split = true; guard++;
+          break;
+        }
+        if (!split) out.push(tr);
+      }
+      for (const tr of out) emit(tr.p, tr.u, o);
+    }
+    src.pos = pos; src.uv = uv;
+    if (own) src.own = own;
+  }
+}

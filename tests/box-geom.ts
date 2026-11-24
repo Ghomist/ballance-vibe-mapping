@@ -13,6 +13,7 @@ import { exportBoxScene } from '../src/box/export';
 import { sweepTube } from '../src/geom/railing';
 import { feats } from '../src/box/snap';
 import { type Route, edgeAt, refitGuard, routeLen, shortPath } from '../src/box/guard';
+import { graphOf, nearest, routeBetween, routeLength } from '../src/box/guard-graph';
 import { type Loop, type P3, pathAlong, project } from '../src/model/outline';
 import { Box, Obj, Piece, RailElem, boxTopAt, footprint, toWorld } from '../src/box/types';
 import { rotAxis, toQuat } from '../src/box/xform';
@@ -560,6 +561,65 @@ export function boxGeomScenarios(check: Check, scenario: Scenario) {
     const off: Route = { pts: [[1.5, -4, 0], [13.5, -4, 0]], outs: [[0, -1]] };
     check(refit(off, one, { 1: B(1, 7, 3, 15, 5) }) === null, '没贴着路沿的护栏：不动');
     check(refit(full, one, { 1: B(1, 0, 0, 2, 5) }) === null, '边缩到比两头的内缩还短：不跟');
+  });
+
+  scenario('护栏跨路块：外沿连过盘点和坡口、接着机关的路头不断开，跨过去的护栏跟着路面走', () => {
+    type Elems = Record<number, Box | Piece | Obj>;
+    const B = (id: number, x: number, sx: number): Box => ({ id, kind: 'box', x, y: -2.5, z: 0, sx, sy: 5, depth: 5, style: 'normal' });
+    const docOf = (elems: Elems) => ({ elems, nextId: 99 }) as unknown as Parameters<typeof solve>[0];
+    // 路 - 小节盘点 - 路（和内置的最小场景一样）
+    const a: Elems = { 6: B(6, 7.386, 15), 7: { id: 7, kind: 'piece', type: 'check', x: 27.31, y: 0, z: 0, rot: 0 } as Piece, 8: B(8, 32.234, 15) };
+    const loops = solve(docOf(a)).loops;
+    check(loops.length === 1 && loops[0].closed, `路和盘点的外沿连成一圈：${loops.length} 个环，${loops.map((l) => (l.closed ? '闭合' : '断开')).join('、')}`);
+    const l = loops[0];
+    check(!!l.soft?.some(Boolean), '盘点的侧边是软边');
+    check(edgeAt(loops, [27.31, -2.5, 0]) === null, '点在盘点的侧边上：不放整条直边（软边不放）');
+    const e1 = edgeAt(loops, [15, -2.5, 0], 1.5);
+    check(!!e1 && near(e1.pts[1][0], 22.386 - 1.5, 1e-3), `点在路边上：整条直边到盘点为止：${e1 ? JSON.stringify(e1.pts) : 'null'}`);
+    // 从第一段路拖到第二段路：中间穿过盘点
+    const s0 = project(loops, [10, -2.5, 0], 0.5)!.s, s1 = project(loops, [45, -2.5, 0], 0.5)!.s;
+    const span = shortPath(l, s0, s1);
+    check(near(routeLen(span), 35, 1e-3), `跨过盘点的护栏长 35：${routeLen(span)}`);
+    // 拉长第二段路：护栏那一头跟过去，还是穿过盘点
+    const b: Elems = { ...a, 8: B(8, 32.234, 25) };
+    const own = (e: Box | Piece | Obj | undefined) => (e ? ownOutline(docOf({ [e.id]: e })) : null);
+    const span2 = edgeAt(solve(docOf(a)).loops, [40, -2.5, 0], 1.5)!; // 第二段路的整条边：两头离路口、路尽头各 1.5
+    const longer = { pts: [span.pts[0], ...span2.pts.slice(1)], outs: [...span.outs.slice(0, -1), ...span2.outs] };
+    const r = refitGuard(longer, [{ old: own(a[8])!, now: own(b[8]) }], solve(docOf(b)).loops);
+    check(!!r && near(r.pts[r.pts.length - 1][0], 32.234 + 25 - 1.5, 1e-3) && near(r.pts[0][0], 10, 1e-3), `拉长第二段路：护栏那一头跟着到 ${32.234 + 25 - 1.5}，另一头不动：${r ? JSON.stringify([r.pts[0], r.pts[r.pts.length - 1]]) : 'null'}`);
+    // 接着机关（P_Modul_29）的路：朝着机关自动开口的那一头补上软边，外沿各自闭合（护栏不穿过机关模型）
+    const m: Elems = { 1: B(1, 0, 15), 2: { id: 2, kind: 'obj', type: 'P_Modul_29', x: 21.86, y: 0, z: -0.17, rot: 0 } as Obj, 3: B(3, 30.33, 15) };
+    const ml = solve(docOf(m)).loops;
+    check(ml.length === 2 && ml.every((x) => x.closed), `接着机关的两段路各自是闭合的一圈：${ml.map((x) => (x.closed ? '闭合' : '断开')).join('、')}`);
+  });
+
+  scenario('护栏跨断开的路：顺着同一条直线、40 以内用直线连，错开的、太远的不连', () => {
+    const B = (id: number, x: number, sx: number, y = -2.5): Box => ({ id, kind: 'box', x, y, z: 0, sx, sy: 5, depth: 5, style: 'normal' });
+    const docOf = (elems: Record<number, Box>) => ({ elems, nextId: 99 }) as unknown as Parameters<typeof solve>[0];
+    const jumps = (loops: Loop[]) => graphOf(loops).edges.filter((e) => e.jump);
+    // 两段路对齐、中间空 10：两侧各一条跳线
+    const two = { 1: B(1, 0, 15), 2: B(2, 25, 15) };
+    const loops = solve(docOf(two)).loops;
+    const js = jumps(loops);
+    check(js.length === 2 && js.every((e) => near(e.len, 10, 1e-6)), `中间空 10 的两段路：两侧各一条长 10 的跳线：${js.map((e) => e.len.toFixed(2)).join(', ')}`);
+    const gr = graphOf(loops);
+    const at = (p: P3) => { const n = nearest(gr, p, 1, false)!; return { e: n.e, t: n.t }; };
+    const r = routeBetween(gr, at([5, -2.5, 0]), at([35, -2.5, 0]));
+    check(!!r && near(routeLength(r), 30, 1e-6) && r.pts.length === 2, `从第一段路拖到第二段路：直线连过去，长 30：${r ? JSON.stringify(r.pts) : 'null'}`);
+    // 跟着走：第二段路往后挪 5，跨过去的那头跟着走，中间还是直线
+    const moved = { ...two, 2: B(2, 30, 15) };
+    const own = (e: Box) => ownOutline(docOf({ [e.id]: e }));
+    const f = refitGuard(r!, [{ old: own(two[2]), now: own(moved[2]) }], solve(docOf(moved)).loops);
+    check(!!f && near(f.pts[f.pts.length - 1][0], 40, 1e-6) && near(routeLength(f), 35, 1e-6), `第二段路挪开 5：护栏那头跟过去，长 35：${f ? JSON.stringify(f.pts) : 'null'}`);
+    // 错开的（不在同一条直线上）不连；太远的（> 40）不连
+    check(jumps(solve(docOf({ 1: B(1, 0, 15), 2: B(2, 25, 15, -1) })).loops).length === 0, '错开 1.5 的两段路：不连');
+    check(jumps(solve(docOf({ 1: B(1, 0, 15), 2: B(2, 56, 15) })).loops).length === 0, '中间空 41：太远，不连');
+    check(jumps(solve(docOf({ 1: B(1, 0, 15), 2: B(2, 54, 15) })).loops).length === 2, '中间空 39：连');
+    // 一段路自己转弯的地方不加跳线（正常拐弯）
+    check(jumps(solve(docOf({ 1: B(1, 0, 15) })).loops).length === 0, '单独一段路：没有跳线');
+    // T 字路口：横条的上边在竖条两侧断开、在同一条直线上，但中间是路口（有路面），不能横穿
+    const T = { 1: B(1, 0, 30), 2: { ...B(2, 10, 5), y: 2.5, sy: 10 } };
+    check(jumps(solve(docOf(T)).loops).length === 0, 'T 字路口：不横穿路口');
   });
 
   scenario('花纹重复的木制件：接长 / 截断（tileMesh）', () => {

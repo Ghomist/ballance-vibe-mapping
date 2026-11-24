@@ -3,7 +3,7 @@
     "meshes": 2,
     "tris": 20,
     "topArea": 150,
-    "loops": 4,
+    "loops": 1,
     "assets": 6,
     "mats": {
       "FloorTopBorder": 8,
@@ -12,56 +12,56 @@
   },
   "完整小关卡": {
     "meshes": 10,
-    "tris": 126,
+    "tris": 129,
     "topArea": 890,
-    "loops": 10,
+    "loops": 2,
     "assets": 8,
     "mats": {
       "FloorTopBorder": 40,
       "FloorSide": 60,
-      "FloorTopBorderless": 12,
+      "FloorTopBorderless": 15,
       "FloorTopProfil": 8,
       "FloorTopProfilFlat": 6
     }
   },
   "路面拼接": {
     "meshes": 20,
-    "tris": 452,
+    "tris": 458,
     "topArea": 3183,
-    "loops": 23,
+    "loops": 20,
     "assets": 0,
     "mats": {
-      "FloorTopBorder": 194,
+      "FloorTopBorder": 198,
       "FloorSide": 244,
-      "FloorTopBorderless": 6,
+      "FloorTopBorderless": 8,
       "FloorTopProfil": 8
     }
   },
   "样式与转换": {
     "meshes": 33,
-    "tris": 461,
+    "tris": 483,
     "topArea": 3739,
-    "loops": 15,
+    "loops": 13,
     "assets": 0,
     "mats": {
-      "FloorTopBorder": 76,
+      "FloorTopBorder": 78,
       "FloorSide": 224,
-      "FloorTopBorderless": 16,
-      "FloorTopProfil": 95,
+      "FloorTopBorderless": 35,
+      "FloorTopProfil": 96,
       "FloorTopFlat": 32,
       "FloorTopProfilFlat": 18
     }
   },
   "坡": {
     "meshes": 27,
-    "tris": 370,
+    "tris": 380,
     "topArea": 2405.5,
-    "loops": 12,
+    "loops": 9,
     "assets": 0,
     "mats": {
-      "FloorTopBorder": 111,
+      "FloorTopBorder": 113,
       "FloorSide": 172,
-      "FloorTopBorderless": 18,
+      "FloorTopBorderless": 26,
       "FloorTopProfil": 60,
       "FloorTopProfilFlat": 9
     }
@@ -70,7 +70,7 @@
     "meshes": 11,
     "tris": 158,
     "topArea": 1000,
-    "loops": 11,
+    "loops": 10,
     "assets": 17,
     "mats": {
       "FloorTopBorder": 44,

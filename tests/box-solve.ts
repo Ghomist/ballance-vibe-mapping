@@ -5,6 +5,7 @@
 // 期望值（三角形数、面积这类粗粒度数字）留给 tests/box/golden.ts。
 import type { MatName, MeshPart } from '../src/geom/floor';
 import { edgeAt } from '../src/box/guard';
+import { project } from '../src/model/outline';
 import { SCENES } from '../src/box/scenes';
 import { type Solved, solve, solveStats } from '../src/box/solve';
 import { type Box, type Doc, SINK_DEPTH, basePiece, boxTopAt, emptyDoc, footprint, isSlope, virtualCells } from '../src/box/types';
@@ -127,7 +128,8 @@ function sceneProblems(doc: Doc): Record<string, string[]> {
     if (l.closed && l.pts.length < 3) bad.外沿.push(`闭合环 ${i} 只有 ${l.pts.length} 个点`);
     if (l.pts.some((p) => p.some((v) => !Number.isFinite(v)))) bad.外沿.push(`环 ${i} 有 NaN`);
     if (l.outs.some((o) => Math.abs(Math.hypot(o[0], o[1]) - 1) > 1e-6)) bad.外沿.push(`环 ${i} 的 outs 不是单位向量`);
-    if (!edgeAt(solved.loops, l.pts[0])) bad.外沿.push(`环 ${i} 的起点不在外沿上`);
+    // 起点在软边（盘点的侧边、补上的小缺口）上时 edgeAt 故意不给边：直接看它在不在外沿上
+    if (l.soft?.[0] ? (project(solved.loops, l.pts[0], 0.5)?.dist ?? 1) > 1e-3 : !edgeAt(solved.loops, l.pts[0])) bad.外沿.push(`环 ${i} 的起点不在外沿上`);
   }
   // 自动插入的转换件（负数 id）必须指向存在的路面
   for (const [id, owner] of solved.owner) {
@@ -150,6 +152,41 @@ export function boxSolveScenarios(check: Check, scenario: Scenario) {
       for (const [k, v] of Object.entries(bad)) for (const m of v) all.push(`${name}: [${k}] ${m}`);
     }
     report(check, '求解结果不满足通用不变量', all);
+  });
+
+  // 网格里不能有 T 形接口：顶点落在别的三角形边的中间，两条边在同一条线上重叠（Blender 里看是边重合，游戏里有接缝）。
+  // 最后一张是用户报过的：一长条平路一侧凸出两块，合并小块时长边上的共线点被去掉了
+  scenario('box 求解：网格没有 T 形接口（每个内置场景 + 报过的地图）', () => {
+    const reported: Doc = { nextId: 96, elems: {} };
+    for (const e of [
+      { id: 15, x: 54.784, y: -34.584, sx: 20 }, { id: 23, x: 64.784, y: -29.584, sx: 5 }, { id: 35, x: 74.72695863927923, y: -34.583984762610214, sx: 10.000041360720772 },
+      { id: 37, x: 79.72695863927925, y: -29.58398476261021, sx: 5 }, { id: 95, x: 84.727, y: -34.584, sx: 30 },
+    ]) reported.elems[e.id] = { id: e.id, kind: 'box', x: e.x, y: e.y, z: 16.414, sx: e.sx, sy: 5, depth: 5, style: 'normal' } as Box;
+    const tjunctions = (solved: Solved) => {
+      let n = 0;
+      for (const mesh of solved.meshes.values()) {
+        const verts: V3[] = [], edges: [V3, V3][] = [];
+        for (const part of Object.values(mesh.parts) as MeshPart[]) {
+          for (let i = 0; i < part.pos.length; i += 9) {
+            const t = [0, 3, 6].map((k) => [part.pos[i + k], part.pos[i + k + 1], part.pos[i + k + 2]] as V3);
+            verts.push(...t); edges.push([t[0], t[1]], [t[1], t[2]], [t[2], t[0]]);
+          }
+        }
+        for (const [a, b] of edges) {
+          const d = sub(a, b), L = norm(d);
+          for (const v of verts) {
+            const t = (sub(a, v)[0] * d[0] + sub(a, v)[1] * d[1] + sub(a, v)[2] * d[2]) / (L * L);
+            if (t * L <= 1e-3 || (1 - t) * L <= 1e-3) continue;
+            if (norm(sub([a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t], v)) < 1e-4) n++;
+          }
+        }
+      }
+      return n;
+    };
+    for (const { name, build } of [...SCENES, { name: '报过的地图', build: () => reported }]) {
+      const n = tjunctions(solve(build()));
+      check(n === 0, `${name}：网格里有 ${n} 处 T 形接口（顶点落在别的边中间）`);
+    }
   });
 
   scenario('box 求解：求解不修改 doc、重复求解结果相同', () => {

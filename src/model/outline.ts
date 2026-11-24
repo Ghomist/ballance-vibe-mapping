@@ -14,19 +14,70 @@ export interface Loop {
   /** 到每个顶点为止的水平弧长 */
   cum: number[];
   len: number;
+  /**
+   * 每一段是不是「软边」：不是真的路边，只是让外沿连起来（盘点路面的侧边、坡插进平台的槽口这类没接严的小缺口）。
+   * 护栏拖把手、跟着路面走时可以从这里过去；点一下放整条直边时不放在软边上。软边不和两边的边合并
+   */
+  soft?: boolean[];
 }
 
-export interface Edge { a: P3; b: P3; out: [number, number] }
+export interface Edge { a: P3; b: P3; out: [number, number]; soft?: boolean }
 
 const k3 = (p: P3) => `${p[0].toFixed(2)},${p[1].toFixed(2)},${p[2].toFixed(2)}`;
 
 /** 加一条边，并定向为朝外在右手边 */
-export function push(out: Edge[], a: P3, b: P3, o: [number, number]) {
+export function push(out: Edge[], a: P3, b: P3, o: [number, number], soft = false) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   if (Math.hypot(dx, dy) < 1e-6) return;
   // 右手方向 (dy, -dx)
-  if (dy * o[0] - dx * o[1] < 0) out.push({ a: b, b: a, out: o });
-  else out.push({ a, b, out: o });
+  const e: Edge = dy * o[0] - dx * o[1] < 0 ? { a: b, b: a, out: o } : { a, b, out: o };
+  if (soft) e.soft = true;
+  out.push(e);
+}
+
+/**
+ * 补上外沿的小缺口：一条链的尾巴附近（水平 maxGap 以内、高差 maxDz 以内）有另一条链的头，就用一条软边把它们接起来。
+ * 坡插进平台、底座和路面之间这类地方，两边的路沿差一点点没接上，护栏就过不去
+ */
+export function bridgeGaps(all: Edge[], maxGap = 1.5, maxDz = 1.5): Edge[] {
+  // 先去掉被另一条同向的边整个盖住的边（同一处路沿在两层里各算了一次）：重复的边会让外沿多出一条断开的链
+  const covers = (f: Edge, p: P3) => {
+    const dx = f.b[0] - f.a[0], dy = f.b[1] - f.a[1], L2 = dx * dx + dy * dy;
+    if (L2 < 1e-12) return false;
+    const t = ((p[0] - f.a[0]) * dx + (p[1] - f.a[1]) * dy) / L2;
+    return t > -1e-6 && t < 1 + 1e-6 && Math.hypot(f.a[0] + dx * t - p[0], f.a[1] + dy * t - p[1]) < 1e-3 && Math.abs(f.a[2] + (f.b[2] - f.a[2]) * t - p[2]) < 1e-3;
+  };
+  const len = (e: Edge) => Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]);
+  // 只有朝外方向相同、在同一条直线上的边才可能互相盖住：按这两样分桶
+  const lineKey = (e: Edge) => `${e.out[0].toFixed(4)},${e.out[1].toFixed(4)},${(e.a[0] * e.out[0] + e.a[1] * e.out[1]).toFixed(2)}`;
+  const buckets = new Map<string, number[]>();
+  all.forEach((e, i) => { const k = lineKey(e); (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(i); });
+  const edges = all.filter((e, i) => !buckets.get(lineKey(e))!.some((j) => { const f = all[j]; return j !== i && f.out[0] === e.out[0] && f.out[1] === e.out[1] && covers(f, e.a) && covers(f, e.b)
+    // 一样长（完全重复）时留下第一条；软边被真实的边盖住时去掉软边
+    && (len(f) > len(e) + 1e-6 || (Math.abs(len(f) - len(e)) <= 1e-6 && (!!e.soft > !!f.soft || (!!e.soft === !!f.soft && j < i)))); }));
+  const starts = new Map<string, Edge>(), ends = new Map<string, Edge>();
+  for (const e of edges) { starts.set(k3(e.a), e); ends.set(k3(e.b), e); }
+  const heads = edges.filter((e) => !ends.has(k3(e.a))), tails = edges.filter((e) => !starts.has(k3(e.b)));
+  const used = new Set<Edge>();
+  const out = [...edges];
+  for (const t of tails) {
+    let best: Edge | null = null, bd = Infinity;
+    for (const h of heads) {
+      if (used.has(h) || h === t) continue;
+      const d = Math.hypot(h.a[0] - t.b[0], h.a[1] - t.b[1]);
+      if (d > maxGap || Math.abs(h.a[2] - t.b[2]) > maxDz) continue;
+      // 可以直着接、也可以拐个弯接（坡插进更宽的平台），但不能接到路对面去
+      if (t.out[0] * h.out[0] + t.out[1] * h.out[1] < -0.2) continue;
+      if (d < bd) { bd = d; best = h; }
+    }
+    if (!best) continue;
+    used.add(best);
+    const dx = best.a[0] - t.b[0], dy = best.a[1] - t.b[1], L = Math.hypot(dx, dy);
+    // 两头重合（只差高度）：直接把头挪到尾巴上
+    if (L < 1e-6) { best.a = [...t.b]; continue; }
+    out.push({ a: [...t.b], b: [...best.a], out: [dy / L, -dx / L], soft: true });
+  }
+  return out;
 }
 
 /** 矩形节点（路块、转换块、底座）没接路的边。栅栏路面是两格：第二格的侧边总是外沿 */
@@ -131,7 +182,7 @@ function makeLoop(seq: Edge[], closed: boolean): Loop {
   const merged: Edge[] = [];
   for (const e of seq) {
     const p = merged[merged.length - 1];
-    if (p && p.out[0] === e.out[0] && p.out[1] === e.out[1] && k3(p.b) === k3(e.a)) {
+    if (p && !p.soft === !e.soft && p.out[0] === e.out[0] && p.out[1] === e.out[1] && k3(p.b) === k3(e.a)) {
       const l1 = Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]), l2 = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]);
       if (Math.abs((p.b[2] - p.a[2]) / l1 - (e.b[2] - e.a[2]) / l2) < 1e-6) { p.b = e.b; continue; }
     }
@@ -139,7 +190,7 @@ function makeLoop(seq: Edge[], closed: boolean): Loop {
   }
   if (closed && merged.length > 1) {
     const f = merged[0], l = merged[merged.length - 1];
-    if (f.out[0] === l.out[0] && f.out[1] === l.out[1]) {
+    if (!f.soft === !l.soft && f.out[0] === l.out[0] && f.out[1] === l.out[1]) {
       const l1 = Math.hypot(l.b[0] - l.a[0], l.b[1] - l.a[1]), l2 = Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]);
       if (Math.abs((l.b[2] - l.a[2]) / l1 - (f.b[2] - f.a[2]) / l2) < 1e-6) { f.a = l.a; merged.pop(); }
     }
@@ -149,7 +200,9 @@ function makeLoop(seq: Edge[], closed: boolean): Loop {
   const outs = merged.map((e) => e.out);
   const cum = [0];
   for (let i = 0; i < merged.length; i++) cum.push(cum[i] + Math.hypot(merged[i].b[0] - merged[i].a[0], merged[i].b[1] - merged[i].a[1]));
-  return { pts, outs, closed, cum, len: cum[cum.length - 1] };
+  const loop: Loop = { pts, outs, closed, cum, len: cum[cum.length - 1] };
+  if (merged.some((e) => e.soft)) loop.soft = merged.map((e) => !!e.soft);
+  return loop;
 }
 
 /** 环上弧长 s 处的点（闭合环会取模） */

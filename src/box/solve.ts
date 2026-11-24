@@ -11,7 +11,8 @@
 //    得到的每一小块上距离都是一个线性函数，顶点上算出的 UV、高度插值后是精确的。
 //    每个 box 只在自己的格子里生成网格，但距离场看的是整片路面，所以接缝两边算出来的结果完全一致。
 import type { MatName, MeshPart, V2, V3 } from '../geom/floor';
-import { type Edge as OEdge, type Loop, loopsFromEdges, push as pushEdge } from '../model/outline';
+import { fixTJunctions } from '../geom/floor';
+import { type Edge as OEdge, type Loop, bridgeGaps, loopsFromEdges, push as pushEdge } from '../model/outline';
 import {
   type AssetElem, BAND, Box, DX, DY, Dir, Doc, EPS_TOUCH, Elem, FaceKind, Obj, Piece, type RailElem, SINK_DEPTH, Style,
   anchorRects, basePiece, boxTopAt, elemXf, footprint, isSlope, opp, pieceFace, pieceLen, pieceStyles, toWorld,
@@ -427,7 +428,7 @@ function solveAll(doc: Doc): Solved {
     edgeFns.push(() => curveRoadEdges(c.r, c.rings, c.kinds));
   }
   let loops: Loop[] | null = null;
-  Object.defineProperty(out, 'loops', { get: () => (loops ??= loopsFromEdges(edgeFns.flatMap((f) => f()))), enumerable: true, configurable: true });
+  Object.defineProperty(out, 'loops', { get: () => (loops ??= loopsFromEdges(bridgeGaps(edgeFns.flatMap((f) => f())))), enumerable: true, configurable: true });
   for (const b of tilted) {
     const { m, t } = elemXf(b);
     const c = frameCells([{ ...b, q: undefined }], 0);
@@ -440,7 +441,7 @@ function solveAll(doc: Doc): Solved {
 // ---------------- 不同朝向之间 ----------------
 
 /** 一个朝向的求解上下文 */
-interface FrameCtx { ang: number; elems: Elem[]; pieces: Piece[]; layers: Layer[]; owner: Map<number, number> }
+interface FrameCtx { ang: number; elems: Elem[]; pieces: Piece[]; layers: Layer[]; owner: Map<number, number>; /** 本朝向的机关（外沿要补上它们的对准方块） */ objs?: Obj[] }
 
 /** 别的朝向里同样式、同高度的平路面成员（换到本层坐标里的凸四边形） */
 interface Foreign { poly: V2[]; id: number; piece: boolean; x0: number; y0: number; x1: number; y1: number }
@@ -689,7 +690,7 @@ function frameCells(all: Elem[], ang: number, assets: AssetElem[] = []): FrameCt
   findFolds(layers);
   connFaces = [...connectorFaces(all, pieces, assets), ...curveFaces(ang)];
   for (const L of layers) (L.slope ? buildSlopeCells : buildFlatCells)(L, elems);
-  return { ang, elems, pieces, layers, owner: auto.owner };
+  return { ang, elems, pieces, layers, owner: auto.owner, objs: all.filter((e): e is Obj => e.kind === 'obj') };
 }
 
 /** 一个朝向：外沿并成边、定花纹相位 */
@@ -699,7 +700,7 @@ function frameRuns(c: FrameCtx) {
 }
 
 /** 一个朝向：网格、资产、护栏用的外沿（本朝向坐标） */
-function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'loops'> & { edges: () => OEdge[] } {
+function frameMesh({ elems, pieces, layers, owner, objs }: FrameCtx): Omit<Solved, 'loops'> & { edges: () => OEdge[] } {
   const out = new Map<number, ElemMeshOut>();
   for (const L of layers) meshLayer(L, out);
   const assets = new Map<number, AssetPart[]>();
@@ -710,13 +711,13 @@ function frameMesh({ elems, pieces, layers, owner }: FrameCtx): Omit<Solved, 'lo
     else if (p.type === 'start' || p.type === 'check') assets.set(p.id, checkpointParts(p, layers, p.sector ?? checks.indexOf(p) + 2));
     else meshPiece(p, layers, out);
   }
-  return { meshes: out, assets, owner, edges: () => outlineEdges(elems, pieces, layers) };
+  return { meshes: out, assets, owner, edges: () => outlineEdges(elems, pieces, layers, objs ?? []) };
 }
 
 /** 护栏用的外沿：每层的边（展开坐标）换回世界坐标，跨层（坡和平路）首尾相接的自然连成一个环 */
-function outlineEdges(elems: Elem[], pieces: Piece[], layers: Layer[]): OEdge[] {
+function outlineEdges(elems: Elem[], pieces: Piece[], layers: Layer[], objs: Obj[] = []): OEdge[] {
   const oedges: OEdge[] = [];
-  // 盘点路面的侧边不算（实际的模型是圆盘，比 5 宽的带子大）：外沿在盘点处断开，护栏不会穿过盘点
+  // 盘点路面的侧边算软边（实际的模型是圆盘，比 5 宽的带子大）：外沿在这里连着，护栏拖把手、跟着路走时能穿过去，点一下放整条直边时不放在这里
   const cp = new Set(pieces.filter((p) => p.type === 'start' || p.type === 'check').map((p) => p.id));
   // 外面紧挨着差不多一样高的路面（样式不同、坡插进平台留下的槽口、底座…）的边也不算：那里球还能滚过去，不该放护栏
   const floors = elems.filter((e): e is Box | Piece => e.kind === 'box' || e.kind === 'piece');
@@ -728,13 +729,14 @@ function outlineEdges(elems: Elem[], pieces: Piece[], layers: Layer[]): OEdge[] 
     return Math.abs(top - z) < 1;
   });
   for (const L of layers) for (const r of L.edges) {
-    if (r.kind !== 'exp' || cp.has(r.owner)) continue;
+    if (r.kind !== 'exp') continue;
+    const soft = cp.has(r.owner);
     const P = (t: number) => L.world(...((r.ax === 0 ? [t, r.c] : [r.c, t]) as [number, number]), 0) as [number, number, number];
     // 按 1 的步长切开，逐小段看外面是不是还有路面
     const n = Math.max(1, Math.ceil(r.b - r.a));
     // 连续的几小段外面都没有路面：并成一条（坡上的边是直线，并起来不变形）
     let runStart: number | null = null;
-    const flush = (tEnd: number) => { if (runStart !== null) pushEdge(oedges, P(runStart), P(tEnd), [DX[r.n], DY[r.n]]); runStart = null; };
+    const flush = (tEnd: number) => { if (runStart !== null) pushEdge(oedges, P(runStart), P(tEnd), [DX[r.n], DY[r.n]], soft); runStart = null; };
     for (let k = 0; k < n; k++) {
       const t0 = r.a + ((r.b - r.a) * k) / n, t1 = r.a + ((r.b - r.a) * (k + 1)) / n;
       const A = P(t0), B = P(t1);
@@ -743,6 +745,38 @@ function outlineEdges(elems: Elem[], pieces: Piece[], layers: Layer[]): OEdge[] 
       if (runStart === null) runStart = t0;
     }
     flush(r.b);
+  }
+  // 模型件（盘点、机关的专属路块、转换件）：它们自己的侧边有的没算进外沿，外沿就在这里断开了，护栏过不去。
+  // 按占地矩形补上软边：外面紧挨着路面的、已经有真实外沿的地方不补
+  // 真实外沿按「朝外方向 + 所在直线」分桶：补边时只和同一条线上的比
+  const lineKey = (o: [number, number], x: number, y: number) => `${o[0]},${o[1]},${(x * o[0] + y * o[1]).toFixed(2)}`;
+  const hard = new Map<string, OEdge[]>();
+  for (const e of oedges) { const k = lineKey(e.out, e.a[0], e.a[1]); (hard.get(k) ?? hard.set(k, []).get(k)!).push(e); }
+  const onHard = (x: number, y: number, z: number, o: [number, number]) => (hard.get(lineKey(o, x, y)) ?? []).some((e) => {
+    const dx = e.b[0] - e.a[0], dy = e.b[1] - e.a[1], L2 = dx * dx + dy * dy;
+    const t = ((x - e.a[0]) * dx + (y - e.a[1]) * dy) / L2;
+    if (t < -1e-6 || t > 1 + 1e-6) return false;
+    return Math.hypot(e.a[0] + dx * t - x, e.a[1] + dy * t - y) < 0.05 && Math.abs(e.a[2] + (e.b[2] - e.a[2]) * t - z) < 1;
+  });
+  // 机关自带的路面（对准方块，比如 P_Modul_29 这种没有单独专属路块的）也一样
+  const rects = [...pieces.map((p) => ({ ...footprint(p), z: p.z })), ...objs.flatMap((o) => (o.q ? [] : anchorRects(o).map((r) => ({ ...r, z: r.top }))))];
+  for (const fp of rects) {
+    const z = fp.z;
+    for (const d of [0, 1, 2, 3] as Dir[]) {
+      const ax = d % 2 === 0; // 这条边沿 y 走
+      const c = [fp.x1, fp.y1, fp.x0, fp.y0][d], a = ax ? fp.y0 : fp.x0, b = ax ? fp.y1 : fp.x1;
+      const P = (t: number): [number, number, number] => (ax ? [c, t, z] : [t, c, z]);
+      const n = Math.max(1, Math.ceil(b - a));
+      let runStart: number | null = null;
+      const flush = (tEnd: number) => { if (runStart !== null) pushEdge(oedges, P(runStart), P(tEnd), [DX[d], DY[d]], true); runStart = null; };
+      for (let k = 0; k < n; k++) {
+        const t0 = a + ((b - a) * k) / n, t1 = a + ((b - a) * (k + 1)) / n, tm = (t0 + t1) / 2;
+        const [mx, my] = ax ? [c, tm] : [tm, c];
+        if (continues(mx + DX[d] * 0.05, my + DY[d] * 0.05, z) || onHard(mx, my, z, [DX[d], DY[d]])) { flush(t0); continue; }
+        if (runStart === null) runStart = t0;
+      }
+      flush(b);
+    }
   }
   return oedges;
 }
@@ -1605,6 +1639,8 @@ function meshLayer(L: Layer, out: Map<number, ElemMeshOut>) {
     for (const [k, p] of Object.entries(src) as [MatName, MeshPart][]) parts[k] = { pos: p.pos.slice(), uv: p.uv.slice(), ...(p.own ? { own: p.own.slice() } : {}) };
     return parts;
   };
+  // 新算的网格去掉 T 形接口（合并小块时去掉的共线点正是相邻部分接上来的地方），再放进缓存
+  for (const m of builders.values()) fixTJunctions(m.parts);
   for (const [id, m] of builders) { const sig = compSig.get(id); if (sig !== undefined) nextMeshCache.set(sig, { id, parts: copyParts(m.parts) }); }
   for (const [id, hit] of cached) {
     const b = new MeshBuilder();

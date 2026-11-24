@@ -35,6 +35,7 @@ import { initModelStore } from './model-store';
 import { type MapEntry, listMaps, newMapId, putMap, removeMap, renameMap } from './maps';
 import { ASSET_INFO, assetInfo, meshScale, tileOf } from './asset-info';
 import { checkLevel, type Issue } from './check';
+import { type GPos, type GRoute, type Graph, distTo, distances, graphOf, nearFrom, nearest, pointOf, routeBetween, routeLength, truncate } from './guard-graph';
 import { initAgentPanel } from './ai/panel';
 import { BVM_EXT, decodeBvm, encodeBvm } from './file';
 import { ASSET_SNAP } from './asset-snap';
@@ -44,12 +45,12 @@ import { AXIS_COLORS, GRID_THEMES, createGrid, setGridAxes, themeGrid } from '..
 import { type P3, feats as featsRaw } from './snap';
 import { curveSamples, roadClosed, sampleRail } from '../model/rail';
 import { ownOutline, solve, solveStats } from './solve';
-import { type ChangedFloor, type Route, edgeAt, refitGuard, routeLen, shortPath } from './guard';
+import { type ChangedFloor, type Route, edgeAt, refitGuard, routeLen } from './guard';
 import { guardFromRoute } from '../geom/railing';
 import { DEFAULT_SETTINGS } from '../model/types';
 /** 全图设置：文档里改过的项覆盖默认值 */
 const mapSettings = (): MapSettings => ({ ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
-import { type Loop, pathAlong, project, projectNear } from '../model/outline';
+import { type Loop } from '../model/outline';
 import { exportBoxGlb, exportBoxNmo, exportBoxObj, exportBoxScene } from './export';
 import type { MapSettings } from '../model/types';
 import {
@@ -234,7 +235,7 @@ let guardMode = false;
 let lastSolved: { loops: Loop[] } = { loops: [] };
 let guardPreview: Route | null = null;
 /** 护栏工具的拖动：从 s0 沿外沿拖；replace：正在拖某条护栏的端头 */
-let guardDrag: { loop: number; s0: number; a: P3; replace?: number; moved: boolean; snaps: GuardSnapPt[]; snapWhy: string | null } | null = null;
+let guardDrag: { start: GPos; cur: GPos; a: P3; replace?: number; moved: boolean; snaps: GuardSnapPt[]; snapWhy: string | null; gr: Graph } | null = null;
 let splitAxis: 0 | 1 | null = null; // null：按路面较长的方向自动选
 const undo: string[] = [];
 // 当前地图在历史里的记录：编辑后过一会儿自动存（第一次打开、没动过的图不存）
@@ -1619,7 +1620,7 @@ type Drag =
   | { t: 'stretch'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; pos: boolean }
   | { t: 'railLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
   | { t: 'railTilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; end: 0 | 1 }
-  | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; loop: number; sFixed: number; sNear: number; moveB: boolean; snaps: GuardSnapPt[] }
+  | { t: 'guardLen'; id: number; orig: Map<number, string>; plane: THREE.Plane; fixed: GPos; cur: GPos; snaps: GuardSnapPt[]; /** 按下时的路沿图（拖动中路面不变，不用每帧重建） */ gr: Graph }
   | { t: 'tilt'; id: number; orig: Map<number, string>; plane: THREE.Plane; start: THREE.Vector3; axis: 0 | 1; hi: boolean }
   | { t: 'vsnap'; orig: Map<number, string>; grab: P3; plane: THREE.Plane }
   | { t: 'marquee'; sx: number; sy: number; add: boolean }
@@ -1943,9 +1944,10 @@ el.addEventListener('pointerdown', (e) => {
   }
   if (vHeld && sel.size) {
     const at = new THREE.Vector2(e.clientX, e.clientY);
+    // 范围：包围盒的 8 个角，加上画出来的吸附点（机关的吸附点在对准方块上，可能在模型的包围盒外面）
     const inside = [...sel].some((id) => {
-      const b = elemBounds(doc.elems[id]);
-      const ss = [b.x0, b.x1].flatMap((x) => [b.y0, b.y1].flatMap((y) => [b.z0, b.z1].map((z) => toScreen([x, y, z]))));
+      const b = elemBounds(doc.elems[id]), f = feats(doc.elems[id]);
+      const ss = [...[b.x0, b.x1].flatMap((x) => [b.y0, b.y1].flatMap((y) => [b.z0, b.z1].map((z) => toScreen([x, y, z])))), ...[...f.verts, ...f.mids].map((v) => toScreen(v))];
       const m = 14;
       return at.x >= Math.min(...ss.map((q) => q.x)) - m && at.x <= Math.max(...ss.map((q) => q.x)) + m && at.y >= Math.min(...ss.map((q) => q.y)) - m && at.y <= Math.max(...ss.map((q) => q.y)) + m;
     });
@@ -2615,91 +2617,125 @@ function startGuardLen(id: number, end: 0 | 1): boolean {
   const g = doc.elems[id] as Extract<Elem, { kind: 'guard' }>;
   const fixedP = end === 0 ? g.pts[g.pts.length - 1] : g.pts[0];
   const movP = end === 0 ? g.pts[0] : g.pts[g.pts.length - 1];
-  const pf = project(lastSolved.loops, fixedP, 1);
-  if (!pf) return false;
-  const l = lastSolved.loops[pf.loop];
-  const pm = project([l], movP, 1);
-  if (!pm) return false;
-  // 展开弧长：终点在起点之后（闭合环上可能要加一圈）
-  let sNear = pm.s;
-  if (l.closed) { if (end === 1 && sNear <= pf.s) sNear += l.len; if (end === 0 && sNear >= pf.s) sNear -= l.len; }
+  const gr = graphOf(lastSolved.loops);
+  const pf = nearest(gr, fixedP, 1, false), pm = nearest(gr, movP, 1, false);
+  if (!pf || !pm || pf.dist > 0.3 || pm.dist > 0.3) return false;
   // 拖动平面放在把手的高度（护栏顶）：放在路面高度的话，斜着看时鼠标和把手会错开，拖起来不跟手
-  drag = { t: 'guardLen', id, orig: origOf([id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -(movP[2] + mapSettings().guardTop)), loop: pf.loop, sFixed: pf.s, sNear, moveB: end === 1, snaps: guardSnapPts(pf.loop, id) };
+  drag = { t: 'guardLen', id, orig: origOf([id]), plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -(movP[2] + mapSettings().guardTop)), fixed: { e: pf.e, t: pf.t }, cur: { e: pm.e, t: pm.t }, snaps: guardSnapPts(gr, id), gr };
   return true;
 }
 
-/** 拖护栏的一头：沿外沿走；格栅开着时长度取整；长度靠近 5 的倍数、或者走到外沿的拐角时磁吸 */
+/** 护栏的路线调成和外沿同一个方向（护栏管子的朝向跟着路线走，反过来法线会翻） */
+function orientRoute(gr: Graph, r: GRoute): GRoute {
+  for (let i = 0; i + 1 < r.pts.length; i++) {
+    const a = r.pts[i], b = r.pts[i + 1], m: P3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    const n = nearest(gr, m, 1);
+    if (!n || n.dist > 0.05) continue;
+    const e = gr.edges[n.e];
+    const fwd = (b[0] - a[0]) * (e.b[0] - e.a[0]) + (b[1] - a[1]) * (e.b[1] - e.a[1]) >= 0;
+    return fwd ? r : { pts: [...r.pts].reverse(), outs: [...r.outs].reverse() };
+  }
+  return r;
+}
+
+/**
+ * 护栏一头从 from 拉到 q（图上）时的长度和吸附：返回一条够长的路线（far）、没吸附时的长度（raw）、吸附后的长度（snap）。
+ * 最终的护栏就是 far 的前 raw / snap 长。吸附：拐角内缩、别的护栏端头、路块接缝（沿图离 q 不远的）、长度是 5 的整数倍；格栅开着时长度取整
+ */
+function guardStretch(gr: Graph, from: GPos, q: GPos, snaps: GuardSnapPt[], thr: number): { far: GRoute; raw: number; snap: number | null; why: string | null } | null {
+  const base = routeBetween(gr, from, q);
+  if (!base) return null;
+  const L = routeLength(base);
+  // 沿 q 所在的边、顺着拉的方向，往前延长 extra（延长不了就是 null）
+  const extend = (extra: number): GRoute | null => {
+    if (extra <= 1e-9) return base;
+    const e = gr.edges[q.e], last = base.pts[base.pts.length - 2], qp = base.pts[base.pts.length - 1];
+    const fwd = (qp[0] - last[0]) * (e.b[0] - e.a[0]) + (qp[1] - last[1]) * (e.b[1] - e.a[1]) >= 0;
+    const room = (fwd ? 1 - q.t : q.t) * e.len;
+    if (extra > room + 1e-9) return null;
+    const t = q.t + (fwd ? 1 : -1) * (extra / e.len);
+    return { pts: [...base.pts.slice(0, -1), pointOf(gr, { e: q.e, t })], outs: base.outs };
+  };
+  let raw = L, far = base;
+  if (gridOn) {
+    const gl = Math.max(prefs.gridStep, snapG(L));
+    const ex = gl > L ? extend(gl - L) : base;
+    if (ex) { raw = gl; far = ex; }
+  }
+  const rq = distances(gr, q, thr);
+  let best: { len: number; route: GRoute; why: string; d: number } | null = null;
+  for (const c of snaps) {
+    const d = distTo(gr, rq, q, c.pos);
+    if (!(d < thr) || (best && d >= best.d)) continue;
+    const rc = routeBetween(gr, from, c.pos);
+    if (!rc) continue;
+    const lc = routeLength(rc);
+    if (lc > 0.2) best = { len: lc, route: rc, why: c.why, d };
+  }
+  const L5 = Math.round(raw / 5) * 5;
+  if (L5 > 0.2 && Math.abs(L5 - raw) < thr && (!best || Math.abs(L5 - raw) < best.d)) {
+    const r5 = L5 <= raw ? far : extend(L5 - L);
+    if (r5) best = { len: L5, route: r5, why: `长 ${L5}`, d: Math.abs(L5 - raw) };
+  }
+  // 吸附点比现在远：路线用到吸附点的那条（现在的长度截在它上面）；比现在近：现在的路线本来就经过它
+  if (best && best.len > raw) far = best.route;
+  return { far, raw: Math.max(0.2, raw), snap: best ? best.len : null, why: best?.why ?? null };
+}
+
+/** 拖护栏的一头：沿路沿图走（能拐弯、能跨过断开的路）；吸附见 guardStretch */
 function guardLenTo(d: Extract<Drag, { t: 'guardLen' }>, p: THREE.Vector3) {
-  const l = lastSolved.loops[d.loop];
-  if (!l) return;
-  const sgn = d.moveB ? 1 : -1;
-  let s = projectNear(l, p.x, p.y, d.sNear);
-  // 不能越过固定的那一头
-  if ((s - d.sFixed) * sgn < 0.2) s = d.sFixed + sgn * 0.2;
-  if (l.closed && Math.abs(s - d.sFixed) > l.len - 0.2) s = d.sFixed + sgn * (l.len - 0.2);
-  d.sNear = s;
-  let len = Math.abs(s - d.sFixed);
-  if (gridOn) len = Math.max(prefs.gridStep, snapG(len));
-  const raw = d.sFixed + sgn * len;
-  const hit = guardSnapAt(l, d.snaps, raw, guardSnapThr(p), d.sFixed, (c) => (c - d.sFixed) * sgn > 0.2);
-  const snap = hit?.s ?? null;
-  const final = snap ?? raw;
+  const gr = d.gr;
+  d.cur = nearFrom(gr, [p.x, p.y, p.z], d.cur);
+  const st = guardStretch(gr, d.fixed, d.cur, d.snaps, guardSnapThr(p));
+  if (!st) return;
+  const { far, raw, snap, why } = st;
   drive([raw], snap === null ? null : [snap], (v) => {
     restore(d.orig);
     const g = doc.elems[d.id] as Extract<Elem, { kind: 'guard' }>;
-    const r = d.moveB ? pathAlong(l, d.sFixed, v[0]) : pathAlong(l, v[0], d.sFixed);
+    const r = orientRoute(gr, truncate(far, Math.max(0.2, v[0])));
     if (r.pts.length < 2) return;
     g.pts = r.pts.map((q) => [...q] as P3);
     g.outs = r.outs.map((o) => [...o] as [number, number]);
     [g.x, g.y, g.z] = g.pts[0];
   }, [raw]);
-  measure = guardMeasure(doc.elems[d.id] as Extract<Elem, { kind: 'guard' }>, !!hit);
-  dragInfo = `护栏长 ${fmt(Math.abs(final - d.sFixed))}${hit ? `（吸附：${hit.why}）` : ''}`;
+  measure = guardMeasure(doc.elems[d.id] as Extract<Elem, { kind: 'guard' }>, snap !== null);
+  dragInfo = `护栏长 ${fmt(snap ?? raw)}${why ? `（吸附：${why}）` : ''}`;
 }
 
-/** 护栏端头能吸附的位置（外沿上的弧长，0～len）：一次拖动里外沿不变，按下时算一次 */
-interface GuardSnapPt { s: number; why: string }
-function guardSnapPts(li: number, skip?: number): GuardSnapPt[] {
-  const l = lastSolved.loops[li];
-  if (!l) return [];
+/** 护栏端头能吸附的位置（图上的位置）：一次拖动里路沿不变，按下时算一次 */
+interface GuardSnapPt { pos: GPos; why: string }
+function guardSnapPts(gr: Graph, skip?: number): GuardSnapPt[] {
   const out: GuardSnapPt[] = [];
   const inset = prefs.guardInset;
-  const ok = (v: number) => l.closed || (v >= 0 && v <= l.len);
-  const wrap = (v: number) => (l.closed ? ((v % l.len) + l.len) % l.len : v);
-  // 拐角：往两边各缩「护栏端头内缩」（和点一下放整条直边的护栏一样，立柱不会顶到拐角上）；内缩为 0 时就是拐角本身
-  for (const c of l.cum) for (const v of inset > 0 ? [c - inset, c + inset] : [c]) if (ok(v)) out.push({ s: wrap(v), why: '拐角内缩' });
-  // 别的护栏的端头（在同一圈外沿上的）：接上
+  // 拐角：每条真实的边两头各往里缩「护栏端头内缩」（和点一下放整条直边的护栏一样，立柱不会顶到拐角上）；内缩为 0 时就是拐角本身
+  gr.edges.forEach((e, i) => {
+    if (e.jump || e.len < 1e-6) return;
+    if (inset <= 0) { out.push({ pos: { e: i, t: 0 }, why: '拐角' }, { pos: { e: i, t: 1 }, why: '拐角' }); return; }
+    if (e.len > inset) out.push({ pos: { e: i, t: inset / e.len }, why: '拐角内缩' }, { pos: { e: i, t: 1 - inset / e.len }, why: '拐角内缩' });
+  });
+  // 别的护栏的端头：接上
   for (const g of Object.values(doc.elems)) {
     if (g.kind !== 'guard' || g.id === skip) continue;
     for (const q of [g.pts[0], g.pts[g.pts.length - 1]]) {
-      const pr = project(lastSolved.loops, q, 1);
-      if (pr && pr.loop === li && pr.dist < 0.3) out.push({ s: pr.s, why: '护栏端头' });
+      const n = nearest(gr, q, 1, false);
+      if (n && n.dist < 0.3) out.push({ pos: { e: n.e, t: n.t }, why: '护栏端头' });
     }
   }
-  // 路块之间的接缝：路面顶面的角正好落在外沿上、又不是拐角的地方
+  // 路块之间的接缝：路面顶面的角正好落在路沿上、又不是拐角的地方
   for (const e of Object.values(doc.elems)) {
     if (e.kind !== 'box' || hiddenElem(e)) continue;
     for (const q of cornersOf(e).slice(0, 4)) {
-      const pr = project([l], q, 0.5);
-      if (!pr || pr.dist > 0.05 || l.cum.some((c) => Math.abs(c - pr.s) < 0.05)) continue;
-      out.push({ s: pr.s, why: '路块接缝' });
+      const n = nearest(gr, q, 0.5, false);
+      if (!n || n.dist > 0.05) continue;
+      const len = gr.edges[n.e].len;
+      if (n.t * len < 0.05 || (1 - n.t) * len < 0.05) continue;
+      out.push({ pos: { e: n.e, t: n.t }, why: '路块接缝' });
     }
   }
   return out;
 }
 /** 吸附范围：屏幕上 12 像素，至少 0.5 个单位（拉近了也吸得上） */
 const guardSnapThr = (p: THREE.Vector3) => Math.max(worldPerPx(p) * 12, 0.5);
-/** raw 附近最近的吸附位置；from 给了时再加上「从 from 量过去长度是 5 的整数倍」 */
-function guardSnapAt(l: Loop, pts: GuardSnapPt[], raw: number, thr: number, from?: number, valid: (s: number) => boolean = () => true): GuardSnapPt | null {
-  const cands: GuardSnapPt[] = pts.map((c) => ({ s: l.closed ? c.s + Math.round((raw - c.s) / l.len) * l.len : c.s, why: c.why }));
-  if (from !== undefined) {
-    const L5 = Math.round(Math.abs(raw - from) / 5) * 5;
-    if (L5 > 0) cands.push({ s: from + Math.sign(raw - from) * L5, why: `长 ${L5}` });
-  }
-  let best: GuardSnapPt | null = null;
-  for (const c of cands) if (Math.abs(c.s - raw) < thr && valid(c.s) && (!best || Math.abs(c.s - raw) < Math.abs(best.s - raw))) best = c;
-  return best;
-}
 /** 护栏的测量线：沿护栏走，比护栏顶高一点、往外让开一点；拐角处取两边朝外方向的平均；吸附时变绿 */
 function guardMeasure(r: { pts: P3[]; outs: [number, number][] }, snapped: boolean): typeof measure {
   if (r.pts.length < 2 || !r.outs.length) return null;
@@ -3776,19 +3812,18 @@ function guardEndAt(e: { clientX: number; clientY: number }): { id: number; end:
 function guardHover(e: PointerEvent) {
   const p = surfacePoint(e);
   if (guardDrag) {
-    const l = lastSolved.loops[guardDrag.loop];
-    const pr = p ? project([l], p, 3) : null;
-    if (pr) {
-      // 展开到起点附近（和 shortPath 一样走近的那一边），再吸附：拐角内缩、别的护栏端头、路块接缝、长度是 5 的整数倍；格栅开着时长度取整
-      let s1 = l.closed ? pr.s + Math.round((guardDrag.s0 - pr.s) / l.len) * l.len : pr.s;
-      if (gridOn && s1 !== guardDrag.s0) s1 = guardDrag.s0 + Math.sign(s1 - guardDrag.s0) * Math.max(prefs.gridStep, snapG(Math.abs(s1 - guardDrag.s0)));
-      const gd = guardDrag;
-      const hit = guardSnapAt(l, gd.snaps, s1, guardSnapThr(new THREE.Vector3(...p!)), gd.s0, (c) => Math.abs(c - gd.s0) > 0.2);
-      gd.snapWhy = hit?.why ?? null;
-      guardPreview = shortPath(l, gd.s0, hit?.s ?? s1);
-      measure = gd.moved || Math.abs(s1 - gd.s0) > 0.3 ? guardMeasure(guardPreview, !!hit) : null;
+    // 沿路沿图从按下的地方走到鼠标这里（能拐弯、能跨过断开的路），吸附见 guardStretch
+    const gd = guardDrag, gr = gd.gr;
+    if (p) {
+      gd.cur = nearFrom(gr, p, gd.cur);
+      const st = guardStretch(gr, gd.start, gd.cur, gd.snaps, guardSnapThr(new THREE.Vector3(...p)));
+      if (st) {
+        if (st.raw > 0.3) gd.moved = true;
+        gd.snapWhy = st.why;
+        guardPreview = orientRoute(gr, truncate(st.far, st.snap ?? st.raw));
+        measure = gd.moved ? guardMeasure(guardPreview, st.snap !== null) : null;
+      }
     }
-    if (pr && Math.abs(pr.s - guardDrag.s0) > 0.3) guardDrag.moved = true;
   } else {
     const end = guardEndAt(e);
     guardEndHover = end;
@@ -3820,14 +3855,16 @@ function guardDown(e: PointerEvent) {
   }
   const p = surfacePoint(e);
   if (!p) return;
-  const pr = project(lastSolved.loops, p, 1.5);
+  const gr = graphOf(lastSolved.loops);
+  const pr = nearest(gr, p, 1.5, false);
   if (!pr || pr.dist > 1.5) return;
   el.setPointerCapture(e.pointerId);
-  // 起点也吸附（拐角内缩、别的护栏端头、路块接缝）
-  const snaps = guardSnapPts(pr.loop);
-  const l = lastSolved.loops[pr.loop];
-  const s0 = guardSnapAt(l, snaps, pr.s, guardSnapThr(new THREE.Vector3(...p)))?.s ?? pr.s;
-  guardDrag = { loop: pr.loop, s0: l.closed ? ((s0 % l.len) + l.len) % l.len : s0, a: pr.p, moved: false, snaps, snapWhy: null };
+  // 起点也吸附（拐角内缩、别的护栏端头、路块接缝）：沿图离按下的地方最近、又在吸附范围里的
+  const snaps = guardSnapPts(gr);
+  const at: GPos = { e: pr.e, t: pr.t }, thr = guardSnapThr(new THREE.Vector3(...p)), r0 = distances(gr, at, thr);
+  let start = at, bd = thr;
+  for (const c of snaps) { const d = distTo(gr, r0, at, c.pos); if (d < bd) { bd = d; start = c.pos; } }
+  guardDrag = { start, cur: start, a: pointOf(gr, at), moved: false, snaps, snapWhy: null, gr };
   pauseControls();
 }
 function guardUp(e: PointerEvent) {

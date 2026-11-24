@@ -1,5 +1,6 @@
 // 护栏工具用的外沿查询：鼠标附近的外沿直边、沿外沿的一段路径
 import { type Loop, type P3, pathAlong, pointAt, project } from '../model/outline';
+import { graphOf, posOnLoop, routeBetween } from './guard-graph';
 
 export type Route = { pts: P3[]; outs: [number, number][] };
 
@@ -12,6 +13,8 @@ export function edgeAt(loops: Loop[], p: P3, inset = 0): Route | null {
   if (!pr || pr.dist > 1.5) return null;
   const l = loops[pr.loop];
   const { seg } = pointAt(l, pr.s);
+  // 软边（盘点的侧边、补上的小缺口）不是真的路边：点在这里不放
+  if (l.soft?.[seg]) return null;
   const a = l.pts[seg], b = l.pts[(seg + 1) % l.pts.length];
   const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
   const k = inset > 0 && len - 2 * inset >= 1 ? inset / len : 0;
@@ -90,7 +93,12 @@ export function refitGuard(g: Route, changed: ChangedFloor[], loops: Loop[]): Ro
     if (fn < 0.5 || (lo.closed && fo <= lo.len / 2 !== fn <= ln.len / 2)) return null;
   }
   const a = onLoops(loops, ends[0]), b = onLoops(loops, ends[1]);
-  if (!a || !b || a.loop !== b.loop) return null;
+  if (!a || !b) return null;
+  // 两头在不同的圈上（护栏跨过了断开的路）：按路沿图上的最短路线连
+  if (a.loop !== b.loop) {
+    const gr = graphOf(loops);
+    return routeBetween(gr, posOnLoop(gr, loops[a.loop], a.loop, a.s), posOnLoop(gr, loops[b.loop], b.loop, b.s));
+  }
   const l = loops[a.loop];
   if (!l.closed && b.s - a.s < 0.5) return null;
   return pathAlong(l, a.s, b.s);

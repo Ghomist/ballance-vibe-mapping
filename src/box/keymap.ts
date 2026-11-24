@@ -30,7 +30,7 @@ export const KEY_DEFS: KeyDef[] = [
   { id: 'delete', label: '删除', group: '编辑', def: 'x', alias: ['delete', 'backspace'] },
   { id: 'undo', label: '撤销', group: '编辑', def: 'ctrl+z' },
   { id: 'redo', label: '重做', group: '编辑', def: 'ctrl+y' },
-  { id: 'selectAll', label: '全选', group: '编辑', def: 'ctrl+a' },
+  { id: 'selectAll', label: '全选', group: '编辑', def: 'a', alias: ['ctrl+a'] },
   { id: 'merge', label: '合并路面', group: '编辑', def: 'ctrl+j' },
   { id: 'group', label: '绑定', group: '编辑', def: 'ctrl+g' },
   { id: 'ungroup', label: '解除绑定', group: '编辑', def: 'ctrl+shift+g' },
