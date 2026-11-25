@@ -4,6 +4,16 @@ export interface ChangeEntry { version: string; date: string; items: string[] }
 
 export const CHANGELOG: ChangeEntry[] = [
   {
+    version: '2026.11.25', date: '2026-11-25', items: [
+      '修复导出的 NMO 进游戏卡死：路面摆得差一点点没对齐时，个别路面的网格会撑到几十万个三角形',
+      '风扇底座贴着坡时，这一边不再多出边框花纹',
+      '护栏能沿着路沿跨过小节盘点、转换件和坡口；顺着同一条直线、断开不超过 40 的两段路，护栏用直线连过去（不跨 T 字路口）',
+      '路面拼接处不再有 T 形接口，接缝更干净',
+      'A 全选（Ctrl+A 照旧）',
+      '选中分数球等机关后按住 V 拖吸附点，不再变成框选',
+    ],
+  },
+  {
     version: '2026.11.17', date: '2026-11-17', items: [
       '修复导出 NMO 时大地图报错「Maximum call stack size exceeded」（很大的网格写不进去）',
       '修复点选飘移：一长串拼在一起的路面，点哪块有时会选到另一块',

@@ -390,6 +390,32 @@ export function boxSolveScenarios(check: Check, scenario: Scenario) {
     check(Math.abs(area - 75) < 1e-6, `齐平那一面的面积应为 75，实际 ${area}`);
   });
 
+  scenario('box 求解：挨得极近（差 0.0005）的顶点不能让去 T 形接口劈个没完（导出的地图进游戏卡死）', () => {
+    const doc = emptyDoc();
+    // 用户地图里的三块：位置都差一点点没对齐
+    doc.elems[1] = { id: 1, kind: 'box', x: 64.727, y: 37.05, z: 0, sx: 5, sy: 21.377, depth: 5, style: 'normal' };
+    doc.elems[2] = { id: 2, kind: 'box', x: 47.169, y: 58.426939, z: -5, sx: 36.401, sy: 5, depth: 5, style: 'normal' };
+    doc.elems[3] = { id: 3, kind: 'box', x: 69.72653300214897, y: 43.91402023001681, z: -0.0002479409425886203, sx: 5.000466997851035, sy: 5, depth: 5, style: 'normal' };
+    doc.nextId = 4;
+    for (const [id, m] of solve(doc).meshes) {
+      const n = Object.values(m.parts).reduce((s, p) => s + p!.pos.length / 9, 0);
+      check(n < 300, `路面 ${id} 有 ${n} 个三角形`);
+    }
+  });
+
+  scenario('box 求解：风扇底座贴着坡、坡口和底座一样高时，这一边不带边框', () => {
+    const doc = emptyDoc();
+    doc.elems[1] = { id: 1, kind: 'obj', type: 'P_Modul_18', x: 2.5, y: 2.5, z: 0, rot: 0 } as Doc['elems'][number];
+    const top = basePiece(doc.elems[1] as Parameters<typeof basePiece>[0])!.z;
+    // 往上的坡（低口接底座）、往下的坡（高口接底座），各试一次
+    for (const [x, dz] of [[5, 5], [-10, 5]]) {
+      doc.elems[2] = { id: 2, kind: 'box', x, y: 0, z: x > 0 ? top : top - dz, sx: 10, sy: 5, depth: 5, style: 'normal', slope: { axis: 0, dz } };
+      doc.nextId = 3;
+      const name = solve(doc).assets.get(1)?.[0]?.name;
+      check(name === 'Ventilator_3Edge', `坡在 x=${x}：风扇底座应为 Ventilator_3Edge，实际 ${name}`);
+    }
+  });
+
   scenario('box 求解：花纹 v 沿直边每 5 个单位一个单位', () => {
     for (const [w, h] of [[10, 5], [10, 12], [20, 5]] as const) {
       const doc = emptyDoc();

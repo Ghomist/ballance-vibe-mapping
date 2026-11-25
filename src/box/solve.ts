@@ -1897,11 +1897,20 @@ function basePart(p: Piece, layers: Layer[]): AssetPart {
   // 这一边接上了：有同层的路贴着这一边，或者路从底座下面穿过去、在这一边外面还继续
   const cx = (fp.x0 + fp.x1) / 2, cy = (fp.y0 + fp.y1) / 2;
   const outside = (d: Dir): [number, number] => [d === 0 ? fp.x1 + 0.01 : d === 2 ? fp.x0 - 0.01 : cx, d === 1 ? fp.y1 + 0.01 : d === 3 ? fp.y0 - 0.01 : cy];
-  const joined = (d: Dir) => layers.some((L) => L.pieces.includes(p) && L.boxes.some((x) => {
+  const joined = (d: Dir) => layers.some((L) => {
+    // 坡单独一层：贴着这一边、在这一边中点的顶面和底座一样高，也算接上
+    if (L.slope) {
+      const s = L.slope;
+      if (s.q || (s.ang ?? 0) !== (p.ang ?? 0) || !faceContact(fp, d, footprint(s))) return false;
+      const mx = d === 0 ? fp.x1 : d === 2 ? fp.x0 : cx, my = d === 1 ? fp.y1 : d === 3 ? fp.y0 : cy;
+      return Math.abs(boxTopAt(s, mx, my) - p.z) < EPS_TOUCH * 4;
+    }
+    return L.pieces.includes(p) && L.boxes.some((x) => {
     if (faceContact(fp, d, footprint(x))) return true;
     const f = footprint(x), [ox, oy] = outside(d);
     return overlaps(f, fp) && ox > f.x0 && ox < f.x1 && oy > f.y0 && oy < f.y1;
-  }));
+  });
+  });
   const closed = new Set(([0, 1, 2, 3] as Dir[]).filter((d) => !joined(d)));
   for (const [name, borders] of FAN_VARIANTS) {
     if (borders.length !== closed.size) continue;

@@ -533,28 +533,38 @@ export function fixTJunctions(parts: Partial<Record<MatName, MeshPart>>) {
     if (!any) continue;
     const pos: number[] = [], uv: number[] = [], own: number[] | undefined = src.own ? [] : undefined;
     const emit = (p: V3[], u: V2[], o: number | undefined) => { for (let k = 0; k < 3; k++) { pos.push(p[k][0], p[k][1], p[k][2]); uv.push(u[k][0], u[k][1]); } if (own) own.push(o ?? -1); };
-    let guard = 0;
     for (let i = 0, t = 0; i < P.length; i += 9, t++) {
       const U = src.uv, ui = (i / 3) * 2;
-      const stack: { p: V3[]; u: V2[] }[] = [{
+      // f：每条边（p[e] → p[e+1]）是不是原三角形的边（的一段）。只劈原来的边：T 形接口只会出在原来的边上；
+      // 劈出来的新对角线不再查——否则挨得很近的两个点会在新对角线上互相「落在边上」，劈回原样，停不下来。
+      // 只劈原来的边时，每劈一次原来的边就被切短，点又是有限个，一定会停
+      type Tr = { p: V3[]; u: V2[]; f: boolean[] };
+      const stack: Tr[] = [{
         p: [[P[i], P[i + 1], P[i + 2]], [P[i + 3], P[i + 4], P[i + 5]], [P[i + 6], P[i + 7], P[i + 8]]],
         u: [[U[ui], U[ui + 1]], [U[ui + 2], U[ui + 3]], [U[ui + 4], U[ui + 5]]],
+        f: [true, true, true],
       }];
       const o = src.own?.[t];
+      // 保险：一个三角形最多劈这么多次（按上面的规则本来就会停；长平台边上挨着几十块小路也远到不了）
+      let guard = 0;
       // 劈出来的两个按顺序处理（先处理靠前的那个），三角形的先后和原来一致
-      const out: { p: V3[]; u: V2[] }[] = [];
+      const out: Tr[] = [];
       while (stack.length) {
         const tr = stack.pop()!;
         let split = false;
-        if (guard < 200000) for (let e = 0; e < 3; e++) {
-          const j = (e + 1) % 3, A = tr.p[e], B = tr.p[j];
+        if (guard < 1024) for (let e = 0; e < 3; e++) {
+          if (!tr.f[e]) continue;
+          const j = (e + 1) % 3, k = (e + 2) % 3, A = tr.p[e], B = tr.p[j];
           const hit = onEdge(A[0], A[1], A[2], B[0], B[1], B[2]);
-          if (!hit) continue;
+          // 第三个顶点自己就落在这条边上（压扁的三角形）：劈出来只是两个面积为 0 的，不劈
+          const C = tr.p[k];
+          if (!hit || Math.hypot(hit.v[0] - C[0], hit.v[1] - C[1], hit.v[2] - C[2]) <= EPS) continue;
           const mu: V2 = [tr.u[e][0] + (tr.u[j][0] - tr.u[e][0]) * hit.t, tr.u[e][1] + (tr.u[j][1] - tr.u[e][1]) * hit.t];
           // 绕序不变：一个把 j 换成新点，另一个把 e 换成新点
-          const a = { p: tr.p.slice(), u: tr.u.slice() }, b = { p: tr.p.slice(), u: tr.u.slice() };
-          a.p[j] = hit.v; a.u[j] = mu;
-          b.p[e] = hit.v; b.u[e] = mu;
+          // a = (A, V, C)：A→V 是原来的边的一段，V→C 是新对角线；b = (V, B, C)：C→V 是新对角线
+          const a: Tr = { p: tr.p.slice(), u: tr.u.slice(), f: [tr.f[0], tr.f[1], tr.f[2]] }, b: Tr = { p: tr.p.slice(), u: tr.u.slice(), f: [tr.f[0], tr.f[1], tr.f[2]] };
+          a.p[j] = hit.v; a.u[j] = mu; a.f[j] = false;
+          b.p[e] = hit.v; b.u[e] = mu; b.f[k] = false;
           stack.push(b, a);
           split = true; guard++;
           break;
