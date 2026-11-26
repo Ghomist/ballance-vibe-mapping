@@ -52,7 +52,7 @@ import { DEFAULT_SETTINGS } from '../model/types';
 const mapSettings = (): MapSettings => ({ ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
 import { type Loop } from '../model/outline';
 import { exportBoxGlb, exportBoxNmo, exportBoxObj, exportBoxScene } from './export';
-import { embedded, getGameDir, initHostBridge, launchRockoon, playUrl, ROCKOON_DOWNLOAD, rockoonSupported, saveToHost, writeToGame } from './rockoon';
+import { bvmLink, embedded, hostTheme, initHostBridge, launchRockoon, ROCKOON_DOWNLOAD, type RockoonAction, saveToHost } from './rockoon';
 import type { MapSettings } from '../model/types';
 import {
   AssetElem, Box, DX, DY, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, ZoneElem, anchorRects, baseSpec, boxTopAt, canTilt, dirToLocal, elemXf,
@@ -4590,9 +4590,8 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'import') openImport();
   else if (act === 'copy') void copyMapCode();
   else if (act === 'nmo') void exportNmo();
-  else if (act === 'rockoon-play') void exportRockoon(true);
-  else if (act === 'rockoon-export') void exportRockoon(false);
-  else if (act === 'rockoon-dir') void exportRockoon(false, true);
+  else if (act === 'rockoon-play') void exportRockoon('play');
+  else if (act === 'rockoon-export') void exportRockoon('save');
   else if (act === 'obj' || act === 'glb') void exportModel(act);
   else if (act === 'check') void openCheck(false);
   else if (act === 'save-file') void saveFile();
@@ -4715,39 +4714,29 @@ async function exportNmo() {
   finally { exporting = false; }
 }
 /**
- * 导出到 Rockoon：.nmo 直接写进游戏目录的 ModLoader/Maps（第一次选一次目录，之后记住）。
- * play：写完用 rockoon:// 深链叫 Rockoon 启动这张图。repick：重新选游戏目录
+ * 交给 Rockoon：它对应一个确定的游戏实例，保存位置由它决定，这里不让用户选目录。
+ * 内嵌在 Rockoon 里时直接导出交过去；在浏览器里就用 rockoon://bvm 深链把地图码交过去（大地图走剪贴板），
+ * Rockoon 在内嵌的制图器里打开这张图，再导出、保存（action = play 时接着启动）
  */
-async function exportRockoon(play: boolean, repick = false) {
+async function exportRockoon(action: Exclude<RockoonAction, 'open'>) {
   if (exporting) return;
-  if (embedded) { await exportToHost(play); return; }
-  if (!rockoonSupported()) { flash('这个浏览器不能直接写电脑上的文件夹：请用 Chrome 或 Edge（电脑版），或者用「导出 NMO」下载后自己放进 ModLoader/Maps', true); return; }
-  // 选目录、要权限都得趁刚点完菜单（浏览器要求），所以放在关卡检查和生成之前
-  let dir;
-  try { dir = await getGameDir(repick); } catch (err) { flash((err as Error).message, true); return; }
-  if (!dir) return;
-  if (repick) { flash(`以后导出到「${dir.label}」`); return; }
-  if (!await openCheck(true)) return;
-  const file = `${fileName()}.nmo`;
+  if (embedded) { await exportToHost(action === 'play'); return; }
+  const full = fullDoc();
+  if (!Object.keys(full.elems).length) { flash('地图是空的', true); return; }
+  let link;
   try {
-    exporting = true;
-    flash('正在生成 .nmo…');
-    const { data, textures } = await exportBoxNmo(fullDoc());
-    const { skipped } = await writeToGame(dir, file, data, textures);
-    if (skipped.size) download(file.replace(/\.nmo$/, '_textures.zip'), zipStore([...skipped].map(([name, d]) => ({ name, data: d }))) as BlobPart, 'application/zip');
-    const texNote = skipped.size ? `；选的是 Maps 文件夹，导入模型的 ${skipped.size} 张贴图在下载的 _textures.zip 里，解压到 Ballance/Textures` : '';
-    if (!play) { flash(`已放进「${dir.label}」：${file}${texNote}`); return; }
-    const url = playUrl(file);
-    // 生成要一会儿，浏览器可能已经不认这次点击了：这时再让用户点一下
-    const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-    if (ua && !ua.isActive && !await askConfirm(`已放进「${dir.label}」：${file}。启动 Rockoon 试玩？`, '试玩')) return;
-    flash(`已放进「${dir.label}」，正在叫 Rockoon 启动 ${file}${texNote}`);
-    exporting = false;
-    if (await launchRockoon(url)) return;
-    // 几秒都没切到 Rockoon：多半没装或者版本太旧，问一句再打开下载页（这一下点击也让浏览器放行新标签页）
-    if (await askConfirm('Rockoon 好像没有启动：可能还没装，或者版本太旧不支持试玩。去下载 Rockoon？', '去下载')) window.open(ROCKOON_DOWNLOAD, '_blank', 'noopener');
-  } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
-  finally { exporting = false; }
+    link = await bvmLink(await encodeShare(full), doc.name ?? '', mapId, action,
+      () => askConfirm('这张图比较大，放不进链接，要经剪贴板交给 Rockoon：剪贴板里原来的内容会被替换（Rockoon 读完就清空）。继续？', '继续'));
+  } catch (err) { console.error(err); flash(`交给 Rockoon 失败：${(err as Error).message}`, true); return; }
+  if (!link) return;
+  // 地图码、剪贴板都要一点时间，浏览器可能已经不认这次点击了：这时再让用户点一下（打开外部程序要求刚点过）
+  const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (ua && !ua.isActive && !await askConfirm(action === 'play' ? '交给 Rockoon 试玩这张图？' : '交给 Rockoon 保存这张图？', '打开 Rockoon')) return;
+  const via = link.viaClipboard ? '（经剪贴板交过去，Rockoon 读完会清空剪贴板）' : '';
+  flash(action === 'play' ? `正在交给 Rockoon 试玩${via}` : `正在交给 Rockoon 保存${via}`);
+  if (await launchRockoon(link.url)) return;
+  // 几秒都没切到 Rockoon：多半没装或者版本太旧，问一句再打开下载页（这一下点击也让浏览器放行新标签页）
+  if (await askConfirm('Rockoon 好像没有启动：可能还没装，或者版本太旧，不支持从 BVM 接收地图。去下载 Rockoon？', '去下载')) window.open(ROCKOON_DOWNLOAD, '_blank', 'noopener');
 }
 /** 内嵌在 Rockoon 里：生成好交给 Rockoon，它写进当前游戏的 ModLoader/Maps（play：接着启动） */
 async function exportToHost(play: boolean) {
@@ -4777,8 +4766,22 @@ async function openFromHost(name: string, data: Uint8Array) {
     flash(`已打开 ${name}：${Object.keys(d.elems).length} 个元素。导出时同名文件会覆盖原图，想留着原图就先在顶栏改个名字`);
   } catch (err) { console.error(err); flash(`打开 ${name} 失败：${(err as Error).message}`, true); }
 }
-initHostBridge((name, data) => void openFromHost(name, data));
-if (embedded) document.querySelectorAll('#file-menu [data-act="rockoon-dir"]').forEach((b) => b.remove());
+/** 浏览器里的 BVM 通过深链交过来的地图码：在这里打开（同一张图沿用它的编号，反复试玩不新建历史），再按 action 保存 / 试玩 */
+async function openCodeFromHost(code: string, name: string, id: string, action: RockoonAction) {
+  closeMenus();
+  try {
+    const d = await decodeShare(code);
+    if (name) d.name = name;
+    await switchMap(d, /^[\w-]{1,40}$/.test(id) ? id : newMapId());
+  } catch (err) { console.error(err); flash(`打开交过来的地图失败：${(err as Error).message}`, true); return; }
+  if (action === 'open') { flash(`已打开「${doc.name || UNNAMED}」`); return; }
+  await exportToHost(action === 'play');
+}
+initHostBridge({
+  openFile: (name, data) => void openFromHost(name, data),
+  openCode: (code, name, id, action) => void openCodeFromHost(code, name, id, action),
+  theme: (t) => applyTheme(t),
+});
 /** 导出 .glb / .obj（zip）：和 NMO 一样是占位符；不进游戏，所以不先做关卡检查 */
 async function exportModel(fmt: 'obj' | 'glb') {
   if (exporting) return;
@@ -4797,16 +4800,22 @@ async function exportModel(fmt: 'obj' | 'glb') {
 
 // ---------------- 主题、设置 ----------------
 
+/** 当前生效的明暗：一般就是 prefs.theme；内嵌在 Rockoon 里时跟着 Rockoon，不记进偏好（单独打开 BVM 时还是自己的设置） */
+let curTheme: 'dark' | 'light' = prefs.theme;
 function applyTheme(t: 'dark' | 'light') {
-  prefs.theme = t; savePrefs();
+  curTheme = t;
+  if (!embedded) { prefs.theme = t; savePrefs(); }
   document.documentElement.dataset.theme = t;
   const g = GRID_THEMES[t];
   (scene.background as THREE.Color).set(g.bg);
   themeGrid(gridGroup, g);
-  document.querySelector('#theme .theme-label')!.textContent = t === 'dark' ? '暗色' : '亮色';
+  const label = document.querySelector('#theme .theme-label');
+  if (label) label.textContent = t === 'dark' ? '暗色' : '亮色';
 }
-applyTheme(prefs.theme);
-document.getElementById('theme')!.addEventListener('click', (e) => { applyTheme(prefs.theme === 'dark' ? 'light' : 'dark'); (e.currentTarget as HTMLButtonElement).blur(); });
+applyTheme(hostTheme ?? prefs.theme);
+// 内嵌在 Rockoon 里：主题开关（顶栏、「更多」菜单）藏起来，明暗由 Rockoon 决定
+if (embedded) document.querySelectorAll('#theme, #more-menu [data-more="theme"]').forEach((b) => b.remove());
+document.getElementById('theme')?.addEventListener('click', (e) => { applyTheme(curTheme === 'dark' ? 'light' : 'dark'); (e.currentTarget as HTMLButtonElement).blur(); });
 
 // 设置：和帮助一样占满页面的半透明弹窗，左边分页，右边内容。点弹窗外面、右上角、Esc 关闭，记住上次看的那一页
 const SET_PAGES: [string, string][] = [['map', '全图设置'], ['edit', '编辑'], ['ui', '界面'], ['keys', '快捷键'], ['about', '关于']];
@@ -5829,7 +5838,7 @@ function applyCoordSys() {
   const cs = game ? [AXIS_COLORS.x, AXIS_COLORS.z, AXIS_COLORS.y] : [AXIS_COLORS.x, AXIS_COLORS.y, AXIS_COLORS.z];
   moveGizmo.setColors(cs); rotGizmo.setColors(cs);
   setGridAxes(gridGroup, game);
-  themeGrid(gridGroup, GRID_THEMES[prefs.theme]);
+  themeGrid(gridGroup, GRID_THEMES[curTheme]);
   syncCubeAxes();
   props.dataset.id = '';
   syncProps(); updateStatus(); drawOverlay(); invalidate();

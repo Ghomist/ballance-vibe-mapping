@@ -4,6 +4,13 @@ export interface ChangeEntry { version: string; date: string; items: string[] }
 
 export const CHANGELOG: ChangeEntry[] = [
   {
+    version: '2026.11.26.2', date: '2026-11-26', items: [
+      '「文件 → Rockoon」不用再选游戏目录：地图直接交给 Rockoon，存进它当前选中的游戏（大地图经剪贴板交过去）；在浏览器里点会切到 Rockoon 的在线制图器打开这张图，再保存、试玩',
+      '内嵌在 Rockoon 里时亮色 / 暗色跟着 Rockoon 走，不再显示 BVM 自己的主题开关',
+      '顶栏的地图名更显眼：重点色描边、底色和铅笔图标，一看就知道点一下能改名',
+    ],
+  },
+  {
     version: '2026.11.26', date: '2026-11-26', items: [
       '文件 → Rockoon：导出的 NMO 直接放进游戏目录的 ModLoader/Maps（第一次选一次游戏目录，之后记住）；「在 Rockoon 里试玩」放进去后叫 Rockoon 直接启动这张图（需要电脑上的 Chrome / Edge 和新版 Rockoon；没拉起 Rockoon 时会问要不要去下载）',
       '在 Rockoon 里内嵌使用（侧栏「在线制图器」）：导出、试玩直接交给 Rockoon；Rockoon 地图列表里点「在制图器中编辑」，把 .nmo 打开成一张新地图',

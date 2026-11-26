@@ -1,177 +1,39 @@
-// Rockoon（Ballance 启动器）联动：导出的 .nmo 直接写进游戏目录的 ModLoader/Maps，试玩用 rockoon:// 深链叫 Rockoon 启动这张图。
-// 浏览器写本地文件夹靠 File System Access API（Chrome / Edge 桌面版才有）：第一次让用户选一次游戏目录，
-// 句柄存进 IndexedDB，以后每次只需要浏览器确认一下权限（同一次打开网页里通常只问一次）。
-
-const DB = 'bvm-rockoon', STORE = 'handles', KEY = 'game';
-
-type Perm = 'granted' | 'denied' | 'prompt';
-/** TS 自带的 DOM 类型里还没有这几个方法 */
-type DirHandle = FileSystemDirectoryHandle & {
-  queryPermission?(d: { mode: 'readwrite' }): Promise<Perm>;
-  requestPermission?(d: { mode: 'readwrite' }): Promise<Perm>;
-};
-type PickerWindow = Window & { showDirectoryPicker?(o?: { id?: string; mode?: 'readwrite' }): Promise<DirHandle> };
-
-/** 这个浏览器能不能直接写本地文件夹 */
-export const rockoonSupported = () => typeof (window as PickerWindow).showDirectoryPicker === 'function' && typeof indexedDB !== 'undefined';
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open(DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore(STORE);
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-}
-async function idb<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  const db = await openDb();
-  return new Promise((res, rej) => {
-    const t = db.transaction(STORE, mode);
-    const r = fn(t.objectStore(STORE));
-    t.oncomplete = () => { res(r.result); db.close(); };
-    t.onerror = t.onabort = () => { rej(t.error); db.close(); };
-  });
-}
-
-/** 选好的目录：root = 游戏根目录（能放贴图），没有 root 时只有 Maps（用户直接选了 Maps 文件夹） */
-export interface GameDir { maps: FileSystemDirectoryHandle; root?: FileSystemDirectoryHandle; label: string }
-
-const child = async (d: FileSystemDirectoryHandle, name: string) => {
-  try { return await d.getDirectoryHandle(name); } catch { return null; }
-};
-
-/** 认出用户选的是哪一层：游戏根目录（有 ModLoader 或 Bin）、ModLoader、或者 Maps 本身 */
-async function resolve(h: FileSystemDirectoryHandle): Promise<GameDir | null> {
-  const name = h.name.toLowerCase();
-  if (name === 'maps') return { maps: h, label: h.name };
-  if (name === 'modloader') {
-    const maps = await h.getDirectoryHandle('Maps', { create: true });
-    return { maps, label: `${h.name}/Maps` };
-  }
-  const ml = await child(h, 'ModLoader');
-  if (ml) return { root: h, maps: await ml.getDirectoryHandle('Maps', { create: true }), label: h.name };
-  // 装了游戏但还没装 BML / BMLPlus：有 Bin 就认，Maps 先建出来
-  if (await child(h, 'Bin')) {
-    const maps = await (await h.getDirectoryHandle('ModLoader', { create: true })).getDirectoryHandle('Maps', { create: true });
-    return { root: h, maps, label: h.name };
-  }
-  return null;
-}
-
-async function ensurePerm(h: DirHandle): Promise<boolean> {
-  if (!h.queryPermission || !h.requestPermission) return true;
-  if ((await h.queryPermission({ mode: 'readwrite' })) === 'granted') return true;
-  return (await h.requestPermission({ mode: 'readwrite' })) === 'granted';
-}
-
-/** 记住的目录名（设置里显示用），没选过是 null */
-export async function savedDirName(): Promise<string | null> {
-  try { return ((await idb('readonly', (s) => s.get(KEY))) as DirHandle | undefined)?.name ?? null; } catch { return null; }
-}
-
-/**
- * 拿到游戏目录（要在点击里直接调用：选目录、要权限都需要用户刚点过）。
- * repick：不管记没记住都重新选。返回 null = 用户取消；抛错 = 选的不是游戏目录
- */
-export async function getGameDir(repick = false): Promise<GameDir | null> {
-  if (!repick) {
-    try {
-      const h = (await idb('readonly', (s) => s.get(KEY))) as DirHandle | undefined;
-      if (h && await ensurePerm(h)) {
-        const g = await resolve(h);
-        if (g) return g;
-      }
-    } catch { /* 句柄失效（文件夹被删、换了位置）：重新选 */ }
-  }
-  let h: DirHandle;
-  try {
-    h = await (window as PickerWindow).showDirectoryPicker!({ id: 'rockoon-game', mode: 'readwrite' });
-  } catch (e) {
-    if ((e as DOMException).name === 'AbortError') return null;
-    throw e;
-  }
-  const g = await resolve(h);
-  if (!g) throw new Error(`「${h.name}」不像 Ballance 游戏目录：要选装着 Bin、ModLoader 的那个文件夹（Rockoon 里实例的目录），或者直接选 ModLoader/Maps`);
-  try { await idb('readwrite', (s) => s.put(h, KEY)); } catch { /* 存不住就下次再选 */ }
-  return g;
-}
-
-async function writeFile(dir: FileSystemDirectoryHandle, name: string, data: Uint8Array) {
-  const f = await dir.getFileHandle(name, { create: true });
-  const w = await f.createWritable();
-  await w.write(data as BlobPart);
-  await w.close();
-}
-
-/**
- * 把 .nmo（和导入模型的贴图）写进游戏目录。贴图写进 Textures，已经有同名文件的不覆盖（别把原版贴图换掉）。
- * 返回没能放进 Textures 的贴图（只选了 Maps 时全部都是），调用方打包下载
- */
-export async function writeToGame(g: GameDir, file: string, data: Uint8Array, textures: Map<string, Uint8Array>): Promise<{ skipped: Map<string, Uint8Array> }> {
-  await writeFile(g.maps, file, data);
-  const skipped = new Map<string, Uint8Array>();
-  if (!textures.size) return { skipped };
-  const tex = g.root ? await g.root.getDirectoryHandle('Textures', { create: true }) : null;
-  for (const [name, d] of textures) {
-    if (!tex) { skipped.set(name, d); continue; }
-    try { await tex.getFileHandle(name); continue; } catch { /* 没有同名文件：写 */ }
-    await writeFile(tex, name, d);
-  }
-  return { skipped };
-}
-
-/** 试玩用的深链：map 是相对 ModLoader/Maps 的路径（正斜杠） */
-export const playUrl = (map: string) => `rockoon://play?map=${encodeURIComponent(map)}`;
+// Rockoon（Ballance 启动器）联动。Rockoon 对应一个确定的游戏实例，所以保存位置交给它决定，BVM 不让用户选目录：
+// - 内嵌在 Rockoon 里（侧栏「在线制图器」，?host=rockoon）：postMessage 把导出好的 .nmo 交给 Rockoon，它写进当前实例的
+//   ModLoader/Maps，要试玩就接着启动；
+// - 在普通浏览器里：把地图码交给 rockoon://bvm 深链（大地图走剪贴板），Rockoon 在内嵌的制图器里打开这张图，
+//   再走上面那条路保存 / 试玩。
 
 export const ROCKOON_DOWNLOAD = 'https://dl.ballance.top/rockoon';
 
-// ---- 内嵌在 Rockoon 里（Rockoon 的「在线制图器」页面用 iframe 打开 ?host=rockoon）----
-// 这时导出、试玩直接交给 Rockoon：它写进当前实例的 ModLoader/Maps、启动游戏，不用选目录、不走深链。
-// 消息都带 ns: 'bvm-rockoon'：BVM 发 ready / save，Rockoon 回 hello / saved，Rockoon 还会发 open（地图列表里点「在制图器中编辑」）
+/** 打开 Rockoon 以后要做什么：只打开、保存进地图目录、保存并试玩 */
+export type RockoonAction = 'open' | 'save' | 'play';
 
-const NS = 'bvm-rockoon';
-/** Rockoon 页面的来源：正式版 tauri.localhost，开发时 vite 的 1420 端口 */
-const HOST_ORIGIN = /^(https?:\/\/tauri\.localhost|tauri:\/\/localhost|http:\/\/(127\.0\.0\.1|localhost):1420)$/;
+/**
+ * Windows 把深链当命令行参数交给 Rockoon，命令行最长 32767 个字符（实测 3 万字符的链接能完整收到）；
+ * 留点余量给程序路径和其它参数。地图码更长（大地图、带导入模型）就改走剪贴板
+ */
+export const MAX_LINK = 30000;
 
-/** 是不是被 Rockoon 内嵌着 */
-export const embedded = window.parent !== window && new URLSearchParams(location.search).get('host') === 'rockoon';
-let hostOrigin: string | null = null;
-/** Rockoon 已经应答（之后 save 才发得出去） */
-export const hostReady = () => hostOrigin !== null;
-
-let seq = 0;
-const pending = new Map<number, (r: { ok: boolean; message?: string }) => void>();
-
-/** 开始听 Rockoon 的消息；onOpen：Rockoon 要打开一张地图来编辑（文件名、文件内容） */
-export function initHostBridge(onOpen: (name: string, data: Uint8Array) => void) {
-  if (!embedded) return;
-  window.addEventListener('message', (e) => {
-    if (e.source !== window.parent || !HOST_ORIGIN.test(e.origin)) return;
-    const m = e.data as { ns?: string; type?: string; id?: number; ok?: boolean; message?: string; name?: string; data?: Uint8Array };
-    if (m?.ns !== NS) return;
-    hostOrigin = e.origin;
-    if (m.type === 'open' && typeof m.name === 'string' && m.data instanceof Uint8Array) onOpen(m.name, m.data);
-    else if (m.type === 'saved' && typeof m.id === 'number') {
-      pending.get(m.id)?.({ ok: !!m.ok, message: m.message });
-      pending.delete(m.id);
-    }
-  });
-  // 只是打个招呼，不带数据，所以发给任意来源；Rockoon 回 hello 以后才知道它的来源
-  window.parent.postMessage({ ns: NS, type: 'ready' }, '*');
+/** 地图码的校验码（SHA-256 前 16 位十六进制）：走剪贴板时 Rockoon 拿它核对剪贴板里的确实是这张图 */
+export async function codeHash(code: string): Promise<string> {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code)));
+  return [...h.slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * 交给 Rockoon 保存（play：保存完直接启动）。Rockoon 那边出了问题（没选游戏、用户不让覆盖、没装 BMLPlus）
- * 会自己弹窗说明，这里只拿到 ok 和一句话
+ * 把地图交给 Rockoon 的深链。地图码（base64url，本身就能放进网址）放得下就直接带上；
+ * 放不下（大地图）就放进剪贴板，链接里只带校验码，Rockoon 读剪贴板、核对无误后打开并清空剪贴板。
+ * 走剪贴板会替换用户剪贴板里的东西，所以先 askClip 问一句；不同意返回 null。
+ * id 让 Rockoon 那边反复试玩同一张图时不新建历史。返回 viaClipboard：是不是走了剪贴板
  */
-export function saveToHost(file: string, data: Uint8Array, textures: Map<string, Uint8Array>, play: boolean): Promise<{ ok: boolean; message?: string }> {
-  if (!hostOrigin) return Promise.resolve({ ok: false, message: 'Rockoon 还没连上，稍等一下再试' });
-  const id = ++seq;
-  const origin = hostOrigin;
-  return new Promise((res) => {
-    pending.set(id, res);
-    window.parent.postMessage({ ns: NS, type: 'save', id, file, data, textures: [...textures].map(([name, d]) => ({ name, data: d })), play }, origin);
-  });
+export async function bvmLink(code: string, name: string, id: string, action: RockoonAction, askClip: () => Promise<boolean>): Promise<{ url: string; viaClipboard: boolean } | null> {
+  const q = new URLSearchParams({ action, name, id });
+  const inline = `rockoon://bvm?${q}&code=${code}`;
+  if (inline.length <= MAX_LINK) return { url: inline, viaClipboard: false };
+  if (!await askClip()) return null;
+  await navigator.clipboard.writeText(code);
+  return { url: `rockoon://bvm?${q}&clip=${await codeHash(code)}`, viaClipboard: true };
 }
 
 /**
@@ -198,5 +60,71 @@ export function launchRockoon(url: string, wait = 4000): Promise<boolean> {
     const a = document.createElement('a');
     a.href = url;
     a.click();
+  });
+}
+
+// ---- 内嵌在 Rockoon 里 ----
+// 消息都带 ns: 'bvm-rockoon'：BVM 发 ready / save，Rockoon 回 hello / saved，hello 和 theme 带着 Rockoon 的明暗，
+// 还会发 open（地图列表里点「在制图器中编辑」，带 .nmo 文件）和 open-code（浏览器里的 BVM 通过深链交过来的地图码）
+
+const NS = 'bvm-rockoon';
+/** Rockoon 页面的来源：正式版 tauri.localhost，开发时 vite 的 1420 端口 */
+const HOST_ORIGIN = /^(https?:\/\/tauri\.localhost|tauri:\/\/localhost|http:\/\/(127\.0\.0\.1|localhost):1420)$/;
+
+/** 是不是被 Rockoon 内嵌着 */
+export const embedded = window.parent !== window && new URLSearchParams(location.search).get('host') === 'rockoon';
+/** 内嵌时 Rockoon 在地址里带的明暗（第一帧就用它，不闪）；之后切换走 theme 消息 */
+export const hostTheme = ((): 'dark' | 'light' | null => {
+  if (!embedded) return null;
+  const t = new URLSearchParams(location.search).get('theme');
+  return t === 'dark' || t === 'light' ? t : null;
+})();
+let hostOrigin: string | null = null;
+
+let seq = 0;
+const pending = new Map<number, (r: { ok: boolean; message?: string }) => void>();
+
+export interface HostHandlers {
+  /** 打开一个 .nmo 来编辑（文件名、文件内容） */
+  openFile(name: string, data: Uint8Array): void;
+  /** 打开浏览器里交过来的地图码，再按 action 保存 / 试玩 */
+  openCode(code: string, name: string, id: string, action: RockoonAction): void;
+  /** Rockoon 的明暗变了（跟着它走，BVM 自己的主题开关在内嵌时藏起来） */
+  theme(t: 'dark' | 'light'): void;
+}
+
+/** 开始听 Rockoon 的消息 */
+export function initHostBridge(h: HostHandlers) {
+  if (!embedded) return;
+  window.addEventListener('message', (e) => {
+    if (e.source !== window.parent || !HOST_ORIGIN.test(e.origin)) return;
+    const m = e.data as { ns?: string; type?: string; id?: number | string; ok?: boolean; message?: string; name?: string; data?: Uint8Array; code?: string; action?: string; theme?: string };
+    if (m?.ns !== NS) return;
+    hostOrigin = e.origin;
+    if ((m.type === 'hello' || m.type === 'theme') && (m.theme === 'dark' || m.theme === 'light')) h.theme(m.theme);
+    if (m.type === 'open' && typeof m.name === 'string' && m.data instanceof Uint8Array) h.openFile(m.name, m.data);
+    else if (m.type === 'open-code' && typeof m.code === 'string') {
+      const action: RockoonAction = m.action === 'play' || m.action === 'save' ? m.action : 'open';
+      h.openCode(m.code, typeof m.name === 'string' ? m.name : '', typeof m.id === 'string' ? m.id : '', action);
+    } else if (m.type === 'saved' && typeof m.id === 'number') {
+      pending.get(m.id)?.({ ok: !!m.ok, message: m.message });
+      pending.delete(m.id);
+    }
+  });
+  // 只是打个招呼，不带数据，所以发给任意来源；Rockoon 回 hello 以后才知道它的来源
+  window.parent.postMessage({ ns: NS, type: 'ready' }, '*');
+}
+
+/**
+ * 交给 Rockoon 保存（play：保存完直接启动）。Rockoon 那边出了问题（没选游戏、用户不让覆盖、没装 BMLPlus）
+ * 会自己弹窗说明，这里只拿到 ok 和一句话
+ */
+export function saveToHost(file: string, data: Uint8Array, textures: Map<string, Uint8Array>, play: boolean): Promise<{ ok: boolean; message?: string }> {
+  if (!hostOrigin) return Promise.resolve({ ok: false, message: 'Rockoon 还没连上，稍等一下再试' });
+  const id = ++seq;
+  const origin = hostOrigin;
+  return new Promise((res) => {
+    pending.set(id, res);
+    window.parent.postMessage({ ns: NS, type: 'save', id, file, data, textures: [...textures].map(([name, d]) => ({ name, data: d })), play }, origin);
   });
 }

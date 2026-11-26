@@ -266,14 +266,28 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .about-row svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
 .about-row svg.gh { fill: currentColor; stroke: none; }
 
-/* 地图名字 */
-#map-name {
-  width: 130px; height: 28px; box-sizing: border-box; padding: 0 8px; background: transparent; border: 1px solid transparent; border-radius: 6px;
-  color: var(--text); font: inherit; text-overflow: ellipsis; transition: background 0.12s, border-color 0.12s;
+/* 地图名字：一直带着淡淡的重点色底、描边和铅笔，看得出能改；悬停时描边加深、外面一圈重点色柔光，聚焦时是输入框的样子 */
+#map-name-box {
+  position: relative; display: inline-flex; align-items: center; height: 28px; box-sizing: border-box; border-radius: 7px; cursor: text;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
-#map-name::placeholder { color: var(--text-3); }
-#map-name:hover { border-color: var(--line); }
-#map-name:focus { outline: none; background: var(--field); border-color: var(--accent); }
+#map-name {
+  width: 130px; height: 100%; box-sizing: border-box; padding: 0 24px 0 9px; background: transparent; border: 0; border-radius: inherit;
+  color: var(--text); font: inherit; font-weight: 600; text-overflow: ellipsis;
+}
+#map-name::placeholder { color: color-mix(in srgb, var(--accent) 70%, var(--text-3)); font-weight: 500; }
+#map-name-box svg {
+  position: absolute; right: 7px; width: 12px; height: 12px; pointer-events: none;
+  fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; opacity: 0.85; transition: opacity 0.12s;
+}
+#map-name-box:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent); }
+#map-name-box:hover svg { opacity: 1; }
+#map-name:focus { outline: none; }
+#map-name-box:focus-within { background: var(--field); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+/* 正在改名时铅笔就不用再提示了 */
+#map-name-box:focus-within svg { opacity: 0; }
 
 /* 历史地图、导入 */
 .confirm-box h3 { margin: 0 0 10px; font-size: 13px; color: var(--text); }
@@ -468,7 +482,7 @@ body.touch-ui {
 body.phone #toolbar { gap: 4px; padding: 4px 8px; min-height: 40px; }
 body.phone .tb-left, body.phone .tb-center, body.phone .tb-right { gap: 4px; }
 body.phone .brand { font-size: 0; gap: 0; margin-right: 2px; }
-body.phone #map-name { display: none !important; }
+body.phone #map-name-box { display: none !important; }
 body.phone #toolbar button:not(.dropdown-menu button) { font-size: 0; gap: 0; height: 32px; min-width: 32px; padding: 0 7px; justify-content: center; }
 body.phone #toolbar #file-btn, body.phone #toolbar #sector { font-size: 12.5px; gap: 3px; }
 body.phone #toolbar .seg { padding: 1px; }
@@ -589,7 +603,7 @@ body.phone .app-only { display: none !important; }
   #toolbar .brand { font-size: 0; gap: 0; }
 }
 @media (max-width: 960px) {
-  body:not(.touch-ui) :is(#snaps, #snaps + .sep), #map-name, #map-name + .sep { display: none !important; }
+  body:not(.touch-ui) :is(#snaps, #snaps + .sep), #map-name-box, #map-name-box + .sep { display: none !important; }
   body:not(.touch-ui) #more-menu button.snap-more { display: flex; }
   body:not(.touch-ui) #more-menu .menu-sep.snap-more { display: block; }
 }

@@ -65,12 +65,10 @@
             </div>
           </div>
           <div class="submenu">
-            <button class="sub-trigger"><span>Rockoon</span><small>直接放进游戏，一键试玩</small></button>
+            <button class="sub-trigger"><span>Rockoon</span><small>交给 Rockoon 放进游戏，一键试玩</small></button>
             <div class="dropdown-menu sub">
-              <button data-act="rockoon-play"><span>在 Rockoon 里试玩</span><small>导出到游戏目录，叫 Rockoon 直接启动这张图</small></button>
-              <button data-act="rockoon-export"><span>导出到 Rockoon</span><small>放进游戏目录的 ModLoader/Maps，在 Rockoon 的地图列表里就能看到</small></button>
-              <div class="menu-sep"></div>
-              <button data-act="rockoon-dir"><span>更换游戏目录…</span><small>第一次导出时选过；换了实例就重新选</small></button>
+              <button data-act="rockoon-play"><span>在 Rockoon 里试玩</span><small>交给 Rockoon，存进它当前的游戏并直接启动这张图</small></button>
+              <button data-act="rockoon-export"><span>导出到 Rockoon</span><small>交给 Rockoon，存进当前游戏的 ModLoader/Maps</small></button>
             </div>
           </div>
           <button data-act="check"><span>检查关卡</span><small>起点、终点、小节、云层、死亡区有没有问题</small></button>
@@ -81,7 +79,10 @@
           </div>
         </div>
       </span>
-      <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" title="地图名字：显示在历史里，也是保存和导出的文件名" />
+      <label id="map-name-box" title="地图名字：点一下就能改。显示在历史里，也是保存和导出的文件名">
+        <input id="map-name" type="text" maxlength="40" placeholder="未命名地图" spellcheck="false" />
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.8l2.7 2.7-7.4 7.4-3.3.6.6-3.3z M9.2 4.1l2.7 2.7" /></svg>
+      </label>
       <div class="sep"></div>
       <div class="group">
         <button id="undo" class="icon ghost" title="撤销（{undo}）"><svg viewBox="0 0 16 16"><path d="M5 4L2 7l3 3M2 7h7.5a4 4 0 0 1 0 8H7" /></svg></button>
