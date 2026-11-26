@@ -52,6 +52,7 @@ import { DEFAULT_SETTINGS } from '../model/types';
 const mapSettings = (): MapSettings => ({ ...DEFAULT_SETTINGS, ...(doc.settings ?? {}) });
 import { type Loop } from '../model/outline';
 import { exportBoxGlb, exportBoxNmo, exportBoxObj, exportBoxScene } from './export';
+import { embedded, getGameDir, initHostBridge, launchRockoon, playUrl, ROCKOON_DOWNLOAD, rockoonSupported, saveToHost, writeToGame } from './rockoon';
 import type { MapSettings } from '../model/types';
 import {
   AssetElem, Box, DX, DY, Dir, Doc, Elem, Obj, PieceType, RailElem, SINK_DEPTH, Style, ZoneElem, anchorRects, baseSpec, boxTopAt, canTilt, dirToLocal, elemXf,
@@ -4589,6 +4590,9 @@ fileMenu.addEventListener('click', async (e) => {
   else if (act === 'import') openImport();
   else if (act === 'copy') void copyMapCode();
   else if (act === 'nmo') void exportNmo();
+  else if (act === 'rockoon-play') void exportRockoon(true);
+  else if (act === 'rockoon-export') void exportRockoon(false);
+  else if (act === 'rockoon-dir') void exportRockoon(false, true);
   else if (act === 'obj' || act === 'glb') void exportModel(act);
   else if (act === 'check') void openCheck(false);
   else if (act === 'save-file') void saveFile();
@@ -4710,6 +4714,71 @@ async function exportNmo() {
   } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
   finally { exporting = false; }
 }
+/**
+ * 导出到 Rockoon：.nmo 直接写进游戏目录的 ModLoader/Maps（第一次选一次目录，之后记住）。
+ * play：写完用 rockoon:// 深链叫 Rockoon 启动这张图。repick：重新选游戏目录
+ */
+async function exportRockoon(play: boolean, repick = false) {
+  if (exporting) return;
+  if (embedded) { await exportToHost(play); return; }
+  if (!rockoonSupported()) { flash('这个浏览器不能直接写电脑上的文件夹：请用 Chrome 或 Edge（电脑版），或者用「导出 NMO」下载后自己放进 ModLoader/Maps', true); return; }
+  // 选目录、要权限都得趁刚点完菜单（浏览器要求），所以放在关卡检查和生成之前
+  let dir;
+  try { dir = await getGameDir(repick); } catch (err) { flash((err as Error).message, true); return; }
+  if (!dir) return;
+  if (repick) { flash(`以后导出到「${dir.label}」`); return; }
+  if (!await openCheck(true)) return;
+  const file = `${fileName()}.nmo`;
+  try {
+    exporting = true;
+    flash('正在生成 .nmo…');
+    const { data, textures } = await exportBoxNmo(fullDoc());
+    const { skipped } = await writeToGame(dir, file, data, textures);
+    if (skipped.size) download(file.replace(/\.nmo$/, '_textures.zip'), zipStore([...skipped].map(([name, d]) => ({ name, data: d }))) as BlobPart, 'application/zip');
+    const texNote = skipped.size ? `；选的是 Maps 文件夹，导入模型的 ${skipped.size} 张贴图在下载的 _textures.zip 里，解压到 Ballance/Textures` : '';
+    if (!play) { flash(`已放进「${dir.label}」：${file}${texNote}`); return; }
+    const url = playUrl(file);
+    // 生成要一会儿，浏览器可能已经不认这次点击了：这时再让用户点一下
+    const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    if (ua && !ua.isActive && !await askConfirm(`已放进「${dir.label}」：${file}。启动 Rockoon 试玩？`, '试玩')) return;
+    flash(`已放进「${dir.label}」，正在叫 Rockoon 启动 ${file}${texNote}`);
+    exporting = false;
+    if (await launchRockoon(url)) return;
+    // 几秒都没切到 Rockoon：多半没装或者版本太旧，问一句再打开下载页（这一下点击也让浏览器放行新标签页）
+    if (await askConfirm('Rockoon 好像没有启动：可能还没装，或者版本太旧不支持试玩。去下载 Rockoon？', '去下载')) window.open(ROCKOON_DOWNLOAD, '_blank', 'noopener');
+  } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
+  finally { exporting = false; }
+}
+/** 内嵌在 Rockoon 里：生成好交给 Rockoon，它写进当前游戏的 ModLoader/Maps（play：接着启动） */
+async function exportToHost(play: boolean) {
+  if (!await openCheck(true)) return;
+  const file = `${fileName()}.nmo`;
+  try {
+    exporting = true;
+    flash('正在生成 .nmo…');
+    const { data, textures } = await exportBoxNmo(fullDoc());
+    const r = await saveToHost(file, data, textures, play);
+    if (r.ok) flash(play ? `已放进游戏的地图目录，正在启动 ${file}` : `已放进游戏的地图目录：${file}`);
+    else if (r.message) flash(r.message, true);
+  } catch (err) { console.error(err); flash(`导出失败：${(err as Error).message}`, true); }
+  finally { exporting = false; }
+}
+/** Rockoon 的地图列表里点了「在制图器中编辑」：把这个 .nmo 当成一张新地图打开（当前地图留在历史里） */
+async function openFromHost(name: string, data: Uint8Array) {
+  closeMenus();
+  flash(`正在打开 ${name}…`);
+  try {
+    const res = await importModelFile(new File([data as BlobPart], name), []);
+    const src = buildImport(res, 1);
+    if (!src.length) { flash(`${name} 里没有能放进地图的东西`, true); return; }
+    const d: Doc = { elems: {}, nextId: 1, name: name.replace(/\.(nmo|cmo)$/i, '') };
+    pasteElems(d, src);
+    await switchMap(d);
+    flash(`已打开 ${name}：${Object.keys(d.elems).length} 个元素。导出时同名文件会覆盖原图，想留着原图就先在顶栏改个名字`);
+  } catch (err) { console.error(err); flash(`打开 ${name} 失败：${(err as Error).message}`, true); }
+}
+initHostBridge((name, data) => void openFromHost(name, data));
+if (embedded) document.querySelectorAll('#file-menu [data-act="rockoon-dir"]').forEach((b) => b.remove());
 /** 导出 .glb / .obj（zip）：和 NMO 一样是占位符；不进游戏，所以不先做关卡检查 */
 async function exportModel(fmt: 'obj' | 'glb') {
   if (exporting) return;
